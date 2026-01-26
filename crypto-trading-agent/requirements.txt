@@ -1,0 +1,52 @@
+ # Core Framework
+langgraph==0.2.0
+langchain==0.2.0
+langchain-anthropic==0.1.15
+langchain-openai==0.1.8
+
+# LLM Clients
+anthropic==0.28.0
+openai==1.35.0
+
+# Exchange & Market Data
+ccxt==4.3.50
+python-binance==1.0.19
+websocket-client==1.8.0
+websockets==12.0
+requests==2.31.0
+
+# Data Processing
+pandas==2.2.2
+numpy>=1.26.4
+scipy>=1.13.0
+ta-lib==0.4.28
+pandas-ta>=0.4.67b0
+
+# Database
+redis==5.0.5
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.30
+alembic==1.13.1
+
+# Vector Database
+pinecone-client==3.2.2
+chromadb==0.5.0
+
+# Async & Concurrency
+aiohttp==3.9.5
+asyncpg==0.29.0
+
+# Utilities
+python-dotenv==1.0.1
+pydantic==2.7.3
+pyyaml==6.0.1
+loguru==0.7.2
+tenacity==8.3.0
+
+# Monitoring
+prometheus-client==0.20.0
+python-telegram-bot>=21.0
+
+# Dashboard
+streamlit==1.28.1
+plotly==5.17.0

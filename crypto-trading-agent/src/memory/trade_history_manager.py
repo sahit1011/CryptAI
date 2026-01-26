@@ -1,0 +1,482 @@
+"""
+Trade History Manager
+Manages trade storage and retrieval using SQLAlchemy
+"""
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
+from datetime import datetime
+from loguru import logger
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, JSON, Boolean, desc, and_
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+Base = declarative_base()
+
+class TradeRecord(Base):
+    """Trade record database model"""
+    __tablename__ = 'trades'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_id = Column(String(50), unique=True, nullable=False, index=True)
+    
+    # Trade details
+    symbol = Column(String(20), nullable=False, index=True)
+    direction = Column(String(10), nullable=False)  # LONG/SHORT
+    strategy_type = Column(String(20), index=True)  # SCALP/DAY_TRADE/SWING
+    
+    # Entry
+    entry_price = Column(Float, nullable=False)
+    entry_time = Column(DateTime, nullable=False, index=True)
+    position_size = Column(Float, nullable=False)
+    
+    # Exit
+    exit_price = Column(Float, nullable=True)
+    exit_time = Column(DateTime, nullable=True, index=True)
+    exit_reason = Column(String(50), nullable=True)  # take_profit/stop_loss/manual
+    
+    # Risk management
+    stop_loss = Column(Float, nullable=False)
+    take_profit_levels = Column(JSON, nullable=True)  # List of TP levels
+    risk_amount = Column(Float, nullable=False)
+    
+    # Performance
+    pnl = Column(Float, nullable=True)
+    pnl_percentage = Column(Float, nullable=True)
+    risk_reward_ratio = Column(Float, nullable=True)
+    duration_minutes = Column(Float, nullable=True)
+    
+    # Setup quality
+    confidence_score = Column(Float, default=0.0)
+    confluence_count = Column(Integer, default=0)
+    
+    # Market conditions
+    market_regime = Column(String(20), nullable=True)  # trending/ranging/volatile
+    atr_at_entry = Column(Float, nullable=True)
+    volatility_percentile = Column(Float, nullable=True)
+    
+    # Analysis context
+    smc_patterns = Column(JSON, nullable=True)  # SMC patterns present
+    ict_setups = Column(JSON, nullable=True)  # ICT setups
+    
+    # Metadata
+    is_winner = Column(Boolean, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Lessons learned
+    notes = Column(String(500), nullable=True)
+
+@dataclass
+class TradeStats:
+    """Aggregate trade statistics"""
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float
+    
+    total_pnl: float
+    average_win: float
+    average_loss: float
+    largest_win: float
+    largest_loss: float
+    
+    average_rr_ratio: float
+    profit_factor: float
+    
+    average_duration_minutes: float
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'total_trades': self.total_trades,
+            'winning_trades': self.winning_trades,
+            'losing_trades': self.losing_trades,
+            'win_rate': round(self.win_rate * 100, 2),
+            'total_pnl': round(self.total_pnl, 2),
+            'average_win': round(self.average_win, 2),
+            'average_loss': round(self.average_loss, 2),
+            'largest_win': round(self.largest_win, 2),
+            'largest_loss': round(self.largest_loss, 2),
+            'average_rr_ratio': round(self.average_rr_ratio, 2),
+            'profit_factor': round(self.profit_factor, 2),
+            'average_duration_minutes': round(self.average_duration_minutes, 2)
+        }
+
+class TradeHistoryManager:
+    """
+    Trade history management
+    
+    Stores and retrieves trade records from PostgreSQL/SQLite
+    Provides aggregation and analysis capabilities
+    """
+    
+    def __init__(self, database_url: str):
+        self.engine = create_engine(database_url)
+        Base.metadata.create_all(self.engine)
+        
+        self.SessionLocal = sessionmaker(bind=self.engine)
+        
+        # Ensure schema is up to date
+        self._ensure_schema()
+        
+        logger.info(f"Trade history manager initialized with DB: {database_url}")
+    
+    def _ensure_schema(self):
+        """
+        Ensure database schema matches the model.
+        Adds missing columns if they don't exist.
+        """
+        from sqlalchemy import inspect, text
+        
+        inspector = inspect(self.engine)
+        
+        # Check if trades table exists
+        if 'trades' not in inspector.get_table_names():
+            logger.info("Trades table doesn't exist, will be created by Base.metadata.create_all")
+            return
+        
+        # Get existing columns
+        existing_columns = {col['name'] for col in inspector.get_columns('trades')}
+        
+        # Define expected columns from the model with their SQL types
+        expected_columns = {
+            'id': 'SERIAL PRIMARY KEY',
+            'trade_id': 'VARCHAR(50) UNIQUE NOT NULL',
+            'symbol': 'VARCHAR(20) NOT NULL',
+            'direction': 'VARCHAR(10) NOT NULL',
+            'strategy_type': 'VARCHAR(20)',
+            'entry_price': 'FLOAT NOT NULL',
+            'entry_time': 'TIMESTAMP NOT NULL',
+            'position_size': 'FLOAT NOT NULL',
+            'exit_price': 'FLOAT',
+            'exit_time': 'TIMESTAMP',
+            'exit_reason': 'VARCHAR(50)',
+            'stop_loss': 'FLOAT NOT NULL',
+            'take_profit_levels': 'JSON',
+            'risk_amount': 'FLOAT NOT NULL',
+            'pnl': 'FLOAT',
+            'pnl_percentage': 'FLOAT',
+            'risk_reward_ratio': 'FLOAT',
+            'duration_minutes': 'FLOAT',
+            'confidence_score': 'FLOAT DEFAULT 0.0',
+            'confluence_count': 'INTEGER DEFAULT 0',
+            'market_regime': 'VARCHAR(20)',
+            'atr_at_entry': 'FLOAT',
+            'volatility_percentile': 'FLOAT',
+            'smc_patterns': 'JSON',
+            'ict_setups': 'JSON',
+            'is_winner': 'BOOLEAN',
+            'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'notes': 'VARCHAR(500)'
+        }
+        
+        # Find missing columns
+        missing_columns = set(expected_columns.keys()) - existing_columns
+        
+        if missing_columns:
+            logger.warning(f"Missing columns detected in trades table: {missing_columns}")
+            
+            # Add missing columns
+            with self.engine.connect() as conn:
+                for col_name in sorted(missing_columns):  # Sort for consistent order
+                    try:
+                        col_type = expected_columns[col_name]
+                        # Remove constraints for ALTER TABLE (can't add NOT NULL to existing table easily)
+                        col_type_clean = col_type.replace(' NOT NULL', '').replace(' UNIQUE', '').replace(' PRIMARY KEY', '')
+                        
+                        sql = f"ALTER TABLE trades ADD COLUMN {col_name} {col_type_clean}"
+                        conn.execute(text(sql))
+                        conn.commit()
+                        logger.info(f"Added column: {col_name} ({col_type_clean})")
+                    except Exception as e:
+                        logger.error(f"Failed to add column {col_name}: {e}")
+                        conn.rollback()
+            
+            logger.info("Schema migration completed")
+        else:
+            logger.debug("Database schema is up to date")
+    
+    def store_trade(
+        self,
+        trade_id: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        entry_time: datetime,
+        position_size: float,
+        stop_loss: float,
+        take_profit_levels: List[float],
+        risk_amount: float,
+        strategy_type: str = "",
+        confidence_score: float = 0.0,
+        confluence_count: int = 0,
+        market_regime: str = "",
+        atr_at_entry: float = 0.0,
+        smc_patterns: Optional[List[str]] = None,
+        ict_setups: Optional[List[str]] = None
+    ) -> TradeRecord:
+        """Store a new trade record"""
+        
+        session = self.SessionLocal()
+        
+        try:
+            trade = TradeRecord(
+                trade_id=trade_id,
+                symbol=symbol,
+                direction=direction,
+                strategy_type=strategy_type,
+                entry_price=entry_price,
+                entry_time=entry_time,
+                position_size=position_size,
+                stop_loss=stop_loss,
+                take_profit_levels=take_profit_levels,
+                risk_amount=risk_amount,
+                confidence_score=confidence_score,
+                confluence_count=confluence_count,
+                market_regime=market_regime,
+                atr_at_entry=atr_at_entry,
+                smc_patterns=smc_patterns or [],
+                ict_setups=ict_setups or []
+            )
+            
+            session.add(trade)
+            session.commit()
+            session.refresh(trade)
+            
+            logger.info(f"Trade stored: {trade_id} - {direction} {symbol} @ ${entry_price}")
+            
+            return trade
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to store trade: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def update_trade_entry(
+        self,
+        trade_id: str,
+        entry_price: float,
+        entry_time: datetime
+    ) -> TradeRecord:
+        """Update trade with actual entry details"""
+        
+        session = self.SessionLocal()
+        
+        try:
+            trade = session.query(TradeRecord).filter_by(trade_id=trade_id).first()
+            
+            if not trade:
+                raise ValueError(f"Trade not found: {trade_id}")
+            
+            # Update entry details
+            trade.entry_price = entry_price
+            trade.entry_time = entry_time
+            
+            session.commit()
+            session.refresh(trade)
+            
+            logger.info(f"Trade entry updated: {trade_id} @ ${entry_price}")
+            
+            return trade
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to update trade entry: {e}")
+            raise
+        finally:
+            session.close()
+
+    def update_trade_exit(
+        self,
+        trade_id: str,
+        exit_price: float,
+        exit_time: datetime,
+        exit_reason: str,
+        notes: Optional[str] = None
+    ) -> TradeRecord:
+        """Update trade with exit details"""
+        
+        session = self.SessionLocal()
+        
+        try:
+            trade = session.query(TradeRecord).filter_by(trade_id=trade_id).first()
+            
+            if not trade:
+                raise ValueError(f"Trade not found: {trade_id}")
+            
+            # Update exit details
+            trade.exit_price = exit_price
+            trade.exit_time = exit_time
+            trade.exit_reason = exit_reason
+            
+            # Calculate P&L
+            if trade.direction == 'LONG':
+                trade.pnl = (exit_price - trade.entry_price) * trade.position_size
+            else:
+                trade.pnl = (trade.entry_price - exit_price) * trade.position_size
+            
+            trade.pnl_percentage = (trade.pnl / (trade.entry_price * trade.position_size)) * 100
+            
+            # Calculate actual RR ratio
+            if trade.risk_amount > 0:
+                if trade.pnl > 0:
+                    trade.risk_reward_ratio = abs(trade.pnl) / trade.risk_amount
+                else:
+                    trade.risk_reward_ratio = -(abs(trade.pnl) / trade.risk_amount)
+            else:
+                trade.risk_reward_ratio = 0.0
+            
+            # Duration
+            trade.duration_minutes = (exit_time - trade.entry_time).total_seconds() / 60
+            
+            # Winner/loser
+            trade.is_winner = trade.pnl > 0
+            
+            # Notes
+            if notes:
+                trade.notes = notes
+            
+            session.commit()
+            session.refresh(trade)
+            
+            logger.info(
+                f"Trade updated: {trade_id} - "
+                f"P&L: ${trade.pnl:.2f} ({trade.pnl_percentage:.2f}%)"
+            )
+            
+            return trade
+            
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to update trade: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def get_trade(self, trade_id: str) -> Optional[TradeRecord]:
+        """Get trade by ID"""
+        session = self.SessionLocal()
+        try:
+            return session.query(TradeRecord).filter_by(trade_id=trade_id).first()
+        finally:
+            session.close()
+    
+    def get_recent_trades(
+        self,
+        limit: int = 100,
+        symbol: Optional[str] = None
+    ) -> List[TradeRecord]:
+        """Get recent trades"""
+        session = self.SessionLocal()
+        try:
+            query = session.query(TradeRecord).order_by(desc(TradeRecord.entry_time))
+            
+            if symbol:
+                query = query.filter_by(symbol=symbol)
+            
+            return query.limit(limit).all()
+        finally:
+            session.close()
+    
+    def get_strategy_performance(self) -> Dict[str, TradeStats]:
+        """Get performance stats grouped by strategy type"""
+        session = self.SessionLocal()
+        try:
+            # Get all strategy types
+            strategies = session.query(TradeRecord.strategy_type).distinct().all()
+            strategies = [s[0] for s in strategies if s[0]]
+            
+            performance = {}
+            for strategy in strategies:
+                stats = self.calculate_stats(strategy_type=strategy)
+                performance[strategy] = stats
+                
+            return performance
+        finally:
+            session.close()
+    
+    def calculate_stats(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+        strategy_type: Optional[str] = None
+    ) -> TradeStats:
+        """Calculate aggregate statistics"""
+        session = self.SessionLocal()
+        
+        try:
+            # Build query
+            query = session.query(TradeRecord).filter(
+                TradeRecord.exit_time.isnot(None)
+            )
+            
+            if start_date:
+                query = query.filter(TradeRecord.entry_time >= start_date)
+            if end_date:
+                query = query.filter(TradeRecord.entry_time <= end_date)
+            if symbol:
+                query = query.filter_by(symbol=symbol)
+            if strategy_type:
+                query = query.filter_by(strategy_type=strategy_type)
+            
+            trades = query.all()
+            
+            if not trades:
+                return TradeStats(
+                    total_trades=0, winning_trades=0, losing_trades=0,
+                    win_rate=0.0, total_pnl=0.0, average_win=0.0,
+                    average_loss=0.0, largest_win=0.0, largest_loss=0.0,
+                    average_rr_ratio=0.0, profit_factor=0.0,
+                    average_duration_minutes=0.0
+                )
+            
+            # Calculate metrics
+            total_trades = len(trades)
+            winners = [t for t in trades if t.is_winner]
+            losers = [t for t in trades if not t.is_winner]
+            
+            winning_trades = len(winners)
+            losing_trades = len(losers)
+            win_rate = winning_trades / total_trades if total_trades > 0 else 0
+            
+            total_pnl = sum(t.pnl for t in trades if t.pnl is not None)
+            
+            wins = [t.pnl for t in winners if t.pnl is not None]
+            losses = [t.pnl for t in losers if t.pnl is not None]
+            
+            average_win = sum(wins) / len(wins) if wins else 0
+            average_loss = sum(losses) / len(losses) if losses else 0
+            
+            largest_win = max(wins) if wins else 0
+            largest_loss = min(losses) if losses else 0
+            
+            rrs = [t.risk_reward_ratio for t in trades if t.risk_reward_ratio is not None]
+            average_rr = sum(rrs) / len(rrs) if rrs else 0
+            
+            gross_profit = sum(wins) if wins else 0
+            gross_loss = abs(sum(losses)) if losses else 0
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+            
+            durations = [t.duration_minutes for t in trades if t.duration_minutes is not None]
+            avg_duration = sum(durations) / len(durations) if durations else 0
+            
+            return TradeStats(
+                total_trades=total_trades,
+                winning_trades=winning_trades,
+                losing_trades=losing_trades,
+                win_rate=win_rate,
+                total_pnl=total_pnl,
+                average_win=average_win,
+                average_loss=average_loss,
+                largest_win=largest_win,
+                largest_loss=largest_loss,
+                average_rr_ratio=average_rr,
+                profit_factor=profit_factor,
+                average_duration_minutes=avg_duration
+            )
+            
+        finally:
+            session.close()

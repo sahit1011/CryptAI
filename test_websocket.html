@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>WebSocket Test</title>
+</head>
+
+<body>
+    <h1>WebSocket Connection Test</h1>
+    <div id="status">Connecting...</div>
+    <div id="messages"></div>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const messagesDiv = document.getElementById('messages');
+
+        function log(message) {
+            const p = document.createElement('p');
+            p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            messagesDiv.appendChild(p);
+            console.log(message);
+        }
+
+        // Test both localhost and 127.0.0.1
+        const urls = [
+            'ws://localhost:8000/ws',
+            'ws://127.0.0.1:8000/ws'
+        ];
+
+        urls.forEach(url => {
+            log(`Attempting to connect to: ${url}`);
+
+            const ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                log(`✅ SUCCESS: Connected to ${url}`);
+                statusDiv.textContent = `Connected to ${url}`;
+                statusDiv.style.color = 'green';
+            };
+
+            ws.onerror = (error) => {
+                log(`❌ ERROR: Failed to connect to ${url}`);
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = (event) => {
+                log(`Connection closed for ${url} - Code: ${event.code}, Reason: ${event.reason}`);
+            };
+
+            ws.onmessage = (event) => {
+                log(`📨 Message from ${url}: ${event.data}`);
+            };
+        });
+    </script>
+</body>
+
+</html>

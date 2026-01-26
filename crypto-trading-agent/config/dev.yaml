@@ -1,0 +1,27 @@
+llm:
+  claude_model: "claude-sonnet-4-20250514"
+  deepseek_model: "tngtech/deepseek-r1t-chimera:free"
+  gpt_model: "gpt-4o"
+  max_retries: 3
+  timeout: 60
+
+exchange:
+  testnet: true
+
+trading:
+  initial_capital: 10000
+  max_risk_per_trade: 0.02
+  max_portfolio_heat: 0.06
+  max_daily_loss: 0.05
+  max_concurrent_positions: 3
+  min_risk_reward: 2.0
+  analysis_interval_seconds: 180
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+  timeframes:
+    - 5m
+    - 15m
+    - 1h
+    - 4h
+    - 1d

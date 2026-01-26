@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Connection Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .connected {
+            background: rgba(16, 185, 129, 0.3);
+            border: 2px solid #10b981;
+        }
+        .disconnected {
+            background: rgba(239, 68, 68, 0.3);
+            border: 2px solid #ef4444;
+        }
+        .waiting {
+            background: rgba(251, 191, 36, 0.3);
+            border: 2px solid #fbbf24;
+        }
+        #messages {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 8px;
+            border-left: 3px solid #10b981;
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .error {
+            border-left-color: #ef4444;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: scale(1.05);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 WebSocket Connection Test</h1>
+        
+        <div id="status" class="status waiting">
+            ⏳ Waiting to connect...
+        </div>
+
+        <div style="text-align: center; margin: 20px 0;">
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+
+        <div id="messages"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        const statusDiv = document.getElementById('status');
+        const messagesDiv = document.getElementById('messages');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+
+        function addMessage(text, isError = false) {
+            const msg = document.createElement('div');
+            msg.className = 'message' + (isError ? ' error' : '');
+            msg.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+            messagesDiv.appendChild(msg);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateStatus(text, className) {
+            statusDiv.textContent = text;
+            statusDiv.className = 'status ' + className;
+        }
+
+        function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                addMessage('Already connected!', true);
+                return;
+            }
+
+            updateStatus('🔄 Connecting...', 'waiting');
+            addMessage('Attempting to connect to ws://127.0.0.1:8000/ws');
+
+            try {
+                ws = new WebSocket('ws://127.0.0.1:8000/ws');
+
+                ws.onopen = () => {
+                    updateStatus('✅ Connected to backend WebSocket', 'connected');
+                    addMessage('✅ WebSocket connection established!');
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                };
+
+                ws.onclose = (event) => {
+                    updateStatus('❌ Disconnected from backend', 'disconnected');
+                    addMessage(`❌ Connection closed. Code: ${event.code}, Reason: ${event.reason || 'No reason provided'}`, true);
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                };
+
+                ws.onerror = (error) => {
+                    updateStatus('❌ WebSocket Error', 'disconnected');
+                    addMessage('❌ WebSocket error occurred. Check if backend is running on port 8000.', true);
+                    console.error('WebSocket error:', error);
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        addMessage(`📨 Received: ${data.type || 'unknown'} - ${JSON.stringify(data).substring(0, 100)}...`);
+                    } catch (e) {
+                        addMessage(`📨 Received (raw): ${event.data.substring(0, 100)}...`);
+                    }
+                };
+            } catch (error) {
+                updateStatus('❌ Connection Failed', 'disconnected');
+                addMessage(`❌ Failed to create WebSocket: ${error.message}`, true);
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                updateStatus('⏸️ Manually disconnected', 'waiting');
+                addMessage('Disconnected by user');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+
+        function clearMessages() {
+            messagesDiv.innerHTML = '';
+        }
+
+        // Auto-connect on page load
+        window.addEventListener('load', () => {
+            setTimeout(connect, 500);
+        });
+    </script>
+</body>
+</html>

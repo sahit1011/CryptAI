@@ -1,0 +1,81 @@
+# Test Configuration for Playground
+
+# Symbols to test
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+
+# Timeframes for analysis
+timeframes:
+  - 1d
+  - 4h
+  - 1h
+  - 15m
+  - 5m
+  - 1m
+
+# Data fetching
+data:
+  source: binance_futures
+  cache_enabled: true
+  cache_ttl_minutes: 5
+  candle_limits:
+    1d: 100
+    4h: 200
+    1h: 300
+    15m: 400
+    5m: 500
+    1m: 200
+
+# LLM Configuration
+llm:
+  primary_provider: openrouter  # openrouter, claude, groq
+  fallback_enabled: true
+  fallback_sequence:
+    - openrouter
+    - claude
+    - groq
+  max_retries: 3
+  timeout_seconds: 60
+  context_size_limit_tokens: 100000
+
+# Regime Detection
+regime:
+  enabled: true
+  detection_method: adx_volatility  # adx_volatility, price_action, hybrid
+  thresholds:
+    trending_adx: 25
+    high_volatility_atr_multiplier: 1.5
+    ranging_bb_width: 0.02
+
+# Analysis Configuration
+analysis:
+  min_confluences: 3
+  confidence_threshold: 0.65
+  smc_enabled: true
+  ict_enabled: true
+  patterns_enabled: true
+  mtf_alignment_required: true
+
+# Performance Targets
+performance:
+  max_analysis_time_seconds: 60
+  max_llm_context_tokens: 100000
+  min_smc_accuracy: 0.80
+  min_ict_accuracy: 0.80
+  min_confluence_count: 3
+
+# Testing
+testing:
+  run_live_data: true
+  compare_with_tradingview: false  # Manual validation
+  save_results: true
+  results_directory: playground/reports
+
+# Logging
+logging:
+  level: INFO
+  file: playground/logs/test.log
+  console_output: true
+  detailed_metrics: true
