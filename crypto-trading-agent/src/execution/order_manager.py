@@ -77,12 +77,24 @@ class OrderManager:
     
     def __init__(self, exchange_client: ExchangeClient):
         self.exchange = exchange_client
-        
+
         # Tracking
         self.active_executions: Dict[str, TradeExecution] = {}
         self.completed_executions: List[TradeExecution] = []
-        
+
         logger.info("Order manager initialized")
+
+    @staticmethod
+    def _coid(execution_id: str, leg: str) -> str:
+        """Deterministic per-leg client order id for idempotency.
+
+        Same (execution_id, leg) always yields the same id, so if execute_trade_setup
+        is retried after a transient failure the exchange dedups by clientOrderID
+        instead of opening a duplicate position. Kept short + alphanumeric to satisfy
+        exchange constraints.
+        """
+        base = execution_id.replace('-', '')[:16]
+        return f"cai{base}{leg}"
     
     async def execute_trade_setup(
         self,
@@ -139,7 +151,8 @@ class OrderManager:
                 direction=direction,
                 quantity=total_quantity,
                 price=entry_price,
-                strategy=strategy
+                strategy=strategy,
+                client_order_id=self._coid(execution_id, "e")
             )
             
             execution.entry_order = entry_order
@@ -170,18 +183,20 @@ class OrderManager:
                 symbol=symbol,
                 direction=direction,
                 quantity=total_quantity,
-                stop_price=stop_loss_price
+                stop_price=stop_loss_price,
+                client_order_id=self._coid(execution_id, "sl")
             )
-            
+
             execution.stop_loss_order = stop_loss_order
-            
+
             # Step 4: Place take-profit orders
-            for tp_level in take_profit_levels:
+            for i, tp_level in enumerate(take_profit_levels):
                 tp_order = await self._place_take_profit(
                     symbol=symbol,
                     direction=direction,
                     quantity=tp_level['size'],
-                    price=tp_level['price']
+                    price=tp_level['price'],
+                    client_order_id=self._coid(execution_id, f"tp{i}")
                 )
                 execution.take_profit_orders.append(tp_order)
             
@@ -209,18 +224,20 @@ class OrderManager:
         direction: str,
         quantity: float,
         price: float,
-        strategy: ExecutionStrategy
+        strategy: ExecutionStrategy,
+        client_order_id: Optional[str] = None
     ) -> Order:
         """Place entry order"""
-        
+
         side = OrderSide.BUY if direction == 'LONG' else OrderSide.SELL
-        
+
         if strategy == ExecutionStrategy.IMMEDIATE:
             # Market order
             order = await self.exchange.place_market_order(
                 symbol=symbol,
                 side=side,
-                quantity=quantity
+                quantity=quantity,
+                client_order_id=client_order_id
             )
         else:
             # Limit order
@@ -228,58 +245,64 @@ class OrderManager:
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
-                price=price
+                price=price,
+                client_order_id=client_order_id
             )
-        
+
         logger.info(f"Entry order placed: {order.order_id}")
-        
+
         return order
-    
+
     async def _place_stop_loss(
         self,
         symbol: str,
         direction: str,
         quantity: float,
-        stop_price: float
+        stop_price: float,
+        client_order_id: Optional[str] = None
     ) -> Order:
         """Place stop-loss order"""
-        
+
         # Opposite side of entry
         side = OrderSide.SELL if direction == 'LONG' else OrderSide.BUY
-        
+
         order = await self.exchange.place_stop_loss_order(
             symbol=symbol,
             side=side,
             quantity=quantity,
-            stop_price=stop_price
+            stop_price=stop_price,
+            reduce_only=True,
+            client_order_id=client_order_id
         )
-        
+
         logger.info(f"Stop-loss order placed: {order.order_id} @ ${stop_price}")
-        
+
         return order
-    
+
     async def _place_take_profit(
         self,
         symbol: str,
         direction: str,
         quantity: float,
-        price: float
+        price: float,
+        client_order_id: Optional[str] = None
     ) -> Order:
         """Place take-profit limit order"""
-        
+
         # Opposite side of entry
         side = OrderSide.SELL if direction == 'LONG' else OrderSide.BUY
-        
+
         order = await self.exchange.place_limit_order(
             symbol=symbol,
             side=side,
             quantity=quantity,
             price=price,
-            reduce_only=True  # CRITICAL FIX: TP orders should close positions, not open new ones
+            reduce_only=True,  # TP orders close the position, never open a new one
+            client_order_id=client_order_id
         )
-        
+
         logger.info(f"Take-profit order placed: {order.order_id} @ ${price}")
-        
+
         return order
     
     async def _wait_for_fill(

@@ -112,7 +112,7 @@ class TechnicalIndicators:
                     indicators['bb_upper'] = upper if upper is not None else bb_result.iloc[:, 0]
                     indicators['bb_middle'] = middle if middle is not None else bb_result.iloc[:, 1]
                     indicators['bb_lower'] = lower if lower is not None else bb_result.iloc[:, 2]
-                    indicators['bb_width'] = (indicators['bb_upper'] - indicators['bb_lower']) / indicators['bb_middle']
+                    indicators['bb_width'] = (indicators['bb_upper'] - indicators['bb_lower']) / indicators['bb_middle'].replace(0, np.nan)
                 else:
                     bb_calc = TechnicalIndicators._calculate_bollinger_bands(df['close'])
                     indicators['bb_upper'] = bb_calc['upper']
@@ -282,12 +282,22 @@ class TechnicalIndicators:
 
     @staticmethod
     def _calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-        """Calculate RSI"""
+        """Calculate RSI
+
+        Guards the zero-loss case (a window with no down moves): rs = gain/loss
+        would divide by zero -> inf. We treat loss==0 as a maxed-out RSI (100)
+        and gain==0 with loss==0 (flat window) as neutral (50).
+        """
         delta = series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
+        # Avoid div-by-zero: replace zero loss with NaN so rs->NaN, then resolve.
+        rs = gain / loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
+        # loss==0 & gain>0  -> all gains -> RSI 100
+        rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+        # loss==0 & gain==0 -> flat window -> neutral 50
+        rsi = rsi.mask((loss == 0) & (gain == 0), 50.0)
         return rsi
 
     @staticmethod
@@ -312,7 +322,9 @@ class TechnicalIndicators:
         std = series.rolling(window=period).std()
         upper = middle + (std * std_dev)
         lower = middle - (std * std_dev)
-        width = (upper - lower) / middle
+        # Guard a zero/NaN middle band (e.g. a flat zero-price window) so width
+        # doesn't become inf; an undefined width is reported as NaN.
+        width = (upper - lower) / middle.replace(0, np.nan)
         
         return {
             'upper': upper,
@@ -338,8 +350,12 @@ class TechnicalIndicators:
         """Calculate Stochastic Oscillator"""
         low_min = df['low'].rolling(window=k_period).min()
         high_max = df['high'].rolling(window=k_period).max()
-        
-        k = 100 * (df['close'] - low_min) / (high_max - low_min)
+
+        # Guard a flat window (high_max == low_min) which would divide by zero.
+        rng = (high_max - low_min).replace(0, np.nan)
+        k = 100 * (df['close'] - low_min) / rng
+        # Flat window -> price sits at the band edge; report neutral 50.
+        k = k.mask(high_max == low_min, 50.0)
         d = k.rolling(window=d_period).mean()
         
         return {
@@ -365,12 +381,16 @@ class TechnicalIndicators:
         neg_dm_smooth = neg_dm.rolling(window=period).sum()
         tr_smooth = tr.rolling(window=period).sum()
         
-        # Calculate +DI and -DI
-        pos_di = 100 * pos_dm_smooth / tr_smooth
-        neg_di = 100 * neg_dm_smooth / tr_smooth
-        
-        # Calculate DX and ADX
-        dx = 100 * np.abs(pos_di - neg_di) / (pos_di + neg_di)
+        # Calculate +DI and -DI. Guard a zero true-range sum (a perfectly flat
+        # window) which would make the directional indicators divide by zero.
+        tr_smooth = tr_smooth.replace(0, np.nan)
+        pos_di = (100 * pos_dm_smooth / tr_smooth).fillna(0)
+        neg_di = (100 * neg_dm_smooth / tr_smooth).fillna(0)
+
+        # Calculate DX and ADX. When +DI and -DI are both zero (no directional
+        # movement) the denominator is zero -> treat DX as 0 (no trend).
+        di_sum = (pos_di + neg_di).replace(0, np.nan)
+        dx = (100 * np.abs(pos_di - neg_di) / di_sum).fillna(0)
         adx = dx.rolling(window=period).mean()
         
         return {
@@ -383,7 +403,10 @@ class TechnicalIndicators:
     def _calculate_vwap(df: pd.DataFrame) -> pd.Series:
         """Calculate VWAP"""
         typical_price = (df['high'] + df['low'] + df['close']) / 3
-        vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+        # Guard zero cumulative volume (no trades yet) -> fall back to typical price.
+        cum_vol = df['volume'].cumsum().replace(0, np.nan)
+        vwap = (typical_price * df['volume']).cumsum() / cum_vol
+        vwap = vwap.fillna(typical_price)
         return vwap
 
     @staticmethod

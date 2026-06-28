@@ -104,17 +104,17 @@ class TestCircuitBreaker:
     
     def test_trigger_manual(self, breaker):
         """Test manual trigger"""
-        breaker.trigger(reason=\"Testing manual trigger\", manual=True)
+        breaker.trigger(reason="Testing manual trigger", manual=True)
         
         assert breaker.active is True
-        assert breaker.reason == \"Testing manual trigger\"
+        assert breaker.reason == "Testing manual trigger"
         assert breaker.triggered_at is not None
         assert len(breaker.trigger_history) == 1
         assert breaker.trigger_history[0]['manual'] is True
     
     def test_trigger_automatic(self, breaker):
         """Test automatic trigger"""
-        breaker.trigger(reason=\"Automatic trigger\", manual=False)
+        breaker.trigger(reason="Automatic trigger", manual=False)
         
         assert breaker.active is True
         assert len(breaker.trigger_history) == 1
@@ -122,29 +122,29 @@ class TestCircuitBreaker:
     
     def test_trigger_when_already_active(self, breaker):
         """Test triggering when already active (should not duplicate)"""
-        breaker.trigger(reason=\"First trigger\", manual=False)
+        breaker.trigger(reason="First trigger", manual=False)
         initial_count = len(breaker.trigger_history)
         
-        breaker.trigger(reason=\"Second trigger\", manual=False)
+        breaker.trigger(reason="Second trigger", manual=False)
         
         # Should not add another trigger
         assert len(breaker.trigger_history) == initial_count
     
     def test_reset_manual(self, breaker):
         """Test manual reset"""
-        breaker.trigger(reason=\"Test\", manual=False)
+        breaker.trigger(reason="Test", manual=False)
         assert breaker.active is True
         
         success = breaker.reset(manual=True)
         
         assert success is True
         assert breaker.active is False
-        assert breaker.reason == \"\"
+        assert breaker.reason == ""
         assert len(breaker.reset_history) == 1
     
     def test_reset_before_cooldown(self, breaker):
         """Test reset before cooldown period (should fail)"""
-        breaker.trigger(reason=\"Test\", manual=False)
+        breaker.trigger(reason="Test", manual=False)
         
         # Try to reset immediately (cooldown not elapsed)
         success = breaker.reset(manual=False)
@@ -156,7 +156,7 @@ class TestCircuitBreaker:
         """Test reset after cooldown period"""
         # Create breaker with 0 minute cooldown for testing
         breaker = CircuitBreaker(cooldown_minutes=0, auto_reset=False)
-        breaker.trigger(reason=\"Test\", manual=False)
+        breaker.trigger(reason="Test", manual=False)
         
         # Reset should succeed immediately
         success = breaker.reset(manual=False)
@@ -172,7 +172,7 @@ class TestCircuitBreaker:
     
     def test_auto_reset_enabled(self, auto_breaker):
         """Test auto-reset functionality"""
-        auto_breaker.trigger(reason=\"Test\", manual=False)
+        auto_breaker.trigger(reason="Test", manual=False)
         assert auto_breaker.active is True
         
         # Simulate time passing (1 minute cooldown)
@@ -187,7 +187,7 @@ class TestCircuitBreaker:
     
     def test_is_active_with_auto_reset(self, auto_breaker):
         """Test is_active checks auto-reset"""
-        auto_breaker.trigger(reason=\"Test\", manual=False)
+        auto_breaker.trigger(reason="Test", manual=False)
         
         # Immediately after trigger
         assert auto_breaker.is_active() is True
@@ -200,18 +200,18 @@ class TestCircuitBreaker:
         status = breaker.get_status()
         
         assert status['active'] is False
-        assert status['reason'] == \"\"
+        assert status['reason'] == ""
         assert status['triggered_at'] is None
         assert status['total_triggers'] == 0
     
     def test_get_status_active(self, breaker):
         """Test getting status when active"""
-        breaker.trigger(reason=\"Test trigger\", manual=False)
+        breaker.trigger(reason="Test trigger", manual=False)
         
         status = breaker.get_status()
         
         assert status['active'] is True
-        assert status['reason'] == \"Test trigger\"
+        assert status['reason'] == "Test trigger"
         assert status['triggered_at'] is not None
         assert 'elapsed_minutes' in status
         assert 'remaining_cooldown_minutes' in status
@@ -219,9 +219,9 @@ class TestCircuitBreaker:
     def test_get_history(self, breaker):
         """Test getting trigger/reset history"""
         # Trigger and reset a few times
-        breaker.trigger(reason=\"Trigger 1\", manual=False)
+        breaker.trigger(reason="Trigger 1", manual=False)
         breaker.reset(manual=True)
-        breaker.trigger(reason=\"Trigger 2\", manual=False)
+        breaker.trigger(reason="Trigger 2", manual=False)
         breaker.reset(manual=True)
         
         history = breaker.get_history(limit=10)
@@ -235,7 +235,7 @@ class TestCircuitBreaker:
         """Test history with limit"""
         # Trigger multiple times
         for i in range(5):
-            breaker.trigger(reason=f\"Trigger {i}\", manual=False)
+            breaker.trigger(reason=f"Trigger {i}", manual=False)
             breaker.reset(manual=True)
         
         history = breaker.get_history(limit=2)
@@ -263,7 +263,7 @@ class TestCircuitBreaker:
     
     def test_clear_history(self, breaker):
         """Test clearing history"""
-        breaker.trigger(reason=\"Test\", manual=False)
+        breaker.trigger(reason="Test", manual=False)
         breaker.reset(manual=True)
         
         assert len(breaker.trigger_history) > 0
@@ -281,22 +281,22 @@ class TestCircuitBreakerCondition:
     def test_condition_creation(self):
         """Test creating a condition"""
         condition = CircuitBreakerCondition(
-            name=\"test_condition\",
-            description=\"Test condition\",
+            name="test_condition",
+            description="Test condition",
             threshold=0.05,
             current_value=0.06,
             triggered=True
         )
         
-        assert condition.name == \"test_condition\"
+        assert condition.name == "test_condition"
         assert condition.triggered is True
         assert condition.current_value > condition.threshold
     
     def test_condition_to_dict(self):
         """Test condition serialization"""
         condition = CircuitBreakerCondition(
-            name=\"daily_loss\",
-            description=\"Daily loss limit\",
+            name="daily_loss",
+            description="Daily loss limit",
             threshold=0.05,
             current_value=0.06,
             triggered=True,
@@ -306,5 +306,5 @@ class TestCircuitBreakerCondition:
         # Should be able to convert to dict via __dict__
         cond_dict = condition.__dict__
         
-        assert cond_dict['name'] == \"daily_loss\"
+        assert cond_dict['name'] == "daily_loss"
         assert cond_dict['triggered'] is True

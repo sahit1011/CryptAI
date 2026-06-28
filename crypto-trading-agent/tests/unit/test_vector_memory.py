@@ -3,7 +3,26 @@ Unit tests for Vector Memory Store
 """
 import pytest
 from unittest.mock import MagicMock, patch
-from src.memory.vector_memory import VectorMemoryStore, SimilarTrade
+from src.memory.vector_memory import (
+    VectorMemoryStore,
+    SimilarTrade,
+    cosine_distance_to_similarity,
+)
+
+
+@pytest.mark.parametrize(
+    "distance,expected",
+    [
+        (0.0, 1.0),    # identical vectors -> max similarity
+        (1.0, 0.0),    # orthogonal
+        (0.1, 0.9),
+        (0.5, 0.5),
+        (2.0, -1.0),   # opposite vectors -> min cosine similarity
+    ],
+)
+def test_cosine_distance_to_similarity(distance, expected):
+    """Cosine: similarity = 1 - distance (pure mapping)."""
+    assert cosine_distance_to_similarity(distance) == pytest.approx(expected)
 
 @pytest.fixture
 def mock_openai():

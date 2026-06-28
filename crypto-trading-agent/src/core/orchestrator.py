@@ -381,8 +381,11 @@ class TradingOrchestrator:
                     "Memory Agent timeout - using regime from Analysis Agent",
                     agent="orchestrator"
                 )
-                if state.get('analysis') and state['analysis'].get('market_regime'):
-                    state['regime'] = state['analysis']['market_regime']
+                # FIX: TradingState only defines 'analysis_result' (set by the
+                # analyze_market node). The old code read a non-existent
+                # 'analysis' key, so this fallback never populated the regime.
+                if state.get('analysis_result') and state['analysis_result'].get('market_regime'):
+                    state['regime'] = state['analysis_result']['market_regime']
                     state['phase'] = WorkflowPhase.REGIME_DETECTION.value
                     plog.info(
                         f"✅ Regime: {state['regime'].get('type', 'UNKNOWN')} (using fallback - Analysis Agent provides actual regime)",
@@ -406,8 +409,9 @@ class TradingOrchestrator:
         except Exception as e:
             # CRITICAL FIX: Don't fail the cycle - use fallback regime
             plog.warning(f"Regime detection error: {e}, using fallback", agent="orchestrator")
-            if state.get('analysis') and state['analysis'].get('market_regime'):
-                state['regime'] = state['analysis']['market_regime']
+            # FIX: read 'analysis_result' (the real state key), not 'analysis'.
+            if state.get('analysis_result') and state['analysis_result'].get('market_regime'):
+                state['regime'] = state['analysis_result']['market_regime']
             else:
                 state['regime'] = {
                     'type': 'UNKNOWN',
@@ -667,14 +671,18 @@ class TradingOrchestrator:
         if state.get('errors'):
             return "skip"
         
-        regime = state.get('regime', {})
-        regime_type = regime.get('regime', '')
-        
+        regime = state.get('regime', {}) or {}
+        # Regime dicts come from two sources with different key names:
+        #   - Memory Agent (MarketRegimeDetector): {'regime': 'volatile', ...}
+        #   - Analysis Agent fallback:             {'type': 'volatile', ...}
+        # Check both so the volatile skip fires regardless of source.
+        regime_type = str(regime.get('regime') or regime.get('type') or '')
+
         # Skip if regime is unfavorable (e.g., highly volatile)
         if 'volatile' in regime_type.lower():
             plog.info("ℹ️ Skipping strategy generation due to volatile regime", agent="orchestrator")
             return "skip"
-        
+
         return "generate"
     
     def _has_opportunities(self, state: TradingState) -> str:

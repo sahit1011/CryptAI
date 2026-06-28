@@ -14,6 +14,12 @@ from loguru import logger
 import aiohttp
 import asyncio
 
+from src.execution.error_handler import (
+    ErrorClassifier,
+    NetworkException,
+    ExchangeException,
+)
+
 
 class OrderType(Enum):
     """Order types"""
@@ -161,11 +167,20 @@ class ExchangeClient(ABC):
         symbol: str,
         side: OrderSide,
         quantity: float,
+        *,
+        reduce_only: bool = False,
+        position_side: str = "BOTH",
         client_order_id: Optional[str] = None
     ) -> Order:
-        """Place market order"""
+        """Place market order.
+
+        Unified order interface implemented by both the live exchange client and
+        the paper-trading engine (a contract test enforces signature parity).
+        reduce_only/position_side/client_order_id are keyword-only so existing
+        positional callers keep working.
+        """
         pass
-    
+
     @abstractmethod
     async def place_limit_order(
         self,
@@ -173,11 +188,14 @@ class ExchangeClient(ABC):
         side: OrderSide,
         quantity: float,
         price: float,
+        *,
+        reduce_only: bool = False,
+        position_side: str = "BOTH",
         client_order_id: Optional[str] = None
     ) -> Order:
         """Place limit order"""
         pass
-    
+
     @abstractmethod
     async def place_stop_loss_order(
         self,
@@ -185,11 +203,14 @@ class ExchangeClient(ABC):
         side: OrderSide,
         quantity: float,
         stop_price: float,
+        *,
+        reduce_only: bool = True,
+        position_side: str = "BOTH",
         client_order_id: Optional[str] = None
     ) -> Order:
         """Place stop-loss order"""
         pass
-    
+
     @abstractmethod
     async def cancel_order(
         self,
@@ -197,6 +218,27 @@ class ExchangeClient(ABC):
         order_id: str
     ) -> bool:
         """Cancel order"""
+        pass
+
+    @abstractmethod
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """Cancel all open orders for a symbol"""
+        pass
+
+    @abstractmethod
+    async def close_position(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        *,
+        position_side: str = "BOTH",
+        client_order_id: Optional[str] = None
+    ) -> Order:
+        """Close (reduce-only) an open position with a market order.
+
+        `side` is the closing side (SELL to close a LONG, BUY to close a SHORT).
+        """
         pass
     
     @abstractmethod
@@ -254,6 +296,23 @@ class BingXClient(ExchangeClient):
         
         return signature
     
+    @staticmethod
+    def _format_symbol(symbol: str) -> str:
+        """Normalize a symbol to BingX swap format (e.g. BTC-USDT).
+
+        Upstream uses 'BTCUSDT' / 'BTC/USDT'; BingX perpetual-swap endpoints expect
+        a hyphenated 'BASE-QUOTE'. Validate on BingX VST testnet before live use.
+        """
+        if not symbol:
+            return symbol
+        if '-' in symbol:
+            return symbol
+        s = symbol.replace('/', '')
+        for quote in ('USDT', 'USDC', 'USD'):
+            if s.endswith(quote) and len(s) > len(quote):
+                return f"{s[:-len(quote)]}-{quote}"
+        return symbol
+
     async def _request(
         self,
         method: str,
@@ -261,158 +320,225 @@ class BingXClient(ExchangeClient):
         params: Optional[Dict[str, Any]] = None,
         signed: bool = True
     ) -> Dict[str, Any]:
-        """Make authenticated API request"""
-        
+        """Make an authenticated BingX request.
+
+        BingX computes the HMAC signature over the sorted query string and expects
+        the signed parameters in the QUERY STRING for every method (including POST
+        and DELETE). The previous implementation sent POST/DELETE params as a JSON
+        body, so the body never matched the query-string signature and every live
+        order was rejected with a signature error. We now always pass params as the
+        query string and append the signature last (it must not itself be signed).
+        Transient transport/rate-limit failures are raised as typed, retryable
+        exceptions so RetryHandler can act on them.
+        """
+
         await self._ensure_session()
         self._check_rate_limit()
-        
+
         if params is None:
             params = {}
-        
-        # Add timestamp
+
         if signed:
+            # recvWindow guards against timestamp drift rejections.
+            params.setdefault('recvWindow', 5000)
             params['timestamp'] = int(time.time() * 1000)
+            # Signature is computed over all params and appended last (never signed).
             params['signature'] = self._sign_request(params)
-        
-        headers = {
-            'X-BX-APIKEY': self.api_key,
-            'Content-Type': 'application/json'
-        }
-        
+
+        headers = {'X-BX-APIKEY': self.api_key}
         url = f"{self.base_url}{endpoint}"
-        
+
         try:
-            if method == 'GET':
-                async with self.session.get(url, params=params, headers=headers) as response:
-                    data = await response.json()
-            elif method == 'POST':
-                async with self.session.post(url, json=params, headers=headers) as response:
-                    data = await response.json()
-            elif method == 'DELETE':
-                async with self.session.delete(url, params=params, headers=headers) as response:
-                    data = await response.json()
-            else:
-                raise ValueError(f"Unsupported method: {method}")
-            
-            # Check for errors
-            if data.get('code') != 0:
-                raise Exception(f"BingX API error: {data.get('msg')}")
-            
-            return data.get('data', data)
-            
-        except Exception as e:
-            logger.error(f"BingX API request failed: {e}")
-            raise
+            # Always send signed params in the query string so the transport matches
+            # the signature, regardless of HTTP method.
+            async with self.session.request(method, url, params=params, headers=headers) as response:
+                text = await response.text()
+                try:
+                    data = await response.json(content_type=None)
+                except Exception:
+                    raise ExchangeException(
+                        f"BingX returned non-JSON (HTTP {response.status}): {text[:200]}"
+                    )
+                # HTTP-level errors -> classify (5xx/timeouts are retryable network errors)
+                if response.status >= 500:
+                    raise NetworkException(f"BingX HTTP {response.status}: {text[:200]}")
+                if response.status == 429:
+                    raise ErrorClassifier.classify_error("rate limit", str(response.status))
+                if response.status >= 400:
+                    raise ErrorClassifier.classify_error(
+                        f"{data.get('msg', text[:200])}", str(response.status)
+                    )
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            # Connection resets / DNS / timeouts -> retryable network error.
+            logger.error(f"BingX network error: {e}")
+            raise NetworkException(f"BingX network error: {e}") from e
+
+        # BingX application-level error (code != 0) -> classify by message/code so the
+        # retry handler retries transient ones and fails fast on auth/param errors.
+        code = data.get('code')
+        if code not in (0, None):
+            msg = data.get('msg', 'unknown error')
+            logger.error(f"BingX API error (code={code}): {msg}")
+            raise ErrorClassifier.classify_error(msg, str(code))
+
+        return data.get('data', data)
     
+    def _order_params(
+        self,
+        symbol: str,
+        side: OrderSide,
+        order_type: str,
+        quantity: float,
+        position_side: str,
+        reduce_only: bool,
+        client_order_id: Optional[str],
+        price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Build a BingX swap-v2 order parameter dict (shared by all order types).
+
+        positionSide=BOTH is one-way mode (the default). reduceOnly is only honored
+        by BingX in one-way mode; in hedge mode you close by the opposite
+        positionSide instead. Validate the exact field semantics on VST testnet.
+        """
+        params: Dict[str, Any] = {
+            'symbol': self._format_symbol(symbol),
+            'side': 'BUY' if side == OrderSide.BUY else 'SELL',
+            'positionSide': position_side,
+            'type': order_type,
+            'quantity': quantity,
+        }
+        if price is not None:
+            params['price'] = price
+            params['timeInForce'] = 'GTC'
+        if stop_price is not None:
+            params['stopPrice'] = stop_price
+        # reduceOnly is only meaningful in one-way (BOTH) mode.
+        if reduce_only and position_side == 'BOTH':
+            params['reduceOnly'] = 'true'
+        if client_order_id:
+            params['clientOrderID'] = client_order_id
+        return params
+
     async def place_market_order(
         self,
         symbol: str,
         side: OrderSide,
         quantity: float,
+        *,
+        reduce_only: bool = False,
+        position_side: str = "BOTH",
         client_order_id: Optional[str] = None
     ) -> Order:
         """Place market order on BingX"""
-        
-        params = {
-            'symbol': symbol,
-            'side': 'BUY' if side == OrderSide.BUY else 'SELL',
-            'type': 'MARKET',
-            'quantity': quantity
-        }
-        
-        if client_order_id:
-            params['clientOrderId'] = client_order_id
-        
-        logger.info(f"Placing BingX market order: {side.value} {quantity} {symbol}")
-        
+
+        params = self._order_params(
+            symbol, side, 'MARKET', quantity, position_side, reduce_only, client_order_id
+        )
+
+        logger.info(f"Placing BingX market order: {side.value} {quantity} {symbol} (reduce_only={reduce_only})")
+
         response = await self._request('POST', '/openApi/swap/v2/trade/order', params)
-        
-        # Parse response into Order object
         order = self._parse_order(response)
-        
         logger.info(f"Market order placed: {order.order_id}")
-        
         return order
-    
+
     async def place_limit_order(
         self,
         symbol: str,
         side: OrderSide,
         quantity: float,
         price: float,
+        *,
+        reduce_only: bool = False,
+        position_side: str = "BOTH",
         client_order_id: Optional[str] = None
     ) -> Order:
         """Place limit order on BingX"""
-        
-        params = {
-            'symbol': symbol,
-            'side': 'BUY' if side == OrderSide.BUY else 'SELL',
-            'type': 'LIMIT',
-            'quantity': quantity,
-            'price': price,
-            'timeInForce': 'GTC'
-        }
-        
-        if client_order_id:
-            params['clientOrderId'] = client_order_id
-        
-        logger.info(f"Placing BingX limit order: {side.value} {quantity} {symbol} @ ${price}")
-        
+
+        params = self._order_params(
+            symbol, side, 'LIMIT', quantity, position_side, reduce_only, client_order_id, price=price
+        )
+
+        logger.info(f"Placing BingX limit order: {side.value} {quantity} {symbol} @ ${price} (reduce_only={reduce_only})")
+
         response = await self._request('POST', '/openApi/swap/v2/trade/order', params)
-        
         order = self._parse_order(response)
-        
         logger.info(f"Limit order placed: {order.order_id}")
-        
         return order
-    
+
     async def place_stop_loss_order(
         self,
         symbol: str,
         side: OrderSide,
         quantity: float,
         stop_price: float,
+        *,
+        reduce_only: bool = True,
+        position_side: str = "BOTH",
         client_order_id: Optional[str] = None
     ) -> Order:
-        """Place stop-loss order on BingX"""
-        
-        params = {
-            'symbol': symbol,
-            'side': 'BUY' if side == OrderSide.BUY else 'SELL',
-            'type': 'STOP_MARKET',
-            'quantity': quantity,
-            'stopPrice': stop_price
-        }
-        
-        if client_order_id:
-            params['clientOrderId'] = client_order_id
-        
+        """Place stop-loss (STOP_MARKET) order on BingX"""
+
+        params = self._order_params(
+            symbol, side, 'STOP_MARKET', quantity, position_side, reduce_only, client_order_id, stop_price=stop_price
+        )
+
         logger.info(f"Placing BingX stop-loss: {side.value} {quantity} {symbol} @ ${stop_price}")
-        
+
         response = await self._request('POST', '/openApi/swap/v2/trade/order', params)
-        
         order = self._parse_order(response)
-        
         logger.info(f"Stop-loss order placed: {order.order_id}")
-        
         return order
-    
+
+    async def close_position(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        *,
+        position_side: str = "BOTH",
+        client_order_id: Optional[str] = None
+    ) -> Order:
+        """Reduce-only market close of an open position."""
+        params = self._order_params(
+            symbol, side, 'MARKET', quantity, position_side, reduce_only=True, client_order_id=client_order_id
+        )
+        logger.warning(f"Closing BingX position (reduce-only): {side.value} {quantity} {symbol}")
+        response = await self._request('POST', '/openApi/swap/v2/trade/order', params)
+        order = self._parse_order(response)
+        logger.info(f"Close order placed: {order.order_id}")
+        return order
+
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Cancel order on BingX"""
-        
+
         params = {
-            'symbol': symbol,
+            'symbol': self._format_symbol(symbol),
             'orderId': order_id
         }
-        
+
         logger.info(f"Canceling BingX order: {order_id}")
-        
+
         try:
             await self._request('DELETE', '/openApi/swap/v2/trade/order', params)
             logger.info(f"Order canceled: {order_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to cancel order {order_id}: {e}")
+            return False
+
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """Cancel all open orders for a symbol on BingX."""
+        params = {'symbol': self._format_symbol(symbol)}
+        logger.warning(f"Cancelling all BingX orders for {symbol}")
+        try:
+            await self._request('DELETE', '/openApi/swap/v2/trade/allOpenOrders', params)
+            logger.info(f"All orders cancelled for {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cancel all orders for {symbol}: {e}")
             return False
     
     async def get_order_status(self, symbol: str, order_id: str) -> Order:
@@ -511,7 +637,16 @@ class CoinDCXClient(ExchangeClient):
     
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         raise NotImplementedError("CoinDCX client not yet implemented")
-    
+
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        raise NotImplementedError("CoinDCX client not yet implemented")
+
+    async def close_position(
+        self, symbol: str, side: OrderSide, quantity: float,
+        *, position_side: str = "BOTH", client_order_id: Optional[str] = None
+    ) -> Order:
+        raise NotImplementedError("CoinDCX client not yet implemented")
+
     async def get_order_status(self, symbol: str, order_id: str) -> Order:
         raise NotImplementedError("CoinDCX client not yet implemented")
     

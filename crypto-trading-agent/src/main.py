@@ -68,9 +68,11 @@ class TradingSystem:
         plog.info("🔧 Initializing infrastructure...", agent="system", phase="startup")
         
         try:
-            # Initialize Message Bus
+            # Initialize Message Bus (redis_url is required — read from config, which
+            # falls back to redis://localhost:6379). Previously called with no args,
+            # which raised TypeError and aborted startup before anything ran.
             plog.info("  ├─ Initializing Message Bus", agent="system")
-            self.message_bus = MessageBus()
+            self.message_bus = MessageBus(redis_url=self.config.database.redis_url)
             await self.message_bus.connect()
             
             # Initialize State Manager

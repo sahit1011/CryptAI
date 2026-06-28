@@ -606,21 +606,58 @@ class PaperTradingEngine:
         order = self.orders.get(order_id)
         return order.to_dict() if order else None
     
-    async def cancel_order(self, order_id: str) -> Dict[str, Any]:
-        """Cancel an open order"""
+    async def cancel_order(self, symbol: str, order_id: Optional[str] = None) -> Dict[str, Any]:
+        """Cancel an open order.
+
+        Unified interface is cancel_order(symbol, order_id); for backward
+        compatibility, cancel_order(order_id) (single arg) is also accepted.
+        """
+        if order_id is None:
+            order_id = symbol  # single-arg legacy call
         order = self.orders.get(order_id)
         if not order:
             return {"error": "Order not found"}
-        
+
         if order.status != OrderStatus.OPEN:
             return {"error": f"Cannot cancel order with status {order.status.value}"}
-        
+
         order.status = OrderStatus.CANCELED
         order.updated_at = datetime.now()
-        
+
         logger.info(f"Order canceled: {order_id}")
         return order.to_dict()
-    
+
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        """Cancel all open orders for a symbol (unified interface parity)."""
+        cancelled = 0
+        for oid, order in list(self.orders.items()):
+            if order.status == OrderStatus.OPEN and getattr(order, 'symbol', None) in (symbol, symbol.replace('/', '')):
+                order.status = OrderStatus.CANCELED
+                order.updated_at = datetime.now()
+                cancelled += 1
+        logger.info(f"Cancelled {cancelled} open paper order(s) for {symbol}")
+        return True
+
+    async def close_position(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        *,
+        position_side: str = "BOTH",
+        client_order_id: Optional[str] = None
+    ):
+        """Reduce-only market close of a paper position (unified interface parity)."""
+        return await self.place_market_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            reduce_only=True,
+            position_side=position_side,
+            client_order_id=client_order_id,
+        )
+
+
     def get_performance_summary(self) -> Dict[str, Any]:
         """Get trading performance summary"""
         total_equity = self.get_total_equity()
@@ -842,9 +879,13 @@ class PaperTradingEngine:
         self,
         symbol: str,
         side: OrderSide,
-        quantity: float
+        quantity: float,
+        *,
+        reduce_only: bool = False,
+        position_side: str = "BOTH",
+        client_order_id: Optional[str] = None
     ):
-        """Place market order (OrderManager interface)"""
+        """Place market order (unified OrderManager interface — matches BingXClient)."""
         # CRITICAL FIX: Ensure current price is set before placing order
         if symbol not in self.current_prices or self.current_prices[symbol] == 0:
             # Try to get price from symbol (remove slash for internal format)
@@ -878,15 +919,16 @@ class PaperTradingEngine:
             symbol=symbol,
             side=side,
             order_type=OrderType.MARKET,
-            quantity=quantity
+            quantity=quantity,
+            reduce_only=reduce_only
         )
-        
+
         # Convert to Order object for compatibility
         from src.execution.exchange_client import Order, OrderStatus as ExchangeOrderStatus
-        
+
         return Order(
             order_id=result['orderId'],
-            client_order_id="",
+            client_order_id=client_order_id or "",
             symbol=result['symbol'],
             side=result['side'],
             order_type=result['type'],
@@ -905,9 +947,12 @@ class PaperTradingEngine:
         side: OrderSide,
         quantity: float,
         price: float,
-        reduce_only: bool = False
+        *,
+        reduce_only: bool = False,
+        position_side: str = "BOTH",
+        client_order_id: Optional[str] = None
     ):
-        """Place limit order (OrderManager interface)"""
+        """Place limit order (unified OrderManager interface — matches BingXClient)."""
         result = await self.place_order(
             symbol=symbol,
             side=side,
@@ -916,12 +961,12 @@ class PaperTradingEngine:
             price=price,
             reduce_only=reduce_only
         )
-        
+
         from src.execution.exchange_client import Order, OrderStatus as ExchangeOrderStatus
-        
+
         return Order(
             order_id=result['orderId'],
-            client_order_id="",
+            client_order_id=client_order_id or "",
             symbol=result['symbol'],
             side=result['side'],
             order_type=result['type'],
@@ -939,23 +984,27 @@ class PaperTradingEngine:
         symbol: str,
         side: OrderSide,
         quantity: float,
-        stop_price: float
+        stop_price: float,
+        *,
+        reduce_only: bool = True,
+        position_side: str = "BOTH",
+        client_order_id: Optional[str] = None
     ):
-        """Place stop-loss order (OrderManager interface)"""
+        """Place stop-loss order (unified OrderManager interface — matches BingXClient)."""
         result = await self.place_order(
             symbol=symbol,
             side=side,
             order_type=OrderType.STOP_MARKET,
             quantity=quantity,
             stop_price=stop_price,
-            reduce_only=True
+            reduce_only=reduce_only
         )
         
         from src.execution.exchange_client import Order, OrderStatus as ExchangeOrderStatus
         
         return Order(
             order_id=result['orderId'],
-            client_order_id="",
+            client_order_id=client_order_id or "",
             symbol=result['symbol'],
             side=result['side'],
             order_type=result['type'],

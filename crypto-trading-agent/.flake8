@@ -1,0 +1,28 @@
+[flake8]
+# Curated config: this is a large existing codebase, so the CI lint step is scoped to
+# catch real errors (undefined names, syntax errors) rather than enforce full style.
+max-line-length = 120
+
+# E203/W503 conflict with black's formatting; E501 (line length) is handled by
+# max-line-length above. The remaining ignores silence stylistic-only checks so the
+# lint gate focuses on correctness (the F-series: pyflakes).
+extend-ignore =
+    E203,
+    E266,
+    E501,
+    W503,
+    E402,
+
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist,
+    alembic/versions,
+    playground
+
+# Allow imports that aren't used at module top-level in package __init__ files.
+per-file-ignores =
+    __init__.py: F401

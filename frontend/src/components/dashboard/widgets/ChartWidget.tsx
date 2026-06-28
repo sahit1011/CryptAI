@@ -464,10 +464,12 @@ export function ChartWidget() {
                     </div>
                 )}
 
-                {/* Overlay for Agent Annotations (Placeholder) */}
+                {/* Placeholder for future agent chart annotations (e.g. order
+                    blocks). No real annotation feed is wired yet, so it is clearly
+                    marked as a demo rather than presented as a live signal. */}
                 <div className="absolute top-4 left-4 pointer-events-none">
-                    <div className="bg-purple-500/10 border border-purple-500/20 text-purple-400 text-xs px-2 py-1 rounded backdrop-blur-sm mb-2">
-                        Order Block Detected (4H)
+                    <div className="bg-white/5 border border-white/10 text-muted-foreground text-xs px-2 py-1 rounded backdrop-blur-sm mb-2">
+                        Agent annotations · Coming soon
                     </div>
                 </div>
             </CardContent>

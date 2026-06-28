@@ -8,7 +8,32 @@ from loguru import logger
 import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+import logging
 import os
+
+# Per-request timeout (seconds) for OpenAI embedding calls so a hung
+# network request can't block trade persistence indefinitely.
+EMBEDDING_TIMEOUT_SECONDS = 15.0
+# Number of attempts (initial try + retries) for transient embedding failures.
+EMBEDDING_MAX_ATTEMPTS = 3
+
+
+def cosine_distance_to_similarity(distance: float) -> float:
+    """Map a ChromaDB cosine *distance* to a cosine *similarity* score.
+
+    ChromaDB (with ``hnsw:space="cosine"``) returns ``distance = 1 - cosine_similarity``.
+    Therefore ``similarity = 1 - distance``. For unit-normalized embeddings this
+    yields the familiar [-1, 1] cosine range; identical vectors give distance 0 ->
+    similarity 1.0. Pure and unit-testable.
+    """
+    return 1.0 - float(distance)
 
 @dataclass
 class SimilarTrade:
@@ -50,10 +75,17 @@ class VectorMemoryStore:
                 anonymized_telemetry=False
             ))
         
-        # Create or get collection
+        # Create or get collection.
+        # Explicitly pin the distance metric to cosine via `hnsw:space`.
+        # Without this, ChromaDB defaults to L2 (squared euclidean), which
+        # breaks the distance->similarity mapping below. OpenAI embeddings are
+        # unit-normalized, so cosine is the correct metric.
         self.collection = self.client.get_or_create_collection(
             name="trade_memory",
-            metadata={"description": "Trade history with embeddings"}
+            metadata={
+                "description": "Trade history with embeddings",
+                "hnsw:space": "cosine",
+            }
         )
         
         # OpenAI client for embeddings
@@ -92,25 +124,42 @@ class VectorMemoryStore:
         
         return desc.strip()
     
+    @retry(
+        stop=stop_after_attempt(EMBEDDING_MAX_ATTEMPTS),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+        reraise=True,
+    )
     def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI"""
-        try:
-            response = self.openai_client.embeddings.create(
-                model="text-embedding-3-small",
-                input=text
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Embedding generation failed: {e}")
-            raise
+        """Generate embedding using OpenAI.
+
+        Applies a per-request timeout and retries transient failures with
+        exponential backoff. After exhausting retries the final exception is
+        re-raised so callers can degrade gracefully.
+        """
+        # `with_options(timeout=...)` bounds each individual request so a hung
+        # connection can't stall trade persistence; retry handles transients.
+        client = self.openai_client.with_options(timeout=EMBEDDING_TIMEOUT_SECONDS)
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        return response.data[0].embedding
     
     def store_trade(
         self,
         trade_id: str,
         trade_data: Dict[str, Any]
-    ):
-        """Store trade in vector memory"""
-        
+    ) -> bool:
+        """Store trade in vector memory.
+
+        Vector memory is a best-effort, secondary store used for similarity
+        search. A failure here (e.g. embedding API outage) must NOT crash the
+        authoritative trade persistence path, so this method logs and returns
+        ``False`` on failure instead of raising. Returns ``True`` on success.
+        """
+
         try:
             # Create description
             description = self._create_trade_description(trade_data)
@@ -138,16 +187,22 @@ class VectorMemoryStore:
             )
             
             logger.debug(f"Trade stored in vector memory: {trade_id}")
-            
+            return True
+
         except Exception as e:
-            logger.error(f"Failed to store trade in vector memory: {e}")
-            raise
+            # Degrade gracefully: vector memory is non-critical, do not let its
+            # failure abort the caller's (already-completed) primary persistence.
+            logger.error(
+                f"Failed to store trade in vector memory (non-fatal, "
+                f"trade_id={trade_id}): {e}"
+            )
+            return False
     
     def find_similar_trades(
         self,
         current_setup: Dict[str, Any],
         n_results: int = 5,
-        min_similarity: float = 0.0  # Chroma returns distance, not similarity directly usually, but let's assume we handle it
+        min_similarity: float = 0.0  # cosine similarity threshold (1 - chroma cosine distance)
     ) -> List[SimilarTrade]:
         """Find similar historical trades"""
         
@@ -175,15 +230,11 @@ class VectorMemoryStore:
             metadatas = results['metadatas'][0]
             
             for i, trade_id in enumerate(ids):
-                # Convert distance to similarity score (approximate)
-                # Cosine distance is 0 to 2. 0 is identical.
-                # Similarity = 1 - (distance / 2) ? Or just 1 - distance if normalized?
-                # OpenAI embeddings are normalized, so dot product is cosine similarity.
-                # Chroma default is L2? Or Cosine?
-                # Assuming L2 for now.
+                # The collection is configured with cosine distance
+                # (hnsw:space="cosine"), so similarity = 1 - distance.
                 distance = distances[i]
-                similarity = 1.0 / (1.0 + distance) # Simple conversion
-                
+                similarity = cosine_distance_to_similarity(distance)
+
                 if similarity >= min_similarity:
                     similar_trades.append(SimilarTrade(
                         trade_id=trade_id,

@@ -3,6 +3,8 @@
 import { useEffect, useRef } from 'react'
 import { create } from 'zustand'
 import { useStore } from '@/store/useStore'
+import { WS_URL } from '@/lib/api'
+import { safeNum, safeDiv } from '@/lib/utils'
 
 interface TickerData {
     s: string // Symbol
@@ -53,8 +55,9 @@ export function useMarketData() {
                 return
             }
 
-            // Try localhost as it might resolve better in some environments
-            const url = 'ws://localhost:8000/ws'
+            // Backend WebSocket URL comes from NEXT_PUBLIC_WS_URL (falls back to
+            // localhost for dev). Use wss:// in production to avoid mixed-content.
+            const url = WS_URL
             console.log('Attempting to connect to WebSocket:', url)
 
             try {
@@ -204,16 +207,18 @@ export function useMarketData() {
 
             if (updateType === 'balance_update') {
                 console.log('📊 Portfolio update received:', execPayload);
+                const totalPnl = safeNum(execPayload.realized_pnl) + safeNum(execPayload.unrealized_pnl);
                 useStore.getState().setPortfolio({
-                    totalValue: execPayload.total_equity,
-                    totalInvested: execPayload.total_equity - execPayload.current_balance,
-                    totalPnl: execPayload.realized_pnl + execPayload.unrealized_pnl,
-                    totalPnlPercent: ((execPayload.realized_pnl + execPayload.unrealized_pnl) / execPayload.initial_balance) * 100,
-                    balance: execPayload.current_balance,
-                    unrealizedPnl: execPayload.unrealized_pnl,
-                    realizedPnl: execPayload.realized_pnl,
-                    winRate: execPayload.win_rate,
-                    totalTrades: execPayload.total_trades
+                    totalValue: safeNum(execPayload.total_equity),
+                    totalInvested: safeNum(execPayload.total_equity) - safeNum(execPayload.current_balance),
+                    totalPnl,
+                    // Guard a zero/missing initial_balance which would yield NaN/Infinity.
+                    totalPnlPercent: safeDiv(totalPnl, execPayload.initial_balance) * 100,
+                    balance: safeNum(execPayload.current_balance),
+                    unrealizedPnl: safeNum(execPayload.unrealized_pnl),
+                    realizedPnl: safeNum(execPayload.realized_pnl),
+                    winRate: safeNum(execPayload.win_rate),
+                    totalTrades: safeNum(execPayload.total_trades)
                 });
             } else if (updateType === 'position_update') {
                 console.log('📈 Position update received:', execPayload);
@@ -221,13 +226,17 @@ export function useMarketData() {
                     id: pos.position_id || `${pos.symbol}-${Date.now()}`,  // CRITICAL FIX: Use unique position_id
                     symbol: pos.symbol,
                     side: pos.positionSide,
-                    entry: parseFloat(pos.entryPrice),
-                    current: parseFloat(pos.markPrice),
-                    pnl: parseFloat(pos.unRealizedProfit),
-                    pnlPercent: (parseFloat(pos.unRealizedProfit) / (parseFloat(pos.entryPrice) * parseFloat(pos.positionAmt))) * 100,
+                    entry: safeNum(pos.entryPrice),
+                    current: safeNum(pos.markPrice),
+                    pnl: safeNum(pos.unRealizedProfit),
+                    // Guard a zero notional (entryPrice * positionAmt) -> NaN/Infinity.
+                    pnlPercent: safeDiv(
+                        safeNum(pos.unRealizedProfit),
+                        safeNum(pos.entryPrice) * safeNum(pos.positionAmt)
+                    ) * 100,
                     status: 'OPEN',
-                    stopLoss: pos.stopLoss ? parseFloat(pos.stopLoss) : undefined,
-                    takeProfit: pos.takeProfit ? parseFloat(pos.takeProfit) : undefined
+                    stopLoss: pos.stopLoss ? safeNum(pos.stopLoss) : undefined,
+                    takeProfit: pos.takeProfit ? safeNum(pos.takeProfit) : undefined
                 }));
                 useStore.getState().setTrades(trades);
             }

@@ -8,6 +8,10 @@ langchain-openai==0.1.8
 anthropic==0.28.0
 openai==1.35.0
 
+# Web API (src/api/server.py — was missing, so the API image couldn't run)
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
 # Exchange & Market Data
 ccxt==4.3.50
 python-binance==1.0.19

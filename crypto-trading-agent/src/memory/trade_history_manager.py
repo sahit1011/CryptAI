@@ -7,62 +7,76 @@ from dataclasses import dataclass
 from datetime import datetime
 from loguru import logger
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, JSON, Boolean, desc, and_
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-Base = declarative_base()
+# Single source of truth for the schema. ``TradeRecord`` below is the sync runtime
+# ORM view of the canonical ``trades`` table defined in src.data.data_models.Trade.
+# We reuse that ``Base`` (and its MetaData) so Alembic and create_all see exactly
+# one authoritative table definition instead of two colliding ones.
+from src.data.data_models import Base
 
 class TradeRecord(Base):
-    """Trade record database model"""
+    """Sync runtime ORM mapping for the canonical ``trades`` table.
+
+    This maps to the SAME physical table as ``src.data.data_models.Trade`` and shares
+    its ``Base.metadata`` (the single source of truth). ``extend_existing=True`` lets
+    this class re-declare the columns the runtime code relies on without registering a
+    second, conflicting ``Table('trades')``. The canonical column set is the union of
+    this model's columns and ``data_models.Trade``'s; columns defined only on the
+    canonical model (e.g. ``take_profit``, ``status``, ``analysis_snapshot``) are still
+    created on the table and accessible via that model. Keep these column definitions in
+    sync with ``data_models.Trade`` so ``extend_existing`` does not silently diverge.
+    """
     __tablename__ = 'trades'
-    
+    __table_args__ = {'extend_existing': True}
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     trade_id = Column(String(50), unique=True, nullable=False, index=True)
-    
+
     # Trade details
     symbol = Column(String(20), nullable=False, index=True)
     direction = Column(String(10), nullable=False)  # LONG/SHORT
     strategy_type = Column(String(20), index=True)  # SCALP/DAY_TRADE/SWING
-    
+
     # Entry
     entry_price = Column(Float, nullable=False)
     entry_time = Column(DateTime, nullable=False, index=True)
     position_size = Column(Float, nullable=False)
-    
+
     # Exit
     exit_price = Column(Float, nullable=True)
     exit_time = Column(DateTime, nullable=True, index=True)
     exit_reason = Column(String(50), nullable=True)  # take_profit/stop_loss/manual
-    
+
     # Risk management
     stop_loss = Column(Float, nullable=False)
     take_profit_levels = Column(JSON, nullable=True)  # List of TP levels
-    risk_amount = Column(Float, nullable=False)
-    
+    risk_amount = Column(Float, nullable=True)
+
     # Performance
     pnl = Column(Float, nullable=True)
     pnl_percentage = Column(Float, nullable=True)
     risk_reward_ratio = Column(Float, nullable=True)
     duration_minutes = Column(Float, nullable=True)
-    
+
     # Setup quality
     confidence_score = Column(Float, default=0.0)
     confluence_count = Column(Integer, default=0)
-    
+
     # Market conditions
-    market_regime = Column(String(20), nullable=True)  # trending/ranging/volatile
+    market_regime = Column(String(50), nullable=True)  # trending/ranging/volatile
     atr_at_entry = Column(Float, nullable=True)
     volatility_percentile = Column(Float, nullable=True)
-    
+
     # Analysis context
     smc_patterns = Column(JSON, nullable=True)  # SMC patterns present
     ict_setups = Column(JSON, nullable=True)  # ICT setups
-    
+
     # Metadata
     is_winner = Column(Boolean, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    
+
     # Lessons learned
     notes = Column(String(500), nullable=True)
 

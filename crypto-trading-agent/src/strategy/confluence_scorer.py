@@ -317,48 +317,83 @@ class ConfluenceScorer:
                     timeframe=fvg.get('timeframe', 'unknown')
                 ))
         
-        # Break of Structure
-        # Handle list or dict format
+        # Break of Structure (BOS) and Change of Character (CHoCH)
+        # The SMC detector returns break_of_structure as a dict shaped like:
+        #   {'bos': [{'type': 'bullish_bos'|'bearish_bos', 'level': float, ...}],
+        #    'choch': [{'type': 'bullish_choch'|'bearish_choch', ...}],
+        #    'current_trend': 'bullish'|'bearish'|...}
+        # Older/alternate callers may pass a flat list or a {detected, direction}
+        # dict, so all three shapes are handled below.
         bos_data = data.get('break_of_structure', {})
-        if isinstance(bos_data, list):
-             # If list, check last item
-             if bos_data:
-                 bos = bos_data[-1]
-                 if direction == 'LONG' and bos.get('type') == 'bullish':
-                     confluences.append(Confluence(
-                        factor='Bullish BOS',
-                        category='SMC',
-                        weight=1.0,
-                        description="Bullish Break of Structure confirmed",
-                        timeframe=bos.get('timeframe', 'unknown')
-                    ))
-                 elif direction == 'SHORT' and bos.get('type') == 'bearish':
-                     confluences.append(Confluence(
-                        factor='Bearish BOS',
-                        category='SMC',
-                        weight=1.0,
-                        description="Bearish Break of Structure confirmed",
-                        timeframe=bos.get('timeframe', 'unknown')
-                    ))
+        confluences.extend(self._score_structure_breaks(bos_data, direction))
+
+        return confluences
+
+    def _score_structure_breaks(self, bos_data: Any, direction: str) -> List[Confluence]:
+        """
+        Score Break-of-Structure / Change-of-Character events.
+
+        Accepts the SMC detector's native dict ({'bos': [...], 'choch': [...]}),
+        a flat list of break events, or the legacy {detected, direction} dict.
+        Matches on the detector's actual 'type' vocabulary
+        ('bullish_bos'/'bearish_bos', 'bullish_choch'/'bearish_choch').
+        """
+        confluences: List[Confluence] = []
+        wanted = 'bullish' if direction == 'LONG' else 'bearish'
+
+        def matches(event: Dict[str, Any]) -> bool:
+            # 'type' may be 'bullish'/'bearish' or 'bullish_bos'/'bearish_choch'.
+            return wanted in str(event.get('type', '')).lower()
+
+        def make_break(event: Dict[str, Any], is_choch: bool) -> Confluence:
+            label = 'CHoCH' if is_choch else 'BOS'
+            # CHoCH is a reversal signal; give it a slightly lower weight than a
+            # trend-continuation BOS, but still meaningful.
+            weight = 0.9 if is_choch else 1.0
+            side = 'Bullish' if wanted == 'bullish' else 'Bearish'
+            return Confluence(
+                factor=f'{side} {label}',
+                category='SMC',
+                weight=weight,
+                description=f"{side} {'Change of Character' if is_choch else 'Break of Structure'} confirmed",
+                timeframe=event.get('timeframe', 'unknown')
+            )
+
+        # Collect matching BOS and CHoCH events, then count each kind only ONCE
+        # (use the most recent matching event). The detector now returns the full
+        # series of breaks; scoring every one would over-inflate the confluence
+        # count, so we keep the conservative "one BOS + one CHoCH" contribution.
+        bos_events: List[Dict[str, Any]] = []
+        choch_events: List[Dict[str, Any]] = []
+
+        if isinstance(bos_data, dict) and ('bos' in bos_data or 'choch' in bos_data):
+            # Native SMC detector shape.
+            bos_events = [e for e in (bos_data.get('bos') or []) if isinstance(e, dict)]
+            choch_events = [e for e in (bos_data.get('choch') or []) if isinstance(e, dict)]
+        elif isinstance(bos_data, list):
+            # Flat list of break events; split by type substring.
+            for event in bos_data:
+                if not isinstance(event, dict):
+                    continue
+                if 'choch' in str(event.get('type', '')).lower():
+                    choch_events.append(event)
+                else:
+                    bos_events.append(event)
         elif isinstance(bos_data, dict):
-            if bos_data.get('detected'):
-                if direction == 'LONG' and bos_data.get('direction') == 'bullish':
-                    confluences.append(Confluence(
-                        factor='Bullish BOS',
-                        category='SMC',
-                        weight=1.0,
-                        description="Bullish Break of Structure confirmed",
-                        timeframe=bos_data.get('timeframe', 'unknown')
-                    ))
-                elif direction == 'SHORT' and bos_data.get('direction') == 'bearish':
-                    confluences.append(Confluence(
-                        factor='Bearish BOS',
-                        category='SMC',
-                        weight=1.0,
-                        description="Bearish Break of Structure confirmed",
-                        timeframe=bos_data.get('timeframe', 'unknown')
-                    ))
-        
+            # Legacy {detected, direction} shape.
+            if bos_data.get('detected') and bos_data.get('direction') == wanted:
+                bos_events.append({'type': wanted, 'timeframe': bos_data.get('timeframe', 'unknown')})
+
+        # Most recent matching BOS in the requested direction (events are
+        # chronologically ordered by the detector).
+        matching_bos = [e for e in bos_events if matches(e)]
+        if matching_bos:
+            confluences.append(make_break(matching_bos[-1], is_choch=False))
+
+        matching_choch = [e for e in choch_events if matches(e)]
+        if matching_choch:
+            confluences.append(make_break(matching_choch[-1], is_choch=True))
+
         return confluences
     
     def _score_ict(self, ict_analysis: Dict[str, Any], direction: str) -> List[Confluence]:
@@ -380,34 +415,56 @@ class ConfluenceScorer:
             ))
         
         # Liquidity Sweeps
+        # NOTE: Align the matched keys to the vocabulary the ICT detector actually
+        # emits. ICTDetector.detect_liquidity_sweeps() returns sweeps tagged with a
+        # 'type' of one of: 'asian_low_sweep', 'previous_day_low_sweep',
+        # 'asian_high_sweep', 'swing_high_sweep' (NOT generic 'buy_side'/'sell_side').
+        #
+        # ICT directional logic:
+        #   - A LOW sweep takes sell-side liquidity (stops below the lows) and
+        #     typically precedes a bullish reversal  -> supports a LONG.
+        #   - A HIGH sweep takes buy-side liquidity (stops above the highs) and
+        #     typically precedes a bearish reversal  -> supports a SHORT.
+        # We also keep the legacy generic keys ('buy_side'/'sell_side') as a
+        # fallback so older detector outputs still contribute.
         sweeps = data.get('liquidity_sweeps', [])
+
+        # Sweep types that imply a bullish reversal (low/sell-side liquidity taken)
+        long_sweep_types = {
+            'asian_low_sweep',
+            'previous_day_low_sweep',
+            'swing_low_sweep',          # defensive: in case detector adds it
+            'sell_side',                # legacy generic
+            'bearish_liquidity',        # legacy generic
+        }
+        # Sweep types that imply a bearish reversal (high/buy-side liquidity taken)
+        short_sweep_types = {
+            'asian_high_sweep',
+            'previous_day_high_sweep',  # defensive: in case detector adds it
+            'swing_high_sweep',
+            'buy_side',                 # legacy generic
+            'bullish_liquidity',        # legacy generic
+        }
+
         for sweep in sweeps:
-            if direction == 'LONG' and (sweep.get('type') == 'buy_side' or sweep.get('type') == 'bearish_liquidity'): # Check types carefully
-                 # Buy side liquidity swept usually means bearish reversal? 
-                 # Wait, if we sweep sell-side liquidity (stops below lows), we expect bullish reversal.
-                 # If we sweep buy-side liquidity (stops above highs), we expect bearish reversal.
-                 # Playground logic: LONG if 'buy_side' swept? That seems inverted or I'm misremembering.
-                 # Let's stick to Playground logic for now but double check.
-                 # Playground: if direction == 'LONG' and sweep.get('type') == 'buy_side' -> Confluence.
-                 # Actually, usually sweeping sell-side liquidity (lows) fuels a move up (LONG).
-                 # Let's assume 'buy_side' means "swept buy side liquidity" -> price went up, took liquidity, now reversing down?
-                 # Or does it mean "liquidity on the buy side"?
-                 # Let's look at the playground code again.
-                 # Playground: if direction == 'LONG' and sweep.get('type') == 'buy_side'
-                 # I will trust the playground logic for now.
+            sweep_type = sweep.get('type', '')
+            # Slightly favour confirmed reversals (detector sets 'reversed': True).
+            weight = 1.0 if sweep.get('reversed', True) else 0.7
+
+            if direction == 'LONG' and sweep_type in long_sweep_types:
                 confluences.append(Confluence(
                     factor='Liquidity Sweep',
                     category='ICT',
-                    weight=1.0,
-                    description=f"Liquidity sweep detected",
+                    weight=weight,
+                    description=f"Sell-side liquidity sweep ({sweep_type}) supports LONG",
                     timeframe=sweep.get('timeframe', 'unknown')
                 ))
-            elif direction == 'SHORT' and (sweep.get('type') == 'sell_side' or sweep.get('type') == 'bullish_liquidity'):
+            elif direction == 'SHORT' and sweep_type in short_sweep_types:
                 confluences.append(Confluence(
                     factor='Liquidity Sweep',
                     category='ICT',
-                    weight=1.0,
-                    description=f"Liquidity sweep detected",
+                    weight=weight,
+                    description=f"Buy-side liquidity sweep ({sweep_type}) supports SHORT",
                     timeframe=sweep.get('timeframe', 'unknown')
                 ))
         

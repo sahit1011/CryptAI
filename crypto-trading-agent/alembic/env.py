@@ -15,8 +15,14 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # add your model's MetaData object here
-# for 'autogenerate' support
+# for 'autogenerate' support.
+#
+# src.data.data_models.Base is the single source of truth for the DB schema.
+# Importing trade_history_manager registers the sync-runtime ORM mapping
+# (TradeRecord) onto that same Base/MetaData via extend_existing, so the
+# authoritative metadata reflects every ORM-mapped table before autogenerate.
 from src.data.data_models import Base
+import src.memory.trade_history_manager  # noqa: F401  (registers TradeRecord on Base)
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,

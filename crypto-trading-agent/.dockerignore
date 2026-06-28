@@ -1,0 +1,55 @@
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+env/
+venv/
+venv312/
+ENV/
+.venv/
+
+# Secrets & local config (never bake into the image)
+.env
+.env.*
+!.env.example
+
+# Logs & local data
+*.log
+/data/
+*.db
+*.sqlite
+*.csv
+temp_logs_*.txt
+position_check_result.txt
+
+# Tests & dev tooling
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+playground/
+
+# Docs (not needed at runtime)
+*.md
+
+# Version control & IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Misc one-off scripts not needed in the image
+start_system.ps1

@@ -211,24 +211,79 @@ class StateManager:
         for key, value in updates.items():
             await self.set_hash("portfolio", key, value)
 
+    # Lua script for atomically removing a single position by its 'id' field
+    # from the "state:positions" list. Runs entirely server-side under Redis's
+    # single-threaded execution model, so no concurrent LPUSH/remove can
+    # interleave (no read-modify-write race, no loss of other positions on a
+    # crash mid-op). We keep the list storage format because other components
+    # (paper_trading_engine, ops scripts) read/write this same list directly;
+    # switching to a hash here would break those callers we don't own.
+    # KEYS[1] = list key, ARGV[1] = position_id to remove.
+    # Returns the number of entries removed.
+    _REMOVE_POSITION_LUA = """
+    local items = redis.call('LRANGE', KEYS[1], 0, -1)
+    local removed = 0
+    redis.call('DEL', KEYS[1])
+    -- Rebuild the list preserving original order, dropping only matching ids.
+    -- Iterate in reverse so RPUSH restores the LRANGE (head-to-tail) order.
+    for i = #items, 1, -1 do
+        local raw = items[i]
+        local ok, decoded = pcall(cjson.decode, raw)
+        if ok and decoded ~= nil and tostring(decoded['id']) == ARGV[1] then
+            removed = removed + 1
+        else
+            -- Keep entries that don't match (or that fail to decode, to avoid
+            -- silently dropping data we can't parse).
+            redis.call('RPUSH', KEYS[1], raw)
+        end
+    end
+    return removed
+    """
+
     async def get_positions(self) -> List[Dict[str, Any]]:
         """Get open positions"""
         positions_json = await self.redis.lrange("state:positions", 0, -1)
         return [json.loads(p) for p in positions_json]
 
     async def add_position(self, position: Dict[str, Any]):
-        """Add new position"""
+        """Add new position
+
+        LPUSH is itself atomic, so a concurrent add and a concurrent
+        remove_position (Lua, also atomic) can no longer clobber each other.
+        """
         await self.redis.lpush("state:positions", json.dumps(position, default=str))
 
-    async def remove_position(self, position_id: str):
-        """Remove position"""
-        positions = await self.get_positions()
-        updated_positions = [p for p in positions if p.get('id') != position_id]
+    async def remove_position(self, position_id: str) -> int:
+        """Remove a single position by id, atomically.
 
-        # Clear and repopulate
-        await self.redis.delete("state:positions")
-        for pos in updated_positions:
-            await self.redis.lpush("state:positions", json.dumps(pos, default=str))
+        Previously this read the whole list, filtered in Python, DEL'd the key,
+        and re-pushed the survivors. That read-modify-write was not atomic: a
+        concurrent add_position (LPUSH) landing between the DEL and the re-push,
+        or a crash mid-op, could lose open positions. We now do the
+        filter-and-rebuild inside a single Lua script (EVAL), which Redis runs
+        atomically server-side, so no other position mutation can interleave.
+
+        Returns the number of positions removed (0 if no match) so callers can
+        detect a no-op. Existing callers that ignore the return value are
+        unaffected (signature is otherwise unchanged).
+        """
+        removed = await self.redis.eval(
+            self._REMOVE_POSITION_LUA, 1, "state:positions", position_id
+        )
+        return int(removed)
+
+    # === Reconciliation note ===
+    # Redis holds the *hot* view of open positions; the exchange is the true
+    # source of truth. The execution side owns the actual reconcile loop, which
+    # should periodically (and on startup/recovery) fetch live positions from
+    # the exchange and converge Redis to match:
+    #   - exchange has a position Redis is missing  -> add_position(...)
+    #   - Redis has a position the exchange closed   -> remove_position(id)
+    #   - same position, differing fields            -> remove + re-add (or a
+    #     future atomic update) to overwrite stale fields.
+    # Because add_position (LPUSH) and remove_position (Lua EVAL) are each
+    # atomic, a reconcile pass can mutate individual positions without racing
+    # the live trading path. Do NOT treat Redis as authoritative on conflicts.
 
     # === Agent State ===
 

@@ -2,6 +2,7 @@
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { ArrowUpRight, ArrowDownRight, TrendingUp } from "lucide-react";
+import { safeNum, safeFixed } from "@/lib/utils";
 
 interface PortfolioCardProps {
     symbol?: string;
@@ -20,7 +21,13 @@ export function PortfolioCard({
     change = 1250.00,
     changePercent = 5.4,
 }: PortfolioCardProps) {
-    const isPositive = changePercent >= 0;
+    // Network-sourced numbers can arrive as NaN/undefined; normalize before math.
+    const safeAmount = safeNum(amount);
+    const safeValue = safeNum(value);
+    const safeChange = safeNum(change);
+    const safeChangePercent = safeNum(changePercent);
+    const isPositive = safeChangePercent >= 0;
+    const allocationPct = safeValue > 0 ? (safeValue / 50000) * 100 : 0;
 
     return (
         <GlassCard className="p-6 relative overflow-hidden group hover:border-emerald-500/20 transition-all">
@@ -40,7 +47,7 @@ export function PortfolioCard({
                             </span>
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">
-                            {amount.toFixed(4)} {symbol}
+                            {safeAmount.toFixed(4)} {symbol}
                         </p>
                     </div>
 
@@ -61,20 +68,20 @@ export function PortfolioCard({
                 {/* Value */}
                 <div>
                     <div className="text-2xl font-mono font-bold text-white">
-                        ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        ${safeValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
                         <span
                             className={`text-sm font-medium ${isPositive ? "text-emerald-400" : "text-red-400"
                                 }`}
                         >
-                            {isPositive ? "+" : ""}${change.toFixed(2)}
+                            {isPositive ? "+" : ""}${safeFixed(safeChange, 2)}
                         </span>
                         <span
                             className={`text-xs ${isPositive ? "text-emerald-400" : "text-red-400"
                                 }`}
                         >
-                            ({isPositive ? "+" : ""}{changePercent.toFixed(2)}%)
+                            ({isPositive ? "+" : ""}{safeFixed(safeChangePercent, 2)}%)
                         </span>
                     </div>
                 </div>
@@ -83,12 +90,12 @@ export function PortfolioCard({
                 <div className="space-y-1">
                     <div className="flex justify-between text-xs text-muted-foreground">
                         <span>Portfolio Allocation</span>
-                        <span>{((value / 50000) * 100).toFixed(1)}%</span>
+                        <span>{allocationPct.toFixed(1)}%</span>
                     </div>
                     <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                         <div
                             className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400 rounded-full transition-all duration-500"
-                            style={{ width: `${Math.min((value / 50000) * 100, 100)}%` }}
+                            style={{ width: `${Math.min(allocationPct, 100)}%` }}
                         />
                     </div>
                 </div>

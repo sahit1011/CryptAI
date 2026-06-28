@@ -11,7 +11,7 @@ import os
 from src.agents.base_agent import BaseAgent
 from src.core.message_bus import MessageBus, AgentMessage
 from src.core.state_manager import StateManager
-from src.execution.exchange_client import ExchangeClientFactory, ExchangeClient, OrderStatus
+from src.execution.exchange_client import ExchangeClientFactory, ExchangeClient, OrderStatus, OrderSide
 from src.execution.order_manager import OrderManager, TradeExecution, ExecutionStrategy
 from src.execution.order_tracker import OrderTracker
 from src.execution.position_monitor import PositionMonitor
@@ -59,7 +59,12 @@ class ExecutionAgent(BaseAgent):
         self.config = config or {}
         self.paper_trading_engine = paper_trading_engine
         self.realtime_trading = realtime_trading
-        
+
+        # Portfolio/risk state tracker (owned by the risk agent). Injected by the
+        # orchestrator via set_portfolio_tracker() so that start() can reconcile
+        # persisted risk state against the exchange before monitoring begins.
+        self.portfolio_tracker: Optional[Any] = None
+
         # Initialize components
         self._init_components()
         
@@ -80,6 +85,16 @@ class ExecutionAgent(BaseAgent):
             phase="initialization"
         )
     
+    def set_portfolio_tracker(self, portfolio_tracker: Any) -> None:
+        """
+        Inject the shared PortfolioStateTracker (owned by the risk agent).
+
+        The orchestrator wires this before start() so the execution agent can
+        trigger startup reconciliation against the live exchange. Optional: if
+        never set, start() simply skips reconciliation.
+        """
+        self.portfolio_tracker = portfolio_tracker
+
     def _setup_handlers(self):
         """Setup message handlers"""
         self.register_handler("execute_trade", self._handle_execute_trade)
@@ -138,7 +153,20 @@ class ExecutionAgent(BaseAgent):
             api_key = self.config.get('API_KEY', os.getenv('BINGX_API_KEY', ''))
             api_secret = self.config.get('API_SECRET', os.getenv('BINGX_SECRET_KEY', ''))
             testnet = self.config.get('USE_TESTNET', True)
-            
+
+            # SAFETY GATE: refuse real-money (mainnet) trading unless explicitly confirmed.
+            # The live exchange path must be validated on BingX VST testnet first; only then
+            # should LIVE_TRADING_CONFIRMED=true be set. This makes accidental mainnet trading
+            # impossible regardless of how realtime_trading got enabled.
+            live_confirmed = str(self.config.get(
+                'LIVE_TRADING_CONFIRMED', os.getenv('LIVE_TRADING_CONFIRMED', 'false'))).lower() == 'true'
+            if not testnet and not live_confirmed:
+                raise RuntimeError(
+                    "Refusing to start LIVE mainnet trading: USE_TESTNET=false but "
+                    "LIVE_TRADING_CONFIRMED is not 'true'. Validate the live path on BingX VST "
+                    "testnet first, then set LIVE_TRADING_CONFIRMED=true to enable real-money trading."
+                )
+
             self.exchange = ExchangeClientFactory.create_client(
                 exchange_name=exchange_name,
                 api_key=api_key,
@@ -201,7 +229,29 @@ class ExecutionAgent(BaseAgent):
         # Start sub-components (only if they exist)
         if self.order_tracker:
             await self.order_tracker.start()
-        
+
+        # Reconcile persisted risk/portfolio state with reality AFTER components
+        # (esp. self.exchange) are initialized but BEFORE we begin monitoring.
+        # Without this, all risk counters reset to zero on restart and limits are
+        # silently bypassed. Optional + best-effort: the tracker is owned by the
+        # risk agent and injected here (set_portfolio_tracker); if absent we skip,
+        # and any failure is logged rather than allowed to crash startup.
+        portfolio_tracker = getattr(self, "portfolio_tracker", None)
+        if portfolio_tracker is not None:
+            try:
+                # In LIVE mode reconcile against the exchange's actual positions;
+                # in paper mode just reload the snapshot (no exchange call).
+                if self.realtime_trading:
+                    portfolio_tracker.set_exchange(self.exchange)
+                await portfolio_tracker.reconcile_on_startup(
+                    live_mode=self.realtime_trading
+                )
+            except Exception as e:
+                plog.error(
+                    f"Portfolio reconciliation on startup failed (continuing): {e}",
+                    agent="execution_agent"
+                )
+
         # Start position monitoring loop (for both paper and live trading)
         self.monitor_task = asyncio.create_task(self._position_monitor_loop())
         
@@ -788,44 +838,83 @@ class ExecutionAgent(BaseAgent):
             'success': True
         }
     
+    async def _close_one(self, position) -> None:
+        """Reduce-only market close of a single monitored position (mode-agnostic)."""
+        close_side = OrderSide.SELL if position.side == 'LONG' else OrderSide.BUY
+        await self.exchange.close_position(
+            symbol=position.symbol,
+            side=close_side,
+            quantity=position.quantity,
+        )
+
+    async def _close_all_positions(self) -> int:
+        """Close every open position via reduce-only market orders. Returns count closed."""
+        positions = self.position_monitor.get_positions()
+        closed = 0
+        for pos in positions:
+            try:
+                await self._close_one(pos)
+                closed += 1
+            except Exception as e:
+                plog.error(f"Failed to close {pos.symbol}: {e}", agent="execution_agent")
+        return closed
+
     async def _handle_close_position(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Close a specific position"""
+        """Close a specific position (by position_id or symbol) with a reduce-only market order."""
         position_id = payload.get('position_id')
-        
+        symbol = payload.get('symbol')
+
         try:
-            # Implementation would close the position
-            plog.info(f"Closing position: {position_id}", agent="execution_agent")
+            target = None
+            for p in self.position_monitor.get_positions():
+                if (position_id and p.position_id == position_id) or (symbol and p.symbol == symbol):
+                    target = p
+                    break
+
+            if not target:
+                return {
+                    'status': 'success',
+                    'message': 'No matching open position to close',
+                    'closed_count': 0,
+                    'success': True
+                }
+
+            plog.warning(f"Closing position {target.symbol} ({target.side} {target.quantity})", agent="execution_agent")
+            await self._close_one(target)
             return {
                 'status': 'success',
-                'position_id': position_id,
+                'position_id': target.position_id,
+                'symbol': target.symbol,
+                'closed_count': 1,
                 'success': True
             }
         except Exception as e:
             plog.error(f"Failed to close position: {e}", agent="execution_agent")
-            return {
-                'status': 'failed',
-                'error': str(e),
-                'success': False
-            }
-    
+            return {'status': 'failed', 'error': str(e), 'success': False}
+
     async def _handle_panic_close(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Trigger emergency panic close"""
+        """Trigger emergency panic close.
+
+        Live mode uses the EmergencyExit subsystem (cancel-all-orders then reduce-only
+        market closes). Paper mode (emergency_exit is None) falls back to closing each
+        tracked position directly. Either way the response reflects what actually happened.
+        """
         plog.critical("Triggering Panic Close via Execution Agent", agent="execution_agent")
-        
+
         try:
-            await self.emergency_exit.panic_close_all()
+            if self.realtime_trading and self.emergency_exit:
+                await self.emergency_exit.panic_close_all()
+                return {'status': 'success', 'message': 'Panic close initiated (live)', 'success': True}
+            closed = await self._close_all_positions()
             return {
                 'status': 'success',
-                'message': 'Panic close initiated',
+                'message': f'Panic close complete: closed {closed} position(s)',
+                'closed_count': closed,
                 'success': True
             }
         except Exception as e:
             plog.error(f"Panic close failed: {e}", agent="execution_agent")
-            return {
-                'status': 'failed',
-                'error': str(e),
-                'success': False
-            }
+            return {'status': 'failed', 'error': str(e), 'success': False}
     
     async def _handle_get_status(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Get execution agent status"""
@@ -857,13 +946,19 @@ class ExecutionAgent(BaseAgent):
         )
     
     async def _handle_sl_trigger(self, position):
-        """Handle SL trigger from Position Monitor"""
-        plog.warning(
-            f"SL Triggered for {position.symbol}",
-            agent="execution_agent"
-        )
-        # Logic to ensure SL order is actually filled or place market close
-        pass
+        """Handle SL trigger from Position Monitor.
+
+        A resting stop-loss order may not fill (gaps, thin book, exchange issues). When
+        the monitor signals the SL level was breached, force a reduce-only market close
+        so the position can't be left open beyond its stop. Idempotent in effect: if the
+        SL already filled, the reduce-only close is a no-op / rejected harmlessly.
+        """
+        plog.warning(f"SL Triggered for {position.symbol} — forcing reduce-only close", agent="execution_agent")
+        try:
+            await self._close_one(position)
+            plog.info(f"SL force-close placed for {position.symbol}", agent="execution_agent")
+        except Exception as e:
+            plog.error(f"SL force-close failed for {position.symbol}: {e}", agent="execution_agent")
     
     async def _determine_execution_strategy(
         self,

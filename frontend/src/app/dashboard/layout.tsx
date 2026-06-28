@@ -2,6 +2,7 @@
 
 import { Sidebar } from "@/components/dashboard/Sidebar"
 import { Header } from "@/components/dashboard/Header"
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/utils/supabase/client"
@@ -57,7 +58,9 @@ export default function DashboardLayout({
             <main className="md:pl-72 h-full">
                 <Header />
                 <div className="h-full p-8">
-                    {children}
+                    <ErrorBoundary>
+                        {children}
+                    </ErrorBoundary>
                 </div>
             </main>
         </div>

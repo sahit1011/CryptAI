@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { useState, useEffect } from "react"
 import { createClient } from "@/utils/supabase/client"
 import { useRouter } from "next/navigation"
+import { useStore } from "@/store/useStore"
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -21,20 +22,31 @@ import {
     PopoverTrigger,
 } from "@/components/ui/popover"
 
-// Mock trade data - replace with real WebSocket data
-const recentTrades = [
-    { id: 1, pair: "BTC/USDT", type: "LONG", pnl: 125.50, time: "2 min ago", profit: true },
-    { id: 2, pair: "ETH/USDT", type: "SHORT", pnl: -45.20, time: "5 min ago", profit: false },
-    { id: 3, pair: "SOL/USDT", type: "LONG", pnl: 89.30, time: "12 min ago", profit: true },
-    { id: 4, pair: "BNB/USDT", type: "LONG", pnl: 234.75, time: "18 min ago", profit: true },
-    { id: 5, pair: "ADA/USDT", type: "SHORT", pnl: -12.80, time: "25 min ago", profit: false },
-]
-
 export function Header() {
     const [userEmail, setUserEmail] = useState<string | null>(null)
     const [isLoggingOut, setIsLoggingOut] = useState(false)
     const router = useRouter()
     const supabase = createClient()
+
+    // Real recent trades from the store (closed trade history first, then any
+    // currently-open positions). Replaces the previously hardcoded mock list so
+    // the authed dashboard never shows fabricated P&L as if it were real.
+    const { tradeHistory, activeTrades } = useStore()
+    const recentTrades = [...tradeHistory, ...activeTrades]
+        .slice(0, 5)
+        .map((trade) => {
+            const pnl = trade.pnl ?? 0
+            return {
+                id: trade.id,
+                pair: trade.symbol,
+                type: trade.side,
+                pnl,
+                profit: pnl >= 0,
+                time: trade.exitTime || trade.entryTime
+                    ? new Date(trade.exitTime || trade.entryTime!).toLocaleTimeString()
+                    : (trade.status === "OPEN" ? "Open" : ""),
+            }
+        })
 
     useEffect(() => {
         const getUser = async () => {
@@ -83,7 +95,9 @@ export function Header() {
                     <PopoverTrigger asChild>
                         <Button variant="ghost" size="icon" className="relative hover:bg-white/5 text-muted-foreground hover:text-white">
                             <Bell className="h-5 w-5" />
-                            <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-emerald-500 rounded-full ring-2 ring-[#0A0A0A]" />
+                            {recentTrades.length > 0 && (
+                                <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-emerald-500 rounded-full ring-2 ring-[#0A0A0A]" />
+                            )}
                         </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-80 p-0 bg-[#0A0A0A] border-white/10" align="end">
@@ -92,6 +106,11 @@ export function Header() {
                             <p className="text-xs text-muted-foreground">Recent trading activity</p>
                         </div>
                         <div className="max-h-[400px] overflow-y-auto">
+                            {recentTrades.length === 0 && (
+                                <div className="p-4 text-center text-xs text-muted-foreground">
+                                    No recent trading activity yet
+                                </div>
+                            )}
                             {recentTrades.map((trade) => (
                                 <div
                                     key={trade.id}

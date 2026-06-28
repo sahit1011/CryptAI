@@ -1,0 +1,34 @@
+# Dependencies (reinstalled in the deps stage)
+node_modules/
+
+# Build output (regenerated in the build stage)
+.next/
+out/
+build/
+
+# Secrets & local env (NEXT_PUBLIC_* come via build args instead)
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Version control & IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Docs & one-off scripts not needed in the image
+*.md
+test-websocket.js
+verify-oauth-setup.js

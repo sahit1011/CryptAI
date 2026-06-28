@@ -138,15 +138,25 @@ class PortfolioStateTracker:
     - Provide risk exposure data
     """
 
+    # Fixed filename for the "latest known good" snapshot. This is the file that
+    # reconcile_on_startup() loads after a restart, so it must be stable (not
+    # timestamped). Timestamped snapshots are still written for history/auditing.
+    LATEST_SNAPSHOT_FILENAME = "portfolio_latest.json"
+
     def __init__(
         self,
         initial_balance: float = 10000.0,
         state_manager: Optional[Any] = None,
-        snapshot_dir: Optional[str] = None
+        snapshot_dir: Optional[str] = None,
+        exchange: Optional[Any] = None
     ):
         self.initial_balance = initial_balance
         self.account_balance = initial_balance
         self.state_manager = state_manager
+        # Optional exchange client used by reconcile_on_startup() in LIVE mode to
+        # query the broker's authoritative open positions. May be set later via
+        # set_exchange(). When None, reconciliation falls back to snapshot-only.
+        self.exchange = exchange
 
         # Active positions
         self.positions: Dict[str, Position] = {}
@@ -232,7 +242,12 @@ class PortfolioStateTracker:
                 phase="position_tracking"
             )
 
-            return position
+        # Persist OUTSIDE the lock: save_snapshot()/get_current_snapshot() re-acquire
+        # self._lock, which is a non-reentrant asyncio.Lock, so calling them while
+        # holding it would deadlock.
+        await self._persist()
+
+        return position
 
     async def update_position_price(
         self, position_id: str, current_price: float
@@ -319,7 +334,10 @@ class PortfolioStateTracker:
                 phase="position_tracking"
             )
 
-            return result
+        # Persist OUTSIDE the lock (see note in add_position).
+        await self._persist()
+
+        return result
 
     async def get_current_snapshot(self) -> PortfolioSnapshot:
         """
@@ -594,7 +612,10 @@ class PortfolioStateTracker:
                 agent="risk_agent",
                 phase="circuit_breaker"
             )
-    
+
+        # Persist OUTSIDE the lock so the circuit-breaker state survives a restart.
+        await self._persist()
+
     async def deactivate_circuit_breaker(self, manual: bool = False):
         """Deactivate circuit breaker"""
         async with self._lock:
@@ -609,9 +630,12 @@ class PortfolioStateTracker:
                 agent="risk_agent",
                 phase="circuit_breaker"
             )
-            
+
             self.circuit_breaker_reason = ""
             self.circuit_breaker_triggered_at = None
+
+        # Persist OUTSIDE the lock so the cleared circuit-breaker state survives a restart.
+        await self._persist()
     
     async def is_circuit_breaker_active(self) -> Tuple[bool, str]:
         """Check if circuit breaker is active"""
@@ -687,13 +711,29 @@ class PortfolioStateTracker:
             triggered_at_str = cb_state.get('triggered_at')
             if triggered_at_str:
                 self.circuit_breaker_triggered_at = datetime.fromisoformat(triggered_at_str)
-            
+
+            # Restore open positions so risk counters (count/heat) survive a restart.
+            # Previously only scalar counters were restored and positions were lost,
+            # which left heat/open-position limits at zero after a restart.
+            self.positions = {}
+            for pos_dict in data.get('snapshot', {}).get('positions', []):
+                try:
+                    position = self._position_from_dict(pos_dict)
+                    self.positions[position.position_id] = position
+                except Exception as pos_err:  # never let one bad row drop the whole load
+                    plog.warning(
+                        f"Skipping un-restorable position {pos_dict.get('position_id')}: {pos_err}",
+                        agent="risk_agent",
+                        phase="snapshot_persistence"
+                    )
+
             plog.info(
-                f"Loaded portfolio snapshot from {filepath}",
+                f"Loaded portfolio snapshot from {filepath} "
+                f"({len(self.positions)} open position(s))",
                 agent="risk_agent",
                 phase="snapshot_persistence"
             )
-            
+
             return True
             
         except Exception as e:
@@ -704,7 +744,227 @@ class PortfolioStateTracker:
                 phase="snapshot_persistence"
             )
             return False
-    
+
+    @staticmethod
+    def _position_from_dict(pos_dict: Dict[str, Any]) -> Position:
+        """
+        Rebuild a Position from its to_dict() representation.
+
+        Note: Position.to_dict() stores risk_percentage already multiplied by 100,
+        so we divide it back here to keep the internal fraction convention.
+        """
+        return Position(
+            position_id=pos_dict['position_id'],
+            symbol=pos_dict['symbol'],
+            direction=pos_dict['direction'],
+            entry_price=float(pos_dict['entry_price']),
+            current_price=float(pos_dict.get('current_price', pos_dict['entry_price'])),
+            position_size=float(pos_dict['position_size']),
+            stop_loss=float(pos_dict.get('stop_loss', 0.0)),
+            take_profit_levels=list(pos_dict.get('take_profit_levels', []) or []),
+            risk_amount=float(pos_dict.get('risk_amount', 0.0)),
+            unrealized_pnl=float(pos_dict.get('unrealized_pnl', 0.0)),
+            risk_percentage=float(pos_dict.get('risk_percentage', 0.0)) / 100.0,
+            opened_at=datetime.fromisoformat(pos_dict['opened_at'])
+            if pos_dict.get('opened_at') else datetime.now(),
+            strategy_type=pos_dict.get('strategy_type', 'DAY_TRADE'),
+            confidence_score=float(pos_dict.get('confidence_score', 0.75))
+        )
+
+    def set_exchange(self, exchange: Any) -> None:
+        """
+        Attach the live exchange client used by reconcile_on_startup().
+
+        Wiring is intentionally late-bound: the tracker is created by the risk
+        agent, while the exchange client lives on the execution agent, so the
+        orchestrator (or execution agent) can inject it before startup.
+        """
+        self.exchange = exchange
+
+    async def _persist(self) -> None:
+        """
+        Lightweight persistence hook called after every state-changing mutation.
+
+        Writes the authoritative "latest" snapshot to a stable filename so it can
+        be reloaded on the next startup. Best-effort: persistence failures must
+        never propagate into the trading hot path (a failed disk write should not
+        crash an order/close), so all exceptions are swallowed and logged.
+
+        Must be called OUTSIDE self._lock because save_snapshot() re-acquires it.
+        """
+        try:
+            await self.save_snapshot(filename=self.LATEST_SNAPSHOT_FILENAME)
+        except Exception as e:
+            plog.warning(
+                f"Failed to persist portfolio snapshot: {e}",
+                agent="risk_agent",
+                phase="snapshot_persistence"
+            )
+
+    async def reconcile_on_startup(self, live_mode: bool = False) -> Dict[str, Any]:
+        """
+        Rebuild authoritative risk/portfolio state after a restart.
+
+        Steps:
+          1. Load the last persisted snapshot (restores balance, daily counters,
+             drawdown, circuit-breaker state, and the snapshot's open positions).
+          2. In LIVE mode only, query the exchange's actual open positions and
+             treat THEM as authoritative for open-position/heat state, logging any
+             drift between the snapshot and the exchange (ghost or missing
+             positions). Paper mode skips the exchange call entirely.
+
+        This is deliberately resilient: any failure is logged and swallowed so it
+        can never crash agent startup. Returns a summary dict for callers/tests.
+
+        Args:
+            live_mode: When True, query the exchange for authoritative positions.
+                       When False (paper), only the snapshot is loaded.
+        """
+        summary: Dict[str, Any] = {
+            'snapshot_loaded': False,
+            'live_mode': live_mode,
+            'exchange_queried': False,
+            'snapshot_positions': 0,
+            'exchange_positions': 0,
+            'ghost_positions': [],     # in snapshot but not on exchange
+            'missing_positions': [],   # on exchange but not in snapshot
+            'drift_detected': False,
+            'error': None,
+        }
+
+        try:
+            # 1. Load the last persisted snapshot, if one exists.
+            latest_path = self.snapshot_dir / self.LATEST_SNAPSHOT_FILENAME
+            if latest_path.exists():
+                summary['snapshot_loaded'] = await self.load_snapshot(str(latest_path))
+            else:
+                plog.info(
+                    "No prior portfolio snapshot found; starting from a clean state",
+                    agent="risk_agent",
+                    phase="reconciliation"
+                )
+
+            summary['snapshot_positions'] = len(self.positions)
+
+            # 2. Paper mode: snapshot is the source of truth, no exchange call.
+            if not live_mode:
+                plog.info(
+                    f"Reconciliation (paper): restored {len(self.positions)} "
+                    f"position(s) from snapshot",
+                    agent="risk_agent",
+                    phase="reconciliation"
+                )
+                return summary
+
+            # LIVE mode: the exchange is the authority for open positions.
+            if self.exchange is None:
+                plog.warning(
+                    "LIVE reconciliation requested but no exchange is attached; "
+                    "falling back to snapshot-only state",
+                    agent="risk_agent",
+                    phase="reconciliation"
+                )
+                return summary
+
+            exchange_positions = await self.exchange.get_open_positions()
+            summary['exchange_queried'] = True
+            summary['exchange_positions'] = len(exchange_positions)
+
+            # Index live positions by symbol for drift comparison. (The tracker
+            # keys positions by an internal position_id; the exchange reports by
+            # symbol, so symbol is the only stable join key across the boundary.)
+            live_by_symbol = {ep.symbol: ep for ep in exchange_positions}
+            snapshot_symbols = {pos.symbol for pos in self.positions.values()}
+
+            # Ghost positions: tracked locally but absent on the exchange.
+            summary['ghost_positions'] = sorted(
+                snapshot_symbols - set(live_by_symbol.keys())
+            )
+            # Missing positions: live on the exchange but not in our snapshot.
+            summary['missing_positions'] = sorted(
+                set(live_by_symbol.keys()) - snapshot_symbols
+            )
+            summary['drift_detected'] = bool(
+                summary['ghost_positions'] or summary['missing_positions']
+            )
+
+            if summary['drift_detected']:
+                plog.warning(
+                    "Position drift detected during reconciliation | "
+                    f"ghosts (in state, not on exchange)={summary['ghost_positions']} | "
+                    f"missing (on exchange, not in state)={summary['missing_positions']}",
+                    agent="risk_agent",
+                    phase="reconciliation"
+                )
+
+            # Rebuild authoritative open-position state from the exchange so that
+            # open-position count and portfolio heat reflect reality, not stale
+            # memory. We preserve risk metadata (stop_loss, risk_amount, etc.)
+            # from the snapshot where the symbol matches; otherwise we synthesize
+            # a conservative entry from the exchange data.
+            rebuilt: Dict[str, Position] = {}
+            existing_by_symbol = {pos.symbol: pos for pos in self.positions.values()}
+
+            async with self._lock:
+                for ep in exchange_positions:
+                    prior = existing_by_symbol.get(ep.symbol)
+                    if prior is not None:
+                        # Keep risk metadata; refresh live price/PnL from exchange.
+                        prior.current_price = ep.mark_price
+                        prior.unrealized_pnl = ep.unrealized_pnl
+                        rebuilt[prior.position_id] = prior
+                    else:
+                        # Exchange position with no local record (missing). Create a
+                        # tracked position with conservative defaults so it counts
+                        # toward heat/limits and is not left dangling.
+                        position_id = f"reconciled_{ep.symbol}"
+                        rebuilt[position_id] = Position(
+                            position_id=position_id,
+                            symbol=ep.symbol,
+                            direction=ep.side,
+                            entry_price=ep.entry_price,
+                            current_price=ep.mark_price,
+                            position_size=ep.quantity,
+                            stop_loss=0.0,
+                            take_profit_levels=[],
+                            # No known SL -> assume full notional at risk so heat is
+                            # not under-counted; this is intentionally conservative.
+                            risk_amount=ep.entry_price * ep.quantity,
+                            unrealized_pnl=ep.unrealized_pnl,
+                            risk_percentage=(
+                                (ep.entry_price * ep.quantity) / self.account_balance
+                                if self.account_balance > 0 else 0.0
+                            ),
+                            opened_at=datetime.now(),
+                            strategy_type='DAY_TRADE',
+                            confidence_score=0.5
+                        )
+
+                self.positions = rebuilt
+
+            plog.info(
+                f"Reconciliation (live): rebuilt {len(self.positions)} authoritative "
+                f"position(s) from exchange "
+                f"(snapshot had {summary['snapshot_positions']})",
+                agent="risk_agent",
+                phase="reconciliation"
+            )
+
+            # Persist the reconciled, authoritative state immediately.
+            await self._persist()
+
+        except Exception as e:
+            # Reconciliation must never crash startup.
+            summary['error'] = str(e)
+            plog.error(
+                f"Reconciliation failed (continuing with current state): {e}",
+                exception=e,
+                agent="risk_agent",
+                phase="reconciliation"
+            )
+
+        return summary
+
     async def sync_with_state_manager(self):
         """Sync portfolio state with StateManager"""
         if not self.state_manager:

@@ -527,49 +527,49 @@ class SMCDetector:
 
         trend = self._determine_trend(self.swing_highs, self.swing_lows)
 
-        bos_points = []
-        choch_points = []
+        # Detect BOS/CHoCH across the whole series rather than only on the last bar.
+        # Previously this only compared the final close against the most recent
+        # swing, so any structure break that happened earlier in the lookback was
+        # missed. We now replay the close series against confirmed swing levels.
+        bos_points, choch_points = self._detect_structure_breaks_series(df, swing_period)
 
+        # ------------------------------------------------------------------
+        # Also keep the explicit "current bar" check. This guarantees a fresh
+        # break on the latest candle is always reported even if it is still
+        # forming and has not yet produced a new confirmed swing point.
+        # ------------------------------------------------------------------
         current_price = df['close'].iloc[-1]
+        last_ts = str(df.index[-1])
 
-        # Check for BOS
-        if len(self.swing_highs) >= 2:
+        def _already_reported(points: List[Dict], level: float, btype: str) -> bool:
+            return any(
+                p.get('type') == btype and abs(p.get('level', 0) - level) < 1e-9
+                and p.get('timestamp') == last_ts
+                for p in points
+            )
+
+        if len(self.swing_highs) >= 1:
             last_high = self.swing_highs[-1]
-            if current_price > last_high['price']:
+            if current_price > last_high['price'] and not _already_reported(
+                bos_points, last_high['price'], 'bullish_bos'
+            ):
                 bos_points.append({
                     'type': 'bullish_bos',
                     'level': last_high['price'],
-                    'timestamp': str(df.index[-1]),
+                    'timestamp': last_ts,
                     'strength': 'strong' if current_price > last_high['price'] * 1.005 else 'moderate'
                 })
 
-        if len(self.swing_lows) >= 2:
+        if len(self.swing_lows) >= 1:
             last_low = self.swing_lows[-1]
-            if current_price < last_low['price']:
+            if current_price < last_low['price'] and not _already_reported(
+                bos_points, last_low['price'], 'bearish_bos'
+            ):
                 bos_points.append({
                     'type': 'bearish_bos',
                     'level': last_low['price'],
-                    'timestamp': str(df.index[-1]),
+                    'timestamp': last_ts,
                     'strength': 'strong' if current_price < last_low['price'] * 0.995 else 'moderate'
-                })
-
-        # Check for CHoCH (trend reversal)
-        if trend == 'bullish' and len(self.swing_lows) >= 2:
-            if self.swing_lows[-1]['price'] < self.swing_lows[-2]['price']:
-                choch_points.append({
-                    'type': 'bearish_choch',
-                    'level': self.swing_lows[-1]['price'],
-                    'timestamp': str(self.swing_lows[-1]['timestamp']),
-                    'previous_trend': 'bullish'
-                })
-
-        elif trend == 'bearish' and len(self.swing_highs) >= 2:
-            if self.swing_highs[-1]['price'] > self.swing_highs[-2]['price']:
-                choch_points.append({
-                    'type': 'bullish_choch',
-                    'level': self.swing_highs[-1]['price'],
-                    'timestamp': str(self.swing_highs[-1]['timestamp']),
-                    'previous_trend': 'bearish'
                 })
 
         return {
@@ -585,6 +585,117 @@ class SMCDetector:
                 for sl in self.swing_lows[-3:]
             ]
         }
+
+    def _detect_structure_breaks_series(
+        self, df: pd.DataFrame, swing_period: int = 10
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Detect Break of Structure (BOS) and Change of Character (CHoCH) across the
+        entire series, not just on the final bar.
+
+        Algorithm (closes-based, swing-confirmed):
+        - Walk forward in time. Maintain the most recent *confirmed* swing high and
+          swing low that exist strictly before the current bar (a swing is only
+          confirmed `period` bars after it forms, so this avoids look-ahead).
+        - When a close breaks above the active swing high -> bullish break;
+          when a close breaks below the active swing low -> bearish break.
+        - A break in the direction of the prevailing structural trend is a BOS
+          (continuation). The first break that flips the trend is a CHoCH
+          (change of character / reversal). Subsequent breaks in the new
+          direction become BOS again.
+        - Each swing level is only allowed to generate one break event so we do
+          not emit duplicates while price hovers beyond it.
+
+        Returns (bos_points, choch_points), each a chronologically ordered list.
+        """
+        bos_points: List[Dict[str, Any]] = []
+        choch_points: List[Dict[str, Any]] = []
+
+        if len(self.swing_highs) == 0 or len(self.swing_lows) == 0:
+            return bos_points, choch_points
+
+        # Merge swing points into a single timeline keyed by their confirmation
+        # index (price index at which the swing becomes usable as a level).
+        # Each swing 'index' is the bar where the extreme occurred.
+        highs = sorted(self.swing_highs, key=lambda s: s['index'])
+        lows = sorted(self.swing_lows, key=lambda s: s['index'])
+
+        closes = df['close'].values
+        index = df.index
+
+        hi_ptr = 0  # next swing high to activate
+        lo_ptr = 0  # next swing low to activate
+        active_high: Optional[Dict] = None
+        active_low: Optional[Dict] = None
+        active_high_broken = False
+        active_low_broken = False
+
+        # Prevailing structural trend; 'neutral' until the first break.
+        trend = 'neutral'
+
+        for i in range(len(df)):
+            # Activate swings only once they are *confirmed*. A swing at bar k is
+            # only knowable swing_period bars later (the fractal needs bars on both
+            # sides), so we gate activation on (index + swing_period) to avoid
+            # look-ahead bias when replaying the series.
+            while hi_ptr < len(highs) and highs[hi_ptr]['index'] + swing_period <= i:
+                # Only advance the active high once a *more recent* swing forms.
+                active_high = highs[hi_ptr]
+                active_high_broken = False
+                hi_ptr += 1
+            while lo_ptr < len(lows) and lows[lo_ptr]['index'] + swing_period <= i:
+                active_low = lows[lo_ptr]
+                active_low_broken = False
+                lo_ptr += 1
+
+            close = closes[i]
+            ts = str(index[i])
+
+            # Bullish break: close takes out the active swing high.
+            if active_high is not None and not active_high_broken and close > active_high['price']:
+                active_high_broken = True
+                level = active_high['price']
+                strength = 'strong' if close > level * 1.005 else 'moderate'
+                if trend == 'bearish':
+                    # Reversal of a down-structure -> bullish CHoCH.
+                    choch_points.append({
+                        'type': 'bullish_choch',
+                        'level': level,
+                        'timestamp': ts,
+                        'previous_trend': 'bearish'
+                    })
+                else:
+                    bos_points.append({
+                        'type': 'bullish_bos',
+                        'level': level,
+                        'timestamp': ts,
+                        'strength': strength
+                    })
+                trend = 'bullish'
+
+            # Bearish break: close takes out the active swing low.
+            if active_low is not None and not active_low_broken and close < active_low['price']:
+                active_low_broken = True
+                level = active_low['price']
+                strength = 'strong' if close < level * 0.995 else 'moderate'
+                if trend == 'bullish':
+                    # Reversal of an up-structure -> bearish CHoCH.
+                    choch_points.append({
+                        'type': 'bearish_choch',
+                        'level': level,
+                        'timestamp': ts,
+                        'previous_trend': 'bullish'
+                    })
+                else:
+                    bos_points.append({
+                        'type': 'bearish_bos',
+                        'level': level,
+                        'timestamp': ts,
+                        'strength': strength
+                    })
+                trend = 'bearish'
+
+        return bos_points, choch_points
 
     def _find_swing_highs(self, df: pd.DataFrame, period: int) -> List[Dict]:
         """Find swing high points"""

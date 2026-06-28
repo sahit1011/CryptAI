@@ -530,13 +530,21 @@ class MemoryAgent(BaseAgent):
     
     async def _handle_get_regime_analysis(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Get market regime analysis
-        
-        Note: The actual regime detection is done by the Analysis Agent's RegimeDetector.
-        This is a fallback for compatibility.
-        
+        Get market regime analysis.
+
+        Performs REAL regime detection from raw candles using ADX (trend
+        strength), ATR% (volatility), and EMA slope (trend direction). These
+        feed the shared MarketRegimeDetector, which classifies the market as
+        TRENDING_BULLISH / TRENDING_BEARISH / RANGING / VOLATILE / CALM.
+
+        Previously this returned a hard-coded UNKNOWN regime, which silently
+        defeated the orchestrator's volatile-regime risk gate. We now compute
+        a genuine regime so that gate can fire.
+
         Payload:
-            candles (list of OHLCV data)
+            candles: either a flat list of OHLCV dicts, or a dict keyed by
+                     timeframe ('15m', '5m', '1h', ...) -> list of OHLCV dicts.
+                     Each candle is a dict with open/high/low/close/volume.
             symbol (optional)
         """
         plog.info(
@@ -544,38 +552,58 @@ class MemoryAgent(BaseAgent):
             agent="memory_agent",
             phase="regime_detection"
         )
-        
+
         try:
             candles = payload.get('candles', [])
-            
-            if not candles:
+
+            # Normalize input: orchestrator passes a dict keyed by timeframe.
+            # Prefer the highest-resolution timeframe that has enough bars so
+            # ADX/ATR (14-period) are meaningful; fall back across timeframes.
+            ohlcv = self._select_candles_for_regime(candles)
+
+            # Need at least ~30 bars for a stable 14-period ADX/ATR.
+            if not ohlcv or len(ohlcv) < 30:
                 return {
                     'success': False,
-                    'error': 'No candle data provided'
+                    'error': 'Insufficient candle data for regime detection'
                 }
-            
-            # Simple fallback regime detection
-            # The real regime detection is done by Analysis Agent's RegimeDetector
-            # This is just for compatibility with older code
-            regime_result = {
-                'regime': 'UNKNOWN',
-                'confidence': 0.5,
-                'indicators': {},
-                'detected_at': datetime.now().isoformat()
-            }
-            
+
+            # Compute the indicators the regime detector expects.
+            adx, atr, atr_pct, trend_direction, volume_ratio = (
+                self._compute_regime_indicators(ohlcv)
+            )
+
+            # Classify via the shared detector (also tracks ATR history for
+            # percentile-based volatility classification across cycles).
+            detection = self.regime_detector.detect_regime(
+                adx=adx,
+                atr=atr,
+                trend_direction=trend_direction,
+                volume_ratio=volume_ratio
+            )
+
+            regime_result = detection.to_dict()
+            # Surface ATR% alongside the detector's indicators for downstream use.
+            regime_result.setdefault('indicators', {})['atr_pct'] = round(atr_pct, 4)
+
+            recommendations = self.regime_detector.get_strategy_recommendations(
+                detection.regime
+            )
+
             plog.info(
-                f"✅ Regime: {regime_result['regime']} (using fallback - Analysis Agent provides actual regime)",
+                f"✅ Regime: {regime_result['regime']} "
+                f"(confidence: {regime_result['confidence']}, "
+                f"adx: {adx:.1f}, atr%: {atr_pct*100:.2f}, trend: {trend_direction})",
                 agent="memory_agent",
                 phase="regime_detection"
             )
-            
+
             return {
                 'success': True,
                 'regime': regime_result,
-                'recommendations': {}
+                'recommendations': recommendations
             }
-            
+
         except Exception as e:
             plog.error(
                 f"❌ Failed to detect regime: {e}",
@@ -586,6 +614,99 @@ class MemoryAgent(BaseAgent):
                 'success': False,
                 'error': str(e)
             }
+
+    def _select_candles_for_regime(self, candles: Any) -> List[Dict]:
+        """
+        Normalize the candles payload into a single flat OHLCV list.
+
+        Accepts either a flat list (already a single timeframe) or a dict
+        keyed by timeframe. For the dict form we prefer the shortest
+        timeframe that carries enough history, since regime detection benefits
+        from a denser, more reactive series.
+        """
+        if isinstance(candles, list):
+            return candles
+
+        if isinstance(candles, dict):
+            # Preference order: most reactive -> most contextual.
+            for tf in ('5m', '15m', '1h', '4h', '1d'):
+                series = candles.get(tf)
+                if isinstance(series, list) and len(series) >= 30:
+                    return series
+            # Fallback: any non-empty timeframe list with the most bars.
+            best: List[Dict] = []
+            for series in candles.values():
+                if isinstance(series, list) and len(series) > len(best):
+                    best = series
+            return best
+
+        return []
+
+    def _compute_regime_indicators(
+        self, ohlcv: List[Dict]
+    ) -> tuple:
+        """
+        Derive (adx, atr, atr_pct, trend_direction, volume_ratio) from raw
+        OHLCV candles using the project's TechnicalIndicators helpers so the
+        math matches the rest of the analysis pipeline.
+
+        Returns:
+            adx: latest ADX value (trend strength)
+            atr: latest ATR value (absolute volatility)
+            atr_pct: ATR as a fraction of price (normalized volatility)
+            trend_direction: 'up' / 'down' / 'sideways' from EMA slope
+            volume_ratio: recent volume vs. its longer-run average
+        """
+        # Imported lazily to keep agent import time low and avoid a hard
+        # pandas dependency at module import for callers that never detect.
+        import pandas as pd
+        from src.analysis.indicators import TechnicalIndicators
+
+        df = pd.DataFrame(ohlcv)
+        # Ensure required numeric columns exist and are floats.
+        for col in ('open', 'high', 'low', 'close', 'volume'):
+            if col not in df.columns:
+                raise ValueError(f"Candle data missing '{col}' column")
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna(subset=['high', 'low', 'close']).reset_index(drop=True)
+
+        # --- Trend strength: ADX (14) ---
+        adx_calc = TechnicalIndicators._calculate_adx(df, period=14)
+        adx_series = adx_calc['adx'].dropna()
+        adx = float(adx_series.iloc[-1]) if len(adx_series) else 0.0
+
+        # --- Volatility: ATR (14), absolute and normalized by price ---
+        atr_series = TechnicalIndicators._calculate_atr(df, period=14).dropna()
+        atr = float(atr_series.iloc[-1]) if len(atr_series) else 0.0
+        last_close = float(df['close'].iloc[-1])
+        atr_pct = (atr / last_close) if last_close else 0.0
+
+        # --- Trend direction: slope of a short EMA over the recent window ---
+        ema = df['close'].ewm(span=20, adjust=False).mean()
+        lookback = min(10, len(ema) - 1)
+        if lookback > 0 and last_close:
+            ema_now = float(ema.iloc[-1])
+            ema_prev = float(ema.iloc[-1 - lookback])
+            slope_pct = (ema_now - ema_prev) / last_close
+        else:
+            slope_pct = 0.0
+        # ~0.1% drift over the window is treated as a directional move.
+        if slope_pct > 0.001:
+            trend_direction = 'up'
+        elif slope_pct < -0.001:
+            trend_direction = 'down'
+        else:
+            trend_direction = 'sideways'
+
+        # --- Volume ratio: latest vs. trailing 20-bar average ---
+        vol = df['volume'].dropna()
+        if len(vol) >= 5:
+            avg_vol = float(vol.tail(20).mean())
+            volume_ratio = (float(vol.iloc[-1]) / avg_vol) if avg_vol else 1.0
+        else:
+            volume_ratio = 1.0
+
+        return adx, atr, atr_pct, trend_direction, volume_ratio
     
     async def _handle_get_performance_report(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive performance report"""

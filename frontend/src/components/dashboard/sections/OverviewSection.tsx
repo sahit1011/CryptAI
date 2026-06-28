@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useStore, Trade } from "@/store/useStore";
 import { useMarketStore } from "@/hooks/useMarketData";
+import { API_URL, apiHeaders } from "@/lib/api";
 
 export function OverviewSection() {
     const { portfolio, activeTrades } = useStore();
@@ -30,14 +31,12 @@ export function OverviewSection() {
             setLoadingTrades(true);
             setError(null);
             try {
-                // Try localhost first
-                let response;
-                try {
-                    response = await fetch('http://localhost:8000/api/trades?limit=50', { cache: 'no-store' });
-                } catch (e) {
-                    console.warn('Localhost fetch failed, trying 127.0.0.1');
-                    response = await fetch('http://127.0.0.1:8000/api/trades?limit=50', { cache: 'no-store' });
-                }
+                // Backend REST URL comes from NEXT_PUBLIC_API_URL (falls back to
+                // localhost for dev). Send the bearer token when one is configured.
+                const response = await fetch(`${API_URL}/api/trades?limit=50`, {
+                    cache: 'no-store',
+                    headers: apiHeaders(),
+                });
 
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
@@ -304,14 +303,12 @@ export function OverviewSection() {
                     </div>
                 )}
 
-                {/* Debug Info - Temporary */}
-                <div className="mt-4 p-2 bg-black/50 rounded text-xs font-mono text-muted-foreground overflow-auto max-h-40">
-                    {error && <div className="text-red-400 font-bold mb-2">Error: {error}</div>}
-                    <div>Total Fetched: {recentTrades.length}</div>
-                    <div>Closed Count: {closedTrades.length}</div>
-                    <div>First Trade Status: {recentTrades[0]?.status}</div>
-                    <pre>{JSON.stringify(recentTrades[0], null, 2)}</pre>
-                </div>
+                {/* Surface fetch errors without dumping raw trade JSON into the UI. */}
+                {error && (
+                    <div className="mt-4 text-xs text-red-400">
+                        Failed to load trade history: {error}
+                    </div>
+                )}
             </GlassCard>
         </div>
     );

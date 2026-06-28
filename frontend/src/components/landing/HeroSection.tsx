@@ -249,6 +249,11 @@ export function HeroSection() {
                             <span className="text-green-400">🔒</span>
                             app.cryptai.com/dashboard
                         </div>
+                        {/* Make clear this hero panel is an illustrative product
+                            preview, not live data, so the numbers below read as a mockup. */}
+                        <div className="ml-auto px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[9px] uppercase tracking-wider text-muted-foreground">
+                            Preview
+                        </div>
                     </div>
 
                     {/* Dashboard Mock Preview with Rich Content */}

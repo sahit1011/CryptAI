@@ -1,170 +1,120 @@
 #!/usr/bin/env python3
 """
-Initialize PostgreSQL Database
-Creates all required tables for the trading system
+Initialize the trading-system database.
+
+This is now a thin wrapper around Alembic, which owns the schema. It no longer
+contains any divergent raw-SQL DDL. The authoritative schema lives in
+``src.data.data_models`` (the single SQLAlchemy MetaData source of truth) and is
+applied by the Alembic migrations under ``alembic/versions``.
+
+Primary path:   ``alembic upgrade head`` (creates/updates all tables + stamps the
+                schema version so future migrations apply cleanly).
+Fallback path:  if Alembic is unavailable, create all tables directly from the
+                single-source metadata (``Base.metadata.create_all``). This does
+                NOT record a migration version, so prefer the Alembic path.
 """
 
 import sys
+import subprocess
 from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+PROJECT_ROOT = Path(__file__).parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from sqlalchemy import create_engine, text
-from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 
+try:
+    from loguru import logger
+except Exception:  # pragma: no cover - loguru should be present in deployment
+    import logging
+
+    logger = logging.getLogger("init_database")
+
 console = Console()
 
-# Database connection
-DATABASE_URL = "postgresql://trader:secure_password_here@localhost:5432/trading_agent"
 
-def init_database():
-    """Initialize database with all required tables"""
-    
-    console.print(Panel.fit(
-        "[bold cyan]Initializing PostgreSQL Database[/bold cyan]\n"
-        f"Database: trading_agent\n"
-        f"Host: localhost:5432"
-    ))
-    
+def _resolve_database_url() -> str:
+    """Resolve the database URL from the application config (single source)."""
+    from src.utils.config import get_config
+
+    return get_config().database.postgres_url
+
+
+def upgrade_with_alembic() -> bool:
+    """Apply the schema by running ``alembic upgrade head``.
+
+    Returns True on success, False if Alembic could not be invoked. Any migration
+    failure (non-zero exit) is raised so the operator sees it.
+    """
+    alembic_ini = PROJECT_ROOT / "alembic.ini"
+    if not alembic_ini.exists():
+        console.print("[yellow]alembic.ini not found - cannot use Alembic path[/yellow]")
+        return False
+
+    console.print("\n[bold]Applying schema via Alembic (upgrade head)...[/bold]")
     try:
-        # Create engine
-        engine = create_engine(DATABASE_URL, echo=False)
-        
-        with engine.connect() as conn:
-            # Test connection
-            result = conn.execute(text("SELECT version()"))
-            version = result.fetchone()[0]
-            console.print(f"✅ Connected to PostgreSQL: {version[:50]}...")
-            
-            # Check if trades table exists
-            result = conn.execute(text("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'trades'
-                )
-            """))
-            table_exists = result.fetchone()[0]
-            
-            if table_exists:
-                console.print("\n[yellow]trades table already exists - checking schema...[/yellow]")
-                
-                # Get existing columns
-                result = conn.execute(text("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'trades'
-                """))
-                existing_columns = {row[0] for row in result.fetchall()}
-                console.print(f"  Existing columns: {len(existing_columns)}")
-                
-                # Add missing columns
-                required_columns = {
-                    'market_regime': 'VARCHAR(50)',
-                    'atr_at_entry': 'DECIMAL(20, 8)',
-                    'smc_patterns': 'JSONB',
-                    'ict_setups': 'JSONB',
-                    'risk_reward_ratio': 'DECIMAL(10, 2)',
-                    'confidence_score': 'DECIMAL(5, 4)',
-                    'confluence_count': 'INTEGER'
-                }
-                
-                for col_name, col_type in required_columns.items():
-                    if col_name not in existing_columns:
-                        try:
-                            conn.execute(text(f"""
-                                ALTER TABLE trades 
-                                ADD COLUMN {col_name} {col_type}
-                            """))
-                            console.print(f"  ✅ Added column: {col_name}")
-                        except Exception as e:
-                            console.print(f"  ⚠️  Could not add {col_name}: {str(e)[:50]}")
-                
-                conn.commit()
-                
-            else:
-                # Create trades table
-                console.print("\n[bold]Creating tables...[/bold]")
-                
-                conn.execute(text("""
-                    CREATE TABLE trades (
-                        id SERIAL PRIMARY KEY,
-                        trade_id VARCHAR(100) UNIQUE NOT NULL,
-                        symbol VARCHAR(20) NOT NULL,
-                        direction VARCHAR(10) NOT NULL,
-                        entry_price DECIMAL(20, 8) NOT NULL,
-                        entry_time TIMESTAMP NOT NULL,
-                        exit_price DECIMAL(20, 8),
-                        exit_time TIMESTAMP,
-                        position_size DECIMAL(20, 8) NOT NULL,
-                        stop_loss DECIMAL(20, 8) NOT NULL,
-                        take_profit_levels JSONB,
-                        risk_amount DECIMAL(20, 8) NOT NULL,
-                        pnl DECIMAL(20, 8),
-                        pnl_percentage DECIMAL(10, 4),
-                        is_winner BOOLEAN,
-                        strategy_type VARCHAR(50),
-                        confidence_score DECIMAL(5, 4),
-                        confluence_count INTEGER,
-                        market_regime VARCHAR(50),
-                        atr_at_entry DECIMAL(20, 8),
-                        smc_patterns JSONB,
-                        ict_setups JSONB,
-                        exit_reason VARCHAR(100),
-                        notes TEXT,
-                        risk_reward_ratio DECIMAL(10, 2),
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                console.print("  ✅ trades table created")
-                conn.commit()
-            
-            # Create indexes (safe - IF NOT EXISTS)
-            console.print("\n[bold]Creating indexes...[/bold]")
-            conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)
-            """))
-            conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades(entry_time)
-            """))
-            conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_type)
-            """))
-            console.print("  ✅ Indexes created")
-            conn.commit()
-            
-            # Create performance_snapshots table
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS performance_snapshots (
-                    id SERIAL PRIMARY KEY,
-                    snapshot_time TIMESTAMP NOT NULL,
-                    total_trades INTEGER,
-                    win_rate DECIMAL(5, 4),
-                    profit_factor DECIMAL(10, 4),
-                    total_pnl DECIMAL(20, 8),
-                    sharpe_ratio DECIMAL(10, 4),
-                    max_drawdown DECIMAL(10, 4),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
-            console.print("  ✅ performance_snapshots table created")
-            conn.commit()
-            
-            # Check table counts
-            result = conn.execute(text("SELECT COUNT(*) FROM trades"))
-            trade_count = result.fetchone()[0]
-            
-            console.print(f"\n[bold green]Database initialized successfully![/bold green]")
-            console.print(f"  Existing trades: {trade_count}")
-            
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        console.print("[yellow]Alembic is not installed - falling back[/yellow]")
+        return False
+
+    if result.stdout:
+        console.print(result.stdout.strip())
+    if result.returncode != 0:
+        console.print("[bold red]Alembic upgrade failed:[/bold red]")
+        console.print(result.stderr.strip())
+        raise RuntimeError(f"alembic upgrade head exited {result.returncode}")
+
+    console.print("[bold green]Alembic migrations applied (schema at head).[/bold green]")
+    return True
+
+
+def create_all_from_metadata() -> None:
+    """Fallback: create all tables directly from the single-source metadata.
+
+    Uses ``src.data.data_models.Base`` (importing trade_history_manager so the
+    runtime ORM mapping is registered on the same metadata).
+    """
+    from sqlalchemy import create_engine
+
+    from src.data.data_models import Base
+    import src.memory.trade_history_manager  # noqa: F401  (registers TradeRecord)
+
+    database_url = _resolve_database_url()
+    console.print("\n[bold]Creating tables from SQLAlchemy metadata (fallback)...[/bold]")
+    engine = create_engine(database_url, echo=False)
+    Base.metadata.create_all(engine)
+    table_names = ", ".join(sorted(Base.metadata.tables.keys()))
+    console.print(f"[bold green]Tables ensured:[/bold green] {table_names}")
+
+
+def init_database() -> None:
+    """Initialize the database, preferring Alembic and falling back to metadata."""
+    console.print(
+        Panel.fit(
+            "[bold cyan]Initializing Trading Database[/bold cyan]\n"
+            "Schema source of truth: src.data.data_models (Alembic-managed)"
+        )
+    )
+
+    try:
+        if upgrade_with_alembic():
+            return
+        # Alembic unavailable -> fall back to direct metadata creation.
+        create_all_from_metadata()
     except Exception as e:
-        console.print(f"\n[bold red]Error initializing database:[/bold red]")
-        console.print(f"  {str(e)}")
+        console.print("\n[bold red]Error initializing database:[/bold red]")
+        console.print(f"  {e}")
         logger.error(f"Database initialization failed: {e}")
         raise
+
 
 if __name__ == "__main__":
     init_database()

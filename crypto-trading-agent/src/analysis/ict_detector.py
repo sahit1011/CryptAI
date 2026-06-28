@@ -15,9 +15,15 @@ Detects ICT methodology patterns including:
 from dataclasses import dataclass
 from datetime import datetime, time
 from typing import List, Dict, Any, Optional, Tuple
+from zoneinfo import ZoneInfo  # stdlib in Python 3.12; DST-aware tz database
 import pandas as pd
 import numpy as np
 from loguru import logger
+
+# ICT kill zones are defined in New York time. Candle timestamps arrive in UTC,
+# so every hour-of-day comparison must first be converted to this zone. Using
+# ZoneInfo keeps the conversion DST-aware (EST/EDT handled automatically).
+NY_TZ = ZoneInfo("America/New_York")
 
 @dataclass
 class KillZone:
@@ -25,7 +31,7 @@ class KillZone:
     name: str
     start_time: time
     end_time: time
-    timezone: str = "EST"
+    timezone: str = "ET"  # America/New_York (EST in winter, EDT in summer)
     active: bool = False
 
 @dataclass
@@ -56,7 +62,8 @@ class ICTDetector:
     - Silver Bullet setups (Professional Enhancement)
     """
 
-    # ICT Kill Zone definitions (EST)
+    # ICT Kill Zone definitions, expressed in New York time (America/New_York).
+    # Candle timestamps are localized to this zone before any hour comparison.
     KILL_ZONES = {
         'london': KillZone('London Open', time(2, 0), time(5, 0)),
         'new_york': KillZone('New York Open', time(7, 0), time(10, 0)),
@@ -67,6 +74,33 @@ class ICTDetector:
     def __init__(self):
         self.liquidity_sweeps: List[LiquiditySweep] = []
         self.order_flow_phases: List[OrderFlowPhase] = []
+
+    @staticmethod
+    def _to_ny_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+        """
+        Convert a candle DatetimeIndex to America/New_York (DST-aware).
+
+        Candle timestamps are produced in UTC. A tz-naive index is assumed to be
+        UTC and localized accordingly; a tz-aware index is converted in place.
+        Returning a NY-localized index makes the ``.hour`` attribute reflect the
+        New York hour that all ICT kill-zone definitions are based on.
+        """
+        if index.tz is None:
+            # Naive timestamps are UTC by contract -> attach UTC, then convert.
+            index = index.tz_localize("UTC")
+        return index.tz_convert(NY_TZ)
+
+    @staticmethod
+    def _to_ny_timestamp(ts: pd.Timestamp) -> pd.Timestamp:
+        """
+        Convert a single candle Timestamp to America/New_York (DST-aware).
+
+        Tz-naive timestamps are treated as UTC; tz-aware ones are converted.
+        """
+        ts = pd.Timestamp(ts)
+        if ts.tz is None:
+            ts = ts.tz_localize("UTC")
+        return ts.tz_convert(NY_TZ)
 
     def analyze(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -132,7 +166,10 @@ class ICTDetector:
 
     def analyze_killzone(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Analyze which killzone is currently active"""
-        current_time = datetime.now()
+        # Kill zones are defined in New York time, so the "current session"
+        # check must use a tz-aware now() converted to America/New_York rather
+        # than the server's local (or UTC) wall clock.
+        current_time = datetime.now(NY_TZ)
 
         # Determine active killzone
         active_kz = None
@@ -187,10 +224,15 @@ class ICTDetector:
         if not hasattr(df.index, 'hour'):
             return pd.DataFrame()
 
+        # Candle timestamps are UTC; kill-zone hours are New York time. Convert
+        # the index to America/New_York (DST-aware) and compare on its hour so
+        # sessions land on the correct candles year-round.
+        ny_hour = self._to_ny_index(df.index).hour
+
         if kz.start_time < kz.end_time:
-            mask = (df.index.hour >= kz.start_time.hour) & (df.index.hour < kz.end_time.hour)
+            mask = (ny_hour >= kz.start_time.hour) & (ny_hour < kz.end_time.hour)
         else:
-            mask = (df.index.hour >= kz.start_time.hour) | (df.index.hour < kz.end_time.hour)
+            mask = (ny_hour >= kz.start_time.hour) | (ny_hour < kz.end_time.hour)
 
         return df[mask]
 
@@ -332,9 +374,11 @@ class ICTDetector:
             if sweep['type'] not in ['asian_low_sweep', 'asian_high_sweep']:
                 continue
             
-            # Check if sweep occurred during London Open
-            sweep_time = pd.Timestamp(sweep['timestamp'])
-            
+            # Check if sweep occurred during London Open.
+            # The sweep timestamp is UTC; convert to New York time (DST-aware)
+            # before checking it against the London kill zone hours.
+            sweep_time = self._to_ny_timestamp(sweep['timestamp'])
+
             # Check if timestamp has time component
             if hasattr(sweep_time, 'hour'):
                 sweep_hour = sweep_time.hour

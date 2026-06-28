@@ -3,7 +3,7 @@
 import { GlassCard } from "@/components/ui/glass-card"
 import { useMarketStore } from "@/hooks/useMarketData"
 import { ArrowUp, ArrowDown, Activity } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, safeNum, safeFixed } from "@/lib/utils"
 
 export function TickerWidget() {
     const { ticker, isConnected } = useMarketStore()
@@ -21,9 +21,9 @@ export function TickerWidget() {
         )
     }
 
-    const price = parseFloat(ticker.c).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    const change = parseFloat(ticker.p)
-    const changePercent = parseFloat(ticker.P)
+    const price = safeNum(ticker.c).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    const change = safeNum(ticker.p)
+    const changePercent = safeNum(ticker.P)
     const isPositive = change >= 0
 
     return (
@@ -45,18 +45,18 @@ export function TickerWidget() {
                         isPositive ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-red-500/10 text-red-500 border-red-500/20"
                     )}>
                         {isPositive ? <ArrowUp className="h-4 w-4 mr-1" /> : <ArrowDown className="h-4 w-4 mr-1" />}
-                        {Math.abs(changePercent).toFixed(2)}%
+                        {safeFixed(Math.abs(changePercent), 2)}%
                     </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 mt-6">
                     <div>
                         <p className="text-muted-foreground text-xs uppercase tracking-wider">24h Volume (BTC)</p>
-                        <p className="text-white font-mono mt-1">{parseFloat(ticker.v).toFixed(2)}</p>
+                        <p className="text-white font-mono mt-1">{safeFixed(ticker.v, 2)}</p>
                     </div>
                     <div>
                         <p className="text-muted-foreground text-xs uppercase tracking-wider">24h Quote (USDT)</p>
-                        <p className="text-white font-mono mt-1">{(parseFloat(ticker.q) / 1000000).toFixed(2)}M</p>
+                        <p className="text-white font-mono mt-1">{safeFixed(safeNum(ticker.q) / 1000000, 2)}M</p>
                     </div>
                 </div>
             </div>

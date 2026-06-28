@@ -3,14 +3,29 @@
 """
 Binance WebSocket client for real-time market data
 Enhanced with proper callback routing and ticker support
+
+Reconnect strategy (single, supervisor-based):
+    A single long-lived "supervisor" task owns the connect -> receive ->
+    reconnect lifecycle. It guarantees that exactly ONE message loop is ever
+    running at a time, uses jittered exponential backoff between reconnect
+    attempts, gives up (and alerts) after a bounded number of failures, and
+    treats a socket that has gone silent for too long as dead even if it is
+    still nominally "open" (stale-price / money-loss protection).
+
+    The previous implementation layered a Tenacity ``@retry`` decorator on top
+    of a manual counter/sleep AND spawned a fresh ``_message_loop`` task on
+    every (re)connect. That could leave multiple overlapping message loops
+    alive, with stale-but-open sockets feeding stale prices. That dual scheme
+    has been removed in favour of this single supervisor.
 """
 import asyncio
 import json
+import random
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Callable, Optional
 from websockets import connect, WebSocketClientProtocol
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+
 
 class BinanceWebSocketClient:
     """
@@ -19,39 +34,98 @@ class BinanceWebSocketClient:
 
     BASE_URL = "wss://fstream.binance.com/ws"
 
-    def __init__(self, on_reconnect_callback: Optional[Callable] = None):
+    # --- Reconnect / liveness tuning -------------------------------------
+    # recv() timeout: how long we wait for any frame before sending a keepalive
+    # ping. A timeout here is NORMAL on quiet streams and is not, by itself,
+    # treated as a dead socket.
+    RECV_TIMEOUT = 30.0
+    # Staleness timeout: if NO market message has been received within this many
+    # seconds the socket is considered dead (stale prices) and we force a
+    # reconnect even if the socket still looks open. Must be > RECV_TIMEOUT so a
+    # single quiet interval doesn't trip it.
+    STALENESS_TIMEOUT = 90.0
+    # Backoff bounds (seconds) for jittered exponential backoff.
+    BACKOFF_BASE = 1.0
+    BACKOFF_MAX = 60.0
+
+    def __init__(
+        self,
+        on_reconnect_callback: Optional[Callable] = None,
+        on_giveup_callback: Optional[Callable] = None,
+    ):
         self.ws: Optional[WebSocketClientProtocol] = None
         self.subscriptions: List[str] = []
         self.callbacks: Dict[str, List[Callable]] = {}
         self.running = False
-        self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10
         self.on_reconnect_callback = on_reconnect_callback
+        # Optional alert hook invoked when we permanently give up reconnecting.
+        self.on_giveup_callback = on_giveup_callback
+
+        # --- Lifecycle / single-loop guarantee ---------------------------
+        # The supervisor task is the ONLY thing that drives connect/receive/
+        # reconnect. Keeping a handle lets connect() be idempotent (it never
+        # spawns a second supervisor / message loop).
+        self._supervisor_task: Optional[asyncio.Task] = None
+        # Timestamp (event-loop clock) of the last market message received.
+        # Used for per-socket staleness detection.
+        self._last_message_at: float = 0.0
 
     async def connect(self):
-        """Establish WebSocket connection"""
-        try:
-            self.ws = await connect(self.BASE_URL)
-            self.running = True
-            self.reconnect_attempts = 0
-            logger.info("✅ Connected to Binance WebSocket")
+        """
+        Start the WebSocket client.
 
-            # Resubscribe to streams
-            if self.subscriptions:
-                await self._resubscribe()
+        Idempotent: starts the single supervisor task that owns the full
+        connect/receive/reconnect lifecycle. The actual socket is opened inside
+        the supervisor. This method returns once the supervisor is running (and,
+        on first start, once the initial connection has been established) so the
+        existing call sites that ``await connect()`` then subscribe keep working.
+        """
+        if self._supervisor_task and not self._supervisor_task.done():
+            logger.debug("connect() called but supervisor already running; ignoring")
+            return
 
-            # Start message loop
-            asyncio.create_task(self._message_loop())
+        self.running = True
+        # Open the initial connection synchronously so callers can subscribe
+        # immediately after connect() returns (preserves prior behaviour where
+        # self.ws was set before connect() returned).
+        await self._open_connection()
+        # Spawn the single supervisor that runs the message loop and handles all
+        # future reconnects. No other code path creates a message loop task.
+        self._supervisor_task = asyncio.create_task(self._supervisor())
 
-        except Exception as e:
-            logger.error(f"Failed to connect to Binance: {e}")
-            await self._handle_reconnect()
+    async def _open_connection(self):
+        """Open (or re-open) the underlying socket and resubscribe streams."""
+        self.ws = await connect(self.BASE_URL)
+        self._mark_message_received()  # treat a fresh connect as "live"
+        logger.info("✅ Connected to Binance WebSocket")
+
+        # Resubscribe to streams on (re)connect.
+        if self.subscriptions:
+            await self._resubscribe()
 
     async def disconnect(self):
-        """Close WebSocket connection"""
+        """Close WebSocket connection and stop the supervisor."""
         self.running = False
+
+        # Cancel the supervisor first so it cannot spawn a new connection/loop
+        # while we are tearing down.
+        if self._supervisor_task and not self._supervisor_task.done():
+            self._supervisor_task.cancel()
+            try:
+                await self._supervisor_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # defensive: never let teardown raise
+                logger.warning(f"Supervisor task ended with error during disconnect: {e}")
+        self._supervisor_task = None
+
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except Exception as e:
+                logger.warning(f"Error closing WebSocket: {e}")
+            self.ws = None
         logger.info("Disconnected from Binance WebSocket")
 
     async def subscribe_kline(
@@ -73,7 +147,7 @@ class BinanceWebSocketClient:
         new_streams = []
         for interval in intervals:
             stream = f"{symbol}@kline_{interval}"
-            
+
             # Only add if not already subscribed
             if stream not in self.subscriptions:
                 self.subscriptions.append(stream)
@@ -167,11 +241,127 @@ class BinanceWebSocketClient:
             await self._subscribe(self.subscriptions)
             logger.info(f"Resubscribed to {len(self.subscriptions)} streams")
 
-    async def _message_loop(self):
-        """Main message receiving loop"""
+    # ------------------------------------------------------------------ #
+    # Single supervisor: owns connect/receive/reconnect lifecycle.
+    # ------------------------------------------------------------------ #
+    async def _supervisor(self):
+        """
+        The one and only driver of the connection lifecycle.
+
+        Runs the message loop; when it returns (socket closed/error/stale), it
+        reconnects with jittered exponential backoff. Guarantees exactly one
+        message loop is active at a time because there is exactly one supervisor
+        task and the message loop runs inline within it (never as a separate
+        spawned task).
+        """
+        attempt = 0
         while self.running:
             try:
-                message = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+                # Ensure we have a live socket. On the very first iteration the
+                # socket was already opened by connect(); afterwards we open it
+                # here as part of each reconnect.
+                if self.ws is None:
+                    await self._open_connection()
+
+                # Successfully (re)connected -> reset backoff and notify.
+                if attempt > 0:
+                    logger.info("✅ WebSocket reconnected successfully")
+                    await self._notify_reconnect()
+                attempt = 0
+
+                # Run the message loop INLINE (not as a separate task) so only
+                # one loop can ever be active. It returns when the socket needs
+                # to be reconnected.
+                await self._message_loop()
+
+            except asyncio.CancelledError:
+                # disconnect() cancelled us; propagate so the task ends cleanly.
+                raise
+            except Exception as e:
+                logger.error(f"Supervisor connection error: {e}")
+
+            if not self.running:
+                break
+
+            # The current socket is unusable; close it before backing off so we
+            # never leave a stale-but-open socket lingering.
+            await self._close_socket()
+
+            attempt += 1
+            if attempt > self.max_reconnect_attempts:
+                logger.critical(
+                    f"Max reconnection attempts ({self.max_reconnect_attempts}) "
+                    f"reached. Giving up on Binance WebSocket."
+                )
+                self.running = False
+                await self._notify_giveup()
+                break
+
+            delay = self._backoff_delay(attempt)
+            logger.warning(
+                f"Reconnecting... attempt {attempt}/{self.max_reconnect_attempts} "
+                f"in {delay:.1f}s"
+            )
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+
+    def _backoff_delay(self, attempt: int) -> float:
+        """Jittered exponential backoff capped at BACKOFF_MAX seconds."""
+        base = min(self.BACKOFF_BASE * (2 ** (attempt - 1)), self.BACKOFF_MAX)
+        # Full jitter: pick uniformly in [0, base] to avoid thundering-herd /
+        # synchronized reconnect storms.
+        return random.uniform(0.0, base)
+
+    def _mark_message_received(self):
+        """Record that the socket is alive right now (for staleness checks)."""
+        self._last_message_at = asyncio.get_event_loop().time()
+
+    def _is_stale(self) -> bool:
+        """True if no message has arrived within STALENESS_TIMEOUT seconds."""
+        if self._last_message_at <= 0:
+            return False
+        return (asyncio.get_event_loop().time() - self._last_message_at) > self.STALENESS_TIMEOUT
+
+    async def _close_socket(self):
+        """Close the current socket (best-effort) and clear the handle."""
+        if self.ws is not None:
+            try:
+                await self.ws.close()
+            except Exception as e:
+                logger.warning(f"Error closing stale WebSocket: {e}")
+            self.ws = None
+
+    async def _notify_reconnect(self):
+        """Invoke the reconnect callback (best-effort)."""
+        if self.on_reconnect_callback:
+            try:
+                await self.on_reconnect_callback()
+            except Exception as e:
+                logger.error(f"Error in reconnect callback: {e}")
+
+    async def _notify_giveup(self):
+        """Invoke the give-up/alert callback (best-effort)."""
+        if self.on_giveup_callback:
+            try:
+                await self.on_giveup_callback()
+            except Exception as e:
+                logger.error(f"Error in give-up callback: {e}")
+
+    async def _message_loop(self):
+        """
+        Main message receiving loop.
+
+        Returns (does NOT recurse / reconnect itself) when the socket needs to
+        be re-established; the supervisor handles the actual reconnect. This
+        keeps reconnection logic in exactly one place.
+        """
+        while self.running:
+            try:
+                message = await asyncio.wait_for(self.ws.recv(), timeout=self.RECV_TIMEOUT)
+                self._mark_message_received()
+
                 data = json.loads(message)
 
                 # Handle different message types
@@ -182,12 +372,25 @@ class BinanceWebSocketClient:
                     logger.debug(f"Subscription response: {data}")
 
             except asyncio.TimeoutError:
-                # Send ping to keep connection alive
+                # No frame within RECV_TIMEOUT. This is normal on quiet streams:
+                # send a keepalive ping. But if the socket has been silent past
+                # STALENESS_TIMEOUT, treat it as dead (stale prices) and let the
+                # supervisor reconnect.
+                if self._is_stale():
+                    logger.error(
+                        f"WebSocket stale: no messages for >{self.STALENESS_TIMEOUT}s. "
+                        f"Treating socket as dead and reconnecting."
+                    )
+                    return
                 await self._send_ping()
+            except asyncio.CancelledError:
+                # disconnect() cancelled the supervisor; bubble up to end cleanly.
+                raise
             except Exception as e:
+                # Socket-level error (closed/protocol). Return so the supervisor
+                # reconnects; do NOT reconnect from here (single source of truth).
                 logger.error(f"Error in message loop: {e}")
-                await self._handle_reconnect()
-                break
+                return
 
     async def _handle_event(self, data: Dict[str, Any]):
         """Handle incoming event with proper routing"""
@@ -198,7 +401,7 @@ class BinanceWebSocketClient:
 
         # Route events to appropriate callbacks based on event type
         matching_callbacks = []
-        
+
         if event_type == 'kline':
             # Kline event: btcusdt@kline_5m
             interval = data.get('k', {}).get('i', '')
@@ -206,7 +409,7 @@ class BinanceWebSocketClient:
             if stream_id in self.callbacks:
                 matching_callbacks.extend(self.callbacks[stream_id])
                 logger.debug(f"Routing kline to {len(self.callbacks[stream_id])} callbacks")
-        
+
         elif event_type == 'depthUpdate':
             # Depth update: btcusdt@depth20@100ms
             # Match any depth stream for this symbol
@@ -215,7 +418,7 @@ class BinanceWebSocketClient:
                     matching_callbacks.extend(self.callbacks[stream_key])
                     logger.debug(f"Routing depth to {len(self.callbacks[stream_key])} callbacks")
                     break
-        
+
         elif event_type == 'markPriceUpdate':
             # Mark price update: btcusdt@markprice@1s
             stream_id = f"{stream_symbol}@markprice@1s"
@@ -248,28 +451,3 @@ class BinanceWebSocketClient:
             await self.ws.ping()
         except Exception as e:
             logger.warning(f"Ping failed: {e}")
-
-    @retry(
-        stop=stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=4, max=60)
-    )
-    async def _handle_reconnect(self):
-        """Handle reconnection with exponential backoff"""
-        if self.reconnect_attempts >= self.max_reconnect_attempts:
-            logger.critical("Max reconnection attempts reached. Stopping.")
-            self.running = False
-            return
-
-        self.reconnect_attempts += 1
-        logger.warning(f"Reconnecting... Attempt {self.reconnect_attempts}")
-
-        await self.disconnect()
-        await asyncio.sleep(2 ** self.reconnect_attempts)
-        await self.connect()
-        
-        # Notify callback after successful reconnection
-        if self.on_reconnect_callback:
-            try:
-                await self.on_reconnect_callback()
-            except Exception as e:
-                logger.error(f"Error in reconnect callback: {e}")

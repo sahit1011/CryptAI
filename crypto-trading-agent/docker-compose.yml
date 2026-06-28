@@ -1,34 +1,147 @@
-version: '3.8'
+# Full stack for the crypto-trading-agent.
+#
+# Secrets come from a local .env file (see .env.example). NOTHING is hardcoded:
+# Postgres credentials, API auth, and the public frontend vars are all driven by
+# environment variables. Copy .env.example -> .env and fill it before `up`.
+#
+# Required in .env (at minimum):
+#   POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+#   POSTGRES_URL   (e.g. postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB})
+#   REDIS_URL=redis://redis:6379
+#
+# Frontend build args (NEXT_PUBLIC_*) are inlined at build time.
+#
+# Bring-up order is enforced via healthchecks + depends_on conditions:
+#   postgres/redis healthy -> migrate runs once -> backend/worker start ->
+#   frontend starts after backend is healthy.
 
 services:
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: trading_agent
-      POSTGRES_USER: trader
-      POSTGRES_PASSWORD: secure_password_here
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
+  # One-shot migration runner. Applies Alembic migrations against Postgres and
+  # exits 0; the app services wait for it to complete successfully.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # FastAPI API (read/trade endpoints + websocket).
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uvicorn", "src.api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      # Bind container-wide; auth is enforced in-app via API_AUTH_TOKEN.
+      API_HOST: 0.0.0.0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # Trading worker / orchestrator (main.py). Same image, different command.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "src.main"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Next.js dashboard. NEXT_PUBLIC_* are baked at build time via build args.
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL}
+        NEXT_PUBLIC_API_TOKEN: ${NEXT_PUBLIC_API_TOKEN}
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # Optional DB admin UI. Credentials are env-driven (no admin/admin default).
   pgadmin:
     image: dpage/pgadmin4:latest
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
     ports:
       - "5050:80"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    profiles: ["tools"]
+    restart: unless-stopped
 
 volumes:
   redis_data:

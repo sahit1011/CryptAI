@@ -155,17 +155,30 @@ class MultiTimeframeAnalyzer:
 
         close = df['close'].values
 
-        # Simple linear regression slope
-        x = np.arange(len(close[-20:]))
+        # Simple linear regression slope (price change per period)
         y = close[-20:]
+        x = np.arange(len(y))
         slope = np.polyfit(x, y, 1)[0]
 
-        # Normalize slope - slope is price change per period
-        # For 20 periods with 50 price increase per period: slope = 50
-        # This is a very strong trend, so we use lower thresholds
-        if slope > 10:
+        # Normalize the slope by the mean close so the threshold is price-agnostic.
+        # Absolute thresholds (e.g. slope > 10) only work for high-priced assets:
+        # a $0.05 alt could be ripping +40%/window and still read 'neutral' because
+        # its raw slope is tiny. Dividing by mean(close) converts the slope into a
+        # per-period fractional change so the same threshold applies to BTC and a
+        # sub-dollar alt alike.
+        mean_close = float(np.mean(y))
+        if mean_close <= 0:
+            return 'neutral'
+
+        # Fractional price change per period. ~0.001 (=0.1% per bar) over a 20-bar
+        # window is a meaningful directional drift; this mirrors the old behaviour
+        # (slope 10 on a ~10k-priced asset -> 0.1% per bar).
+        normalized_slope = slope / mean_close
+        threshold = 0.001
+
+        if normalized_slope > threshold:
             return 'bullish'
-        elif slope < -10:
+        elif normalized_slope < -threshold:
             return 'bearish'
         return 'neutral'
 

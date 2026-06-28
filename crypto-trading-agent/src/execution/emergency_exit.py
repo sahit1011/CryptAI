@@ -100,18 +100,15 @@ class EmergencyExit:
                 logger.error(f"Failed to close position {positions[i].symbol}: {res}")
     
     async def _close_position(self, position):
-        """Close a single position"""
+        """Close a single position with a reduce-only market order."""
         logger.warning(f"Closing position: {position.symbol} {position.quantity} {position.side}")
-        
-        # Determine close side
+
+        # Closing side is opposite the position side.
         close_side = OrderSide.SELL if position.side == 'LONG' else OrderSide.BUY
-        
-        # Place market order
-        await self.exchange.place_order(
+
+        # Reduce-only market close via the unified exchange interface.
+        await self.exchange.close_position(
             symbol=position.symbol,
             side=close_side,
-            order_type=OrderType.MARKET,
             quantity=position.quantity,
-            price=0, # Market order
-            reduce_only=True
         )

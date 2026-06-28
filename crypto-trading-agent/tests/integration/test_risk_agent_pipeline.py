@@ -115,7 +115,7 @@ class TestRiskPipeline:
         assert should_trigger is True
         
         # Trigger circuit breaker
-        await engine.trigger_circuit_breaker(\"3 consecutive losses\")
+        await engine.trigger_circuit_breaker("3 consecutive losses")
         
         # Try to validate trade (should be rejected)
         result = await engine.validate_trade(
@@ -251,7 +251,7 @@ class TestRiskPipeline:
         engine, tracker = await risk_pipeline
         
         # Trigger circuit breaker
-        await engine.trigger_circuit_breaker(\"Test trigger\")
+        await engine.trigger_circuit_breaker("Test trigger")
         assert engine.circuit_breaker.is_active() is True
         
         # Reset it

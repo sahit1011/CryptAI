@@ -11,7 +11,19 @@ from pydantic import BaseModel, Field
 Base = declarative_base()
 
 class Trade(Base):
-    """Trade records table"""
+    """Canonical trade records table (single source of truth for the ``trades`` table).
+
+    NOTE: This model and ``src.memory.trade_history_manager.TradeRecord`` map to the
+    SAME physical ``trades`` table. Historically two divergent definitions existed
+    (the async ORM path in ``state_manager`` used this model; the sync runtime path
+    used ``TradeRecord``), and runtime code reads/writes columns from BOTH sets
+    (e.g. ``state_manager`` reads ``is_winner``; ``TradeRecord`` writes
+    ``take_profit_levels``/``risk_amount``). The table must therefore be the UNION
+    of both column sets. This model now holds that union and is the authoritative
+    definition Alembic autogenerates from. ``TradeRecord`` binds to this same
+    ``Base.metadata`` with ``extend_existing`` so only one ``Table('trades')`` exists.
+    All added columns are nullable/additive to stay backward compatible.
+    """
     __tablename__ = 'trades'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -20,7 +32,7 @@ class Trade(Base):
     # Trade details
     symbol = Column(String(20), nullable=False, index=True)
     direction = Column(String(10), nullable=False)  # LONG/SHORT
-    strategy_type = Column(String(20))  # SCALP/DAY_TRADE/SWING
+    strategy_type = Column(String(20), index=True)  # SCALP/DAY_TRADE/SWING
 
     # Entry
     entry_price = Column(Float, nullable=False)
@@ -29,29 +41,50 @@ class Trade(Base):
 
     # Exit
     exit_price = Column(Float)
-    exit_time = Column(DateTime)
+    exit_time = Column(DateTime, index=True)
     stop_loss = Column(Float, nullable=False)
-    take_profit = Column(JSON)  # List of TP levels
+    take_profit = Column(JSON)  # List of TP levels (async ORM path)
+    take_profit_levels = Column(JSON)  # List of TP levels (runtime TradeRecord path)
+
+    # Risk management (runtime TradeRecord path)
+    risk_amount = Column(Float)
 
     # Performance
     pnl = Column(Float)
     pnl_percentage = Column(Float)
-    r_multiple = Column(Float)  # Risk-reward multiple achieved
-    duration_minutes = Column(Integer)
+    r_multiple = Column(Float)  # Risk-reward multiple achieved (async ORM path)
+    risk_reward_ratio = Column(Float)  # Realized RR (runtime TradeRecord path)
+    duration_minutes = Column(Float)
 
     # Status
     status = Column(String(20), default='OPEN')  # OPEN/CLOSED/CANCELLED
     exit_reason = Column(String(50))  # TP_HIT/SL_HIT/MANUAL/INVALIDATED
 
+    # Setup quality
+    confidence_score = Column(Float)
+    confluence_count = Column(Integer, default=0)
+
+    # Market conditions (runtime TradeRecord path)
+    market_regime = Column(String(50))  # trending/ranging/volatile
+    atr_at_entry = Column(Float)
+    volatility_percentile = Column(Float)
+
     # Analysis context
     analysis_snapshot = Column(JSON)  # Full analysis at trade time
     confluences = Column(JSON)  # List of confluences
-    confidence_score = Column(Float)
+    smc_patterns = Column(JSON)  # SMC patterns present (runtime TradeRecord path)
+    ict_setups = Column(JSON)  # ICT setups (runtime TradeRecord path)
+
+    # Outcome flags
+    is_winner = Column(Boolean)
 
     # Orders
     entry_order_id = Column(String(50))
     sl_order_id = Column(String(50))
     tp_order_ids = Column(JSON)
+
+    # Notes / lessons learned
+    notes = Column(String(500))
 
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)

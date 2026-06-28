@@ -1,8 +1,11 @@
 
 import asyncio
 import json
+import os
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Query
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from src.data.binance_client import BinanceWebSocketClient
@@ -13,14 +16,40 @@ from src.utils.config import get_config
 
 app = FastAPI(title="Antigravity Trading API")
 
-# CORS
+# --- Auth & CORS configuration (env-driven, fail-closed) -----------------------
+# API_AUTH_TOKEN, when set, is required as `Authorization: Bearer <token>` on every
+# non-health endpoint and the /ws handshake. When unset, reads stay open for local
+# dev but the destructive close-positions endpoint is hard-disabled (see below).
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
+# Allowed CORS origins — never wildcard-with-credentials (invalid + unsafe). Default
+# to the local dashboard origin.
+_cors_origins = [o.strip() for o in os.getenv("API_CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for dev
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+def require_auth(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)):
+    """Require a valid bearer token IFF API_AUTH_TOKEN is configured.
+
+    No token configured -> open (local-dev posture; server should be bound to
+    127.0.0.1). Token configured -> every guarded endpoint must present it.
+    """
+    if not API_AUTH_TOKEN:
+        return
+    if creds is None or creds.scheme.lower() != "bearer" or creds.credentials != API_AUTH_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 class ConnectionManager:
     def __init__(self):
@@ -295,6 +324,15 @@ async def shutdown_event():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Auth on the WS handshake when a token is configured. Browsers can't set
+    # Authorization headers on WebSocket, so accept either the header or a
+    # ?token= query param.
+    if API_AUTH_TOKEN:
+        header = websocket.headers.get("authorization", "")
+        token = header[7:] if header.lower().startswith("bearer ") else websocket.query_params.get("token", "")
+        if token != API_AUTH_TOKEN:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
     await manager.connect(websocket)
     try:
         while True:
@@ -308,8 +346,17 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 @app.get("/api/trades")
-async def get_trades(limit: int = 50):
-    """Get recent trade history from PostgreSQL"""
+async def get_trades(
+    limit: int = Query(50, ge=1, le=500, description="Number of recent trades to return (1-500)"),
+    _auth: None = Depends(require_auth),
+):
+    """Get recent trade history from PostgreSQL.
+
+    `limit` is validated at the request boundary (FastAPI/Pydantic Query bounds
+    reject out-of-range values with a 422). The explicit clamp below is kept as
+    a defense-in-depth safeguard in case this handler is ever called directly.
+    """
+    limit = max(1, min(limit, 500))  # clamp to a sane range
     try:
         from src.memory.trade_history_manager import TradeHistoryManager
         from src.utils.config import get_config
@@ -349,110 +396,58 @@ async def get_trades(limit: int = 50):
         return {"error": str(e), "trades": []}
 
 @app.post("/api/close-positions")
-async def close_all_positions():
-    """Close all active positions immediately"""
+async def close_all_positions(_auth: None = Depends(require_auth)):
+    """Emergency 'close all positions' control.
+
+    This API process is SEPARATE from the trading process that owns live/paper
+    positions, so it cannot close them directly — it dispatches a `panic_close`
+    command to the running Execution Agent over the message bus (the same channel
+    the orchestrator uses), and the agent performs the authoritative reduce-only
+    close. The previous implementation built a throwaway PaperTradingEngine and
+    called async methods without await, so it silently no-op'd while reporting
+    success — a safety control that lied.
+
+    Fail-closed: if no API_AUTH_TOKEN is configured this destructive endpoint is
+    disabled entirely (binding to 127.0.0.1 is not sufficient protection for a
+    money-moving control).
+    """
+    if not API_AUTH_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="close-positions is disabled until API_AUTH_TOKEN is configured",
+        )
+
+    if not message_bus:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Message bus unavailable; cannot reach the execution agent",
+        )
+
+    correlation_id = f"api_panic_close_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
     try:
-        from src.execution.paper_trading_engine import PaperTradingEngine
-        from src.memory.trade_history_manager import TradeHistoryManager
-        from datetime import datetime
-        
-        config = get_config()
-        
-        # Initialize paper trading engine
-        engine = PaperTradingEngine(initial_balance=10000.0)
-        
-        # Restore state from database
-        try:
-            engine.restore_from_historical_trades(config.database.postgres_url)
-        except Exception as e:
-            logger.warning(f"Could not restore from historical trades: {e}")
-        
-        # Get current positions
-        positions = engine.get_positions()
-        
-        if not positions:
-            return {"success": True, "message": "No active positions to close", "closed_count": 0}
-        
-        # Close all positions
-        result = engine.close_all_positions(reason="Manual close via API")
-        
-        if result.get('success'):
-            closed_positions = result.get('closed_positions', [])
-            total_pnl = result.get('total_realized_pnl', 0)
-            
-            # Update database
-            trade_manager = TradeHistoryManager(config.database.postgres_url)
-            
-            for pos in closed_positions:
-                symbol = pos.get('symbol')
-                exit_price = pos.get('exit_price')
-                
-                # Find active trade in database
-                from sqlalchemy import create_engine
-                from sqlalchemy.orm import sessionmaker
-                from src.memory.trade_history_manager import TradeRecord
-                
-                engine_db = create_engine(config.database.postgres_url)
-                SessionLocal = sessionmaker(bind=engine_db)
-                session = SessionLocal()
-                
-                try:
-                    active_trade = session.query(TradeRecord).filter(
-                        TradeRecord.symbol == symbol,
-                        TradeRecord.exit_time.is_(None)
-                    ).first()
-                    
-                    if active_trade:
-                        trade_manager.update_trade_exit(
-                            trade_id=active_trade.trade_id,
-                            exit_price=exit_price,
-                            exit_time=datetime.now(),
-                            exit_reason="manual_close_api",
-                            notes="Closed via API endpoint"
-                        )
-                        logger.info(f"Updated trade {active_trade.trade_id} in database")
-                except Exception as e:
-                    logger.error(f"Error updating database: {e}")
-                finally:
-                    session.close()
-            
-            # Broadcast update to frontend
-            if message_bus:
-                await message_bus.publish('execution_status', {
-                    'type': 'position_update',
-                    'payload': []
-                })
-                
-                # Update portfolio
-                portfolio = {
-                    "current_balance": engine.get_balance(),
-                    "total_equity": engine.get_total_equity(),
-                    "unrealized_pnl": 0.0,
-                    "open_positions": 0
-                }
-                await message_bus.publish('execution_status', {
-                    'type': 'balance_update',
-                    'payload': portfolio
-                })
-            
-            logger.info(f"✅ Closed {len(closed_positions)} positions via API, Total P&L: ${total_pnl:.2f}")
-            
-            return {
-                "success": True,
-                "message": f"Successfully closed {len(closed_positions)} position(s)",
-                "closed_count": len(closed_positions),
-                "total_pnl": total_pnl,
-                "positions": closed_positions
-            }
-        else:
-            error = result.get('error', 'Unknown error')
-            return {"success": False, "error": error}
-            
+        await message_bus.publish(
+            "execution_agent_inbox",
+            {
+                "id": correlation_id,
+                "correlation_id": correlation_id,
+                "sender": "api",
+                "receiver": "execution_agent",
+                "type": "panic_close",
+                "payload": {"reason": "Manual close via API"},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        logger.info(f"Dispatched panic_close to execution agent (correlation_id={correlation_id})")
+        return {
+            "success": True,
+            "dispatched": True,
+            "message": "Close-all-positions command dispatched to the execution agent. "
+                       "Watch the live position feed for confirmation.",
+            "correlation_id": correlation_id,
+        }
     except Exception as e:
-        logger.error(f"Error closing positions via API: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        logger.error(f"Error dispatching close-positions command: {e}")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
 
 @app.get("/health")
 async def health_check():
@@ -464,4 +459,8 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.api.server:app", host="0.0.0.0", port=8000, reload=True)
+    # Bind to localhost by default; only expose externally behind an authenticating
+    # proxy (and with API_AUTH_TOKEN set). Override via API_HOST.
+    host = os.getenv("API_HOST", "127.0.0.1")
+    port = int(os.getenv("API_PORT", "8000"))
+    uvicorn.run("src.api.server:app", host=host, port=port, reload=True)

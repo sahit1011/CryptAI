@@ -1,20 +1,80 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Bitcoin, Activity, DollarSign, TrendingUp } from "lucide-react";
+import { useEffect, useState } from "react";
 
-const coins = [
-    { name: "Bitcoin", symbol: "BTC", price: "$64,230", change: "+2.4%" },
-    { name: "Ethereum", symbol: "ETH", price: "$3,450", change: "+1.8%" },
-    { name: "Solana", symbol: "SOL", price: "$145", change: "+5.2%" },
-    { name: "Cardano", symbol: "ADA", price: "$0.45", change: "-0.5%" },
-    { name: "Ripple", symbol: "XRP", price: "$0.62", change: "+0.2%" },
-    { name: "Polkadot", symbol: "DOT", price: "$7.20", change: "+1.1%" },
-    { name: "Chainlink", symbol: "LINK", price: "$18.50", change: "+3.4%" },
-    { name: "Avalanche", symbol: "AVAX", price: "$45.20", change: "+4.1%" },
+// Symbols to display, mapped to their Binance USDT pairs.
+const SYMBOLS = [
+    { name: "Bitcoin", symbol: "BTC", pair: "BTCUSDT" },
+    { name: "Ethereum", symbol: "ETH", pair: "ETHUSDT" },
+    { name: "Solana", symbol: "SOL", pair: "SOLUSDT" },
+    { name: "Cardano", symbol: "ADA", pair: "ADAUSDT" },
+    { name: "Ripple", symbol: "XRP", pair: "XRPUSDT" },
+    { name: "Polkadot", symbol: "DOT", pair: "DOTUSDT" },
+    { name: "Chainlink", symbol: "LINK", pair: "LINKUSDT" },
+    { name: "Avalanche", symbol: "AVAX", pair: "AVAXUSDT" },
 ];
 
+interface TickerEntry {
+    symbol: string;
+    price: string;
+    change: string;
+}
+
+// Format a USD price with sensible precision (sub-$1 coins need more decimals).
+function formatPrice(value: number): string {
+    if (!isFinite(value)) return "--";
+    const decimals = value >= 1 ? 2 : 4;
+    return `$${value.toLocaleString("en-US", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+    })}`;
+}
+
 export function LiveTicker() {
+    // Real prices fetched from Binance's public 24h ticker endpoint (the same
+    // public API the dashboard chart already uses). Falls back to nothing on
+    // error rather than displaying fabricated prices.
+    const [ticks, setTicks] = useState<TickerEntry[]>([]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const fetchPrices = async () => {
+            try {
+                const results = await Promise.all(
+                    SYMBOLS.map(async (coin) => {
+                        const res = await fetch(
+                            `https://api.binance.com/api/v3/ticker/24hr?symbol=${coin.pair}`,
+                            { cache: "no-store" }
+                        );
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const data = await res.json();
+                        const pct = parseFloat(data.priceChangePercent);
+                        return {
+                            symbol: coin.symbol,
+                            price: formatPrice(parseFloat(data.lastPrice)),
+                            change: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`,
+                        };
+                    })
+                );
+                if (!cancelled) setTicks(results);
+            } catch (e) {
+                console.error("LiveTicker: failed to fetch prices", e);
+            }
+        };
+
+        fetchPrices();
+        const interval = setInterval(fetchPrices, 30000); // refresh every 30s
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    }, []);
+
+    // Until real data arrives, render nothing rather than fabricated prices.
+    if (ticks.length === 0) return null;
+
     return (
         <div className="fixed bottom-0 left-0 right-0 z-50 w-full bg-[#0A0A0A]/80 backdrop-blur-md border-t border-white/10 py-3 overflow-hidden">
             <div className="absolute inset-y-0 left-0 w-32 bg-gradient-to-r from-[#0A0A0A] to-transparent z-10" />
@@ -29,7 +89,7 @@ export function LiveTicker() {
                     duration: 30
                 }}
             >
-                {[...coins, ...coins, ...coins].map((coin, i) => (
+                {[...ticks, ...ticks, ...ticks].map((coin, i) => (
                     <div key={i} className="flex items-center gap-3 text-sm">
                         <span className="font-bold text-white">{coin.symbol}</span>
                         <span className="text-muted-foreground">{coin.price}</span>

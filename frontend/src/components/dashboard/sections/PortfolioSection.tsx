@@ -143,9 +143,11 @@ export function PortfolioSection() {
                 </GlassCard>
 
                 <GlassCard className="p-6">
+                    {/* No real risk-scoring feed exists yet, so we show a neutral
+                        placeholder instead of a fabricated score on a money dashboard. */}
                     <div className="label-md text-muted-foreground mb-3">Risk Score</div>
-                    <div className="financial-md text-orange-400 mb-1">4.2/10</div>
-                    <div className="body-xs text-muted-foreground">Moderate</div>
+                    <div className="financial-md text-muted-foreground mb-1">—</div>
+                    <div className="body-xs text-muted-foreground">Not available yet</div>
                 </GlassCard>
             </div>
         </div>

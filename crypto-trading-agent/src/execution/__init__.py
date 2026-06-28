@@ -40,8 +40,20 @@ from src.execution.error_handler import (
     ErrorRecoveryStrategy
 )
 
-from src.execution.execution_agent import ExecutionAgent
-from src.execution.emergency_exit import EmergencyExit
+# ExecutionAgent / EmergencyExit pull in the full agent + DB + LLM stack
+# (base_agent -> state_manager -> sqlalchemy, message_bus -> redis, ...). Import
+# them lazily (PEP 562) so lightweight consumers of this package — e.g. just the
+# exchange client or error types — don't drag in that whole chain. The package-level
+# names `ExecutionAgent` and `EmergencyExit` still resolve on first access.
+def __getattr__(name):
+    if name == "ExecutionAgent":
+        from src.execution.execution_agent import ExecutionAgent
+        return ExecutionAgent
+    if name == "EmergencyExit":
+        from src.execution.emergency_exit import EmergencyExit
+        return EmergencyExit
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Exchange Client
