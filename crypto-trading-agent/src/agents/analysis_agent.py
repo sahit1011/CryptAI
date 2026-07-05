@@ -4,6 +4,7 @@ Orchestrates comprehensive market analysis using computational methods + LLM rea
 """
 import asyncio
 import json
+import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from loguru import logger
@@ -47,6 +48,11 @@ except ImportError:
 
 # Create pipeline logger instance
 plog = PipelineLogger()
+
+# Gate verbose per-message payload-dump logging behind LOG_LEVEL=DEBUG so production
+# stdout stays clean. These dumps can emit ~100 lines (full payloads, per-candle
+# structure) on every analysis request, which is noise in normal operation.
+_DEBUG_PAYLOAD_LOGGING = os.environ.get("LOG_LEVEL", "").upper() == "DEBUG"
 
 class MarketAnalysisAgent(BaseAgent):
     """
@@ -118,7 +124,6 @@ class MarketAnalysisAgent(BaseAgent):
 
     def _setup_handlers(self):
         """Setup message handlers"""
-        print("DEBUG PRINT: _setup_handlers CALLED")
         self.register_handler("market_data_update", self._handle_market_data)
         self.register_handler("analyze_market", self._handle_analysis_request_debug)  # For orchestrator
         self.register_handler("request_analysis", self._handle_analysis_request_debug)
@@ -189,13 +194,11 @@ class MarketAnalysisAgent(BaseAgent):
         """
         Handle analysis request from orchestrator
         """
-        # CRITICAL FIX: Log IMMEDIATELY when this handler is called
-        print(f"DEBUG PRINT: _handle_analysis_request CALLED with payload keys: {list(payload.keys())}")
         plog.info(
             f"🎯 _handle_analysis_request CALLED with payload keys: {list(payload.keys())}",
             agent="analysis_agent"
         )
-        
+
         # Publish activity
         await self.publish_activity(
             action="analysis_request_received",
@@ -204,92 +207,65 @@ class MarketAnalysisAgent(BaseAgent):
             severity="info"
         )
 
-        
+
         try:
-            # DEBUGGING: Log raw payload structure
-            plog.debug(
-                f"📩 Raw payload type: {type(payload)}",
-                agent="analysis_agent"
-            )
-            plog.debug(
-                f"📩 Raw payload keys: {list(payload.keys())}",
-                agent="analysis_agent"
-            )
-            
             symbol = payload.get('symbol')
             candles = payload.get('candles', {})
             market_data = payload.get('market_data', {})
-            
-            # DEBUGGING: Log candles structure in detail
-            plog.debug(
-                f"📩 Candles type after .get(): {type(candles)}",
-                agent="analysis_agent"
-            )
-            
-            if isinstance(candles, dict):
-                plog.debug(
-                    f"📩 Candles dict keys: {list(candles.keys())}",
-                    agent="analysis_agent"
-                )
-                
-                # Log each timeframe's candles structure
-                for tf, candle_list in candles.items():
-                    plog.debug(
-                        f"📩 {tf}: type={type(candle_list)}, len={len(candle_list) if isinstance(candle_list, list) else 'N/A'}",
-                        agent="analysis_agent"
-                    )
-                    
-                    # Log sample candle if available
-                    if isinstance(candle_list, list) and len(candle_list) > 0:
-                        sample = candle_list[0]
+
+            # Verbose per-message payload inspection: full raw structure, per-timeframe
+            # candle types, sample-candle keys, timestamp types. Useful when debugging
+            # orchestrator wiring, but ~100 lines of noise in production - gate it.
+            if _DEBUG_PAYLOAD_LOGGING:
+                plog.debug(f"📩 Raw payload type: {type(payload)}", agent="analysis_agent")
+                plog.debug(f"📩 Raw payload keys: {list(payload.keys())}", agent="analysis_agent")
+                plog.debug(f"📩 Candles type after .get(): {type(candles)}", agent="analysis_agent")
+
+                if isinstance(candles, dict):
+                    plog.debug(f"📩 Candles dict keys: {list(candles.keys())}", agent="analysis_agent")
+                    # Log each timeframe's candles structure
+                    for tf, candle_list in candles.items():
                         plog.debug(
-                            f"📩 {tf} sample candle keys: {list(sample.keys()) if isinstance(sample, dict) else 'N/A'}",
+                            f"📩 {tf}: type={type(candle_list)}, len={len(candle_list) if isinstance(candle_list, list) else 'N/A'}",
                             agent="analysis_agent"
                         )
-                        if isinstance(sample, dict) and 'timestamp' in sample:
+                        # Log sample candle if available
+                        if isinstance(candle_list, list) and len(candle_list) > 0:
+                            sample = candle_list[0]
                             plog.debug(
-                                f"📩 {tf} sample timestamp type: {type(sample['timestamp'])}, value: {sample['timestamp']}",
+                                f"📩 {tf} sample candle keys: {list(sample.keys()) if isinstance(sample, dict) else 'N/A'}",
                                 agent="analysis_agent"
                             )
-            else:
-                plog.error(
-                    f"❌ CRITICAL: Candles is not a dict! Type: {type(candles)}, Value: {candles}",
-                    agent="analysis_agent"
-                )
-            
+                            if isinstance(sample, dict) and 'timestamp' in sample:
+                                plog.debug(
+                                    f"📩 {tf} sample timestamp type: {type(sample['timestamp'])}, value: {sample['timestamp']}",
+                                    agent="analysis_agent"
+                                )
+
             plog.info(f"Received analysis request for {symbol}", agent="analysis_agent", phase="analysis_request")
-            
-            # CRITICAL FIX: Add detailed logging of received data
-            plog.info(
-                f"📊 Analysis Agent received payload with keys: {list(payload.keys())}",
-                agent="analysis_agent"
-            )
-            
-            # Log candles data structure
+
+            # Essential input validation (kept at INFO/ERROR): candle counts and the
+            # critical empty/invalid-candles guards that indicate real upstream failures.
             if isinstance(candles, dict):
-                candle_counts = {tf: len(candle_list) if isinstance(candle_list, list) else 0 
+                candle_counts = {tf: len(candle_list) if isinstance(candle_list, list) else 0
                                 for tf, candle_list in candles.items()}
                 total_candles = sum(candle_counts.values())
                 plog.info(
                     f"📊 Candles received: {candle_counts} (total: {total_candles})",
                     agent="analysis_agent"
                 )
-                
+
                 if total_candles == 0:
                     plog.error(
                         "❌ CRITICAL: Received empty candles dict from orchestrator!",
                         agent="analysis_agent"
                     )
-                    plog.error(
-                        f"Payload structure: {payload}",
-                        agent="analysis_agent"
-                    )
             else:
                 plog.error(
-                    f"❌ CRITICAL: Candles is not a dict! Type: {type(candles)}, Value: {candles}",
+                    f"❌ CRITICAL: Candles is not a dict! Type: {type(candles)}",
                     agent="analysis_agent"
                 )
-            
+
             # Run complete analysis
             analysis_result = await self.analyze_market(
                 symbol=symbol,
@@ -336,6 +312,12 @@ class MarketAnalysisAgent(BaseAgent):
             Complete analysis with trade opportunities
         """
         start_time = datetime.now()
+
+        # Initialize before the try so the except/fallback path can always reference
+        # it. Otherwise an exception raised before the assignment at Step 1.1 (e.g. in
+        # regime/context setup, or even during computational analysis itself) would
+        # trigger an UnboundLocalError in the fallback and kill graceful degradation.
+        computational_results: Dict[str, Any] = {}
 
         async with PhaseLogger("analysis", f"Market Analysis for {symbol}", agent="analysis_agent"):
 
@@ -561,6 +543,25 @@ class MarketAnalysisAgent(BaseAgent):
 
 
                 plog.debug("Calling Claude Sonnet 4.5 for deep analysis", agent="analysis_agent", phase="llm_analysis")
+
+                # Populate the exact keys the LLM cache derives its key from.
+                # The cache (`LLMResponseCache._generate_cache_key`) reads
+                # `symbol`, `primary_timeframe`, and a `computational_analysis` sub-tree.
+                # `context_builder.build_analysis_context` does NOT set those keys, so
+                # every request previously hashed identical defaults -> one constant key:
+                # distinct symbols/timeframes/windows collided (wrong/stale results) and
+                # the cache was effectively useless. Deriving the key from real inputs
+                # (symbol, primary timeframe, structural counts, last-candle timestamps)
+                # makes distinct requests miss and identical snapshots hit correctly.
+                llm_context['symbol'] = symbol
+                llm_context['primary_timeframe'] = (
+                    (timeframe_strategy or {}).get('primary', [None])[0]
+                    if timeframe_strategy else None
+                ) or next(iter(candles.keys()), None)
+                llm_context['computational_analysis'] = self._build_cache_discriminator(
+                    computational_results, candles
+                )
+
                 llm_analysis = await self._call_llm_analysis(llm_context)
 
                 step.complete(
@@ -1472,8 +1473,12 @@ Analyze the following market data:
         # Prepare messages
         system_prompt = context['system_prompt']
 
-        # Convert NumPy types to native Python types
-        safe_context = self._convert_numpy_types(context)
+        # Convert NumPy types to native Python types.
+        # FIX: previously called self._convert_numpy_types(), which does not exist,
+        # so the Groq "final fallback" always raised AttributeError before making a
+        # request - collapsing the intended 3-tier chain (OpenRouter -> Claude ->
+        # Groq) into effectively 2 tiers. Use the same serializer as the other tiers.
+        safe_context = self._make_serializable(context)
 
         # Safe JSON encoder that handles edge cases
         class SafeJSONEncoder(json.JSONEncoder):
@@ -1561,16 +1566,26 @@ Analyze the following market data:
         """Parse and validate LLM response"""
         plog.debug(f"Parsing LLM response (length: {len(response_text)} chars)", agent="analysis_agent", phase="llm_analysis")
 
-        # Try to extract JSON from response
-        # Sometimes Claude wraps JSON in markdown code blocks
+        # Try to extract JSON from response.
+        # Sometimes the LLM wraps JSON in markdown code blocks, and sometimes the
+        # closing fence is missing (truncated/streamed tails). find() returns -1 when
+        # the closing ``` is absent; slicing response_text[start:-1] would silently
+        # drop the final char and guarantee a JSONDecodeError. Guard json_end == -1
+        # and take the remainder instead (mirrors strategy_agent._parse_llm_response).
         if "```json" in response_text:
             json_start = response_text.find("```json") + 7
             json_end = response_text.find("```", json_start)
-            json_str = response_text[json_start:json_end].strip()
+            if json_end != -1:
+                json_str = response_text[json_start:json_end].strip()
+            else:
+                json_str = response_text[json_start:].strip()
         elif "```" in response_text:
             json_start = response_text.find("```") + 3
             json_end = response_text.find("```", json_start)
-            json_str = response_text[json_start:json_end].strip()
+            if json_end != -1:
+                json_str = response_text[json_start:json_end].strip()
+            else:
+                json_str = response_text[json_start:].strip()
         else:
             json_str = response_text.strip()
 
@@ -1657,12 +1672,50 @@ Analyze the following market data:
         plog.method_entry("_synthesize_results", agent="analysis_agent")
         plog.debug(f"Synthesizing results for {symbol}", agent="analysis_agent")
 
-        # Get current price from latest candle
-        current_price = 43000.0  # Default fallback
-        if candles.get('5m') and len(candles['5m']) > 0:
-            current_price = candles['5m'][-1]['close']
-        elif candles.get('1h') and len(candles['1h']) > 0:
-            current_price = candles['1h'][-1]['close']
+        # Get current price from latest available candle.
+        # NEVER substitute a hardcoded constant: a BTC-scale default (e.g. 43000)
+        # applied to an arbitrary symbol (SOL, DOGE, ...) would fabricate a wildly
+        # wrong price and could drive real (testnet) order sizing/SL/TP. If no
+        # candle price is available, fail the cycle with a neutral no-setup result.
+        current_price = None
+        for tf in ('5m', '1h', '15m', '1m', '4h', '1d'):
+            tf_candles = candles.get(tf)
+            if tf_candles and len(tf_candles) > 0:
+                last_close = tf_candles[-1].get('close')
+                if isinstance(last_close, (int, float)) and last_close > 0:
+                    current_price = float(last_close)
+                    break
+
+        if current_price is None:
+            plog.error(
+                f"No valid current price found for {symbol} in any timeframe; "
+                f"returning neutral no-setup result instead of fabricating a price.",
+                agent="analysis_agent",
+                phase="results_compilation"
+            )
+            return {
+                'symbol': symbol,
+                'timestamp': datetime.utcnow().isoformat(),
+                'analysis_id': f"{symbol}_nosetup_{int(datetime.utcnow().timestamp())}",
+                'current_price': None,
+                'market_regime': {
+                    'type': 'UNKNOWN',
+                    'confidence': 0.0,
+                    'trend_strength': 0.0,
+                    'volatility_level': 'medium',
+                    'reasoning': 'No price data available'
+                },
+                'market_structure': {'overall_bias': 'unknown'},
+                'key_levels': {},
+                'smc_analysis': {},
+                'ict_analysis': {},
+                'patterns': {},
+                'mtf_analysis': {},
+                'trade_opportunities': [],
+                'overall_confidence': 0.0,
+                'reasoning': 'No valid price data available - skipping cycle',
+                'is_fallback': True
+            }
 
         plog.debug(f"Current price: ${current_price:.2f}", agent="analysis_agent")
 
@@ -1761,6 +1814,92 @@ Analyze the following market data:
                     confidences.append(0.0)
 
         return sum(confidences) / len(confidences) if confidences else 0.0
+
+    def _build_cache_discriminator(
+        self,
+        computational_results: Dict[str, Any],
+        candles: Dict[str, List[Dict]]
+    ) -> Dict[str, Any]:
+        """
+        Build the `computational_analysis` sub-tree that LLMResponseCache reads to
+        derive its cache key. Shapes real values into the exact nested structure the
+        cache reader expects so that identical market snapshots produce identical keys
+        (cache hit) while distinct symbols/timeframes/candle windows produce different
+        keys (no collision).
+
+        The last-candle timestamps are folded into the `mtf_analysis.overall_bias`
+        discriminator so a new candle (same structural counts) still invalidates the
+        cache within the TTL window.
+        """
+        smc = computational_results.get('smc', {}) or {}
+        ict = computational_results.get('ict', {}) or {}
+        indicators = computational_results.get('indicators', {}) or {}
+        mtf = computational_results.get('mtf_analysis', {}) or {}
+
+        # Aggregate structural counts across all timeframes.
+        order_blocks = sum(
+            len((tf_data or {}).get('order_blocks', []))
+            for tf_data in smc.values() if isinstance(tf_data, dict)
+        )
+        fvgs = sum(
+            len((tf_data or {}).get('fair_value_gaps', []))
+            for tf_data in smc.values() if isinstance(tf_data, dict)
+        )
+        bos_count = sum(
+            1 for tf_data in smc.values()
+            if isinstance(tf_data, dict)
+            and (tf_data.get('break_of_structure', {}) or {}).get('bos', False)
+        )
+        in_killzone = any(
+            (tf_data or {}).get('killzone', {}).get('current_killzone', 'none') != 'none'
+            for tf_data in ict.values() if isinstance(tf_data, dict)
+        )
+        sweep_detected = any(
+            len((tf_data or {}).get('liquidity_sweeps', [])) > 0
+            for tf_data in ict.values() if isinstance(tf_data, dict)
+        )
+
+        # Fold per-timeframe last-candle timestamps into the bias discriminator so the
+        # key changes when the candle window advances.
+        last_ts = {}
+        for tf, candle_list in candles.items():
+            if isinstance(candle_list, list) and candle_list:
+                last = candle_list[-1]
+                if isinstance(last, dict):
+                    last_ts[tf] = last.get('timestamp')
+        overall_bias = f"{mtf.get('overall_bias', 'neutral')}|{sorted(last_ts.items())}"
+
+        # RSI/trend from the primary (first) timeframe's indicators, if present.
+        primary_inds = {}
+        if isinstance(indicators, dict):
+            for tf_inds in indicators.values():
+                if isinstance(tf_inds, dict):
+                    primary_inds = tf_inds
+                    break
+        rsi = primary_inds.get('rsi_14', 0)
+        if hasattr(rsi, 'iloc'):
+            rsi = rsi.iloc[-1] if len(rsi) > 0 else 0
+        try:
+            rsi = float(rsi)
+        except (ValueError, TypeError):
+            rsi = 0.0
+
+        return {
+            'mtf_analysis': {'overall_bias': overall_bias},
+            'smc_analysis': {
+                'order_blocks': [None] * order_blocks,      # len() is what the reader uses
+                'fair_value_gaps': [None] * fvgs,
+                'bos_count': bos_count,
+            },
+            'ict_analysis': {
+                'in_killzone': in_killzone,
+                'sweep_detected': sweep_detected,
+            },
+            'indicators': {
+                'rsi_14': rsi,
+                'trend': primary_inds.get('trend', 'neutral'),
+            },
+        }
 
     async def _fallback_analysis(
         self,

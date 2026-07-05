@@ -179,13 +179,18 @@ class VectorMemoryStore:
                 else:
                     flat_metadata[k] = str(v)
             
-            self.collection.add(
+            # Use upsert (not add) so re-storing an existing trade_id UPDATES the
+            # record in place instead of raising a duplicate-id error. This is
+            # what makes the learning loop work: a trade is first stored at entry
+            # (setup context only) and then re-stored at close with its outcome
+            # (win/loss, P&L, RR) merged in.
+            self.collection.upsert(
                 ids=[trade_id],
                 embeddings=[embedding],
                 metadatas=[flat_metadata],
                 documents=[description]
             )
-            
+
             logger.debug(f"Trade stored in vector memory: {trade_id}")
             return True
 

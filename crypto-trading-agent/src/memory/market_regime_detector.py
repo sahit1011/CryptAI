@@ -45,43 +45,73 @@ class MarketRegimeDetector:
     """
     
     def __init__(self):
-        # Historical ATR for percentile calculation
-        self.atr_history: List[float] = []
+        # Historical normalized volatility (ATR/price) for percentile calculation,
+        # keyed PER SYMBOL. Using ATR% (a fraction of price) instead of absolute
+        # ATR makes the volatility percentile comparable across symbols with very
+        # different price scales (e.g. BTC vs a sub-dollar alt). Keying per symbol
+        # prevents one symbol's ATR distribution from polluting another's.
+        self.atr_pct_history: Dict[str, List[float]] = {}
         self.max_history = 100
-        
+
         # Current regime
         self.current_regime: Optional[RegimeDetection] = None
-        
+
         logger.info("Market regime detector initialized")
-    
+
+    def load_history(self, symbol: str, history: List[float]) -> None:
+        """Seed the per-symbol ATR% history (e.g. from persisted Redis state).
+
+        Called by the memory agent before ``detect_regime`` so the volatility
+        percentile is meaningful immediately after a restart instead of falling
+        back to the neutral 0.5 default for the first ~100 cycles.
+        """
+        if not symbol:
+            return
+        # Keep only the most recent ``max_history`` samples.
+        self.atr_pct_history[symbol] = list(history)[-self.max_history:]
+
+    def get_history(self, symbol: str) -> List[float]:
+        """Return the current per-symbol ATR% history for persistence."""
+        return list(self.atr_pct_history.get(symbol, []))
+
     def detect_regime(
         self,
         adx: float,
         atr: float,
         trend_direction: str,  # 'up', 'down', 'sideways'
-        volume_ratio: float = 1.0
+        volume_ratio: float = 1.0,
+        atr_pct: Optional[float] = None,
+        symbol: str = "_global",
     ) -> RegimeDetection:
         """
         Detect current market regime
-        
+
         Args:
             adx: Average Directional Index (trend strength)
-            atr: Average True Range (volatility)
+            atr: Average True Range (absolute volatility, kept for reporting)
             trend_direction: Overall trend direction
             volume_ratio: Volume vs average
-            
+            atr_pct: ATR normalized by price (ATR/price). This is what drives
+                the volatility percentile so it is comparable across symbols.
+                If not supplied, falls back to absolute ``atr`` (legacy behavior).
+            symbol: Symbol the ATR% history is tracked under.
+
         Returns:
             RegimeDetection
         """
-        
-        # Update ATR history
-        self.atr_history.append(atr)
-        if len(self.atr_history) > self.max_history:
-            self.atr_history.pop(0)
-        
-        # Calculate ATR percentile
-        atr_percentile = self._calculate_percentile(atr, self.atr_history)
-        
+        # Prefer normalized ATR% for cross-symbol-comparable volatility ranking.
+        # Fall back to absolute ATR only if a caller doesn't provide atr_pct.
+        vol_measure = atr_pct if atr_pct is not None else atr
+
+        # Update this symbol's normalized-volatility history.
+        history = self.atr_pct_history.setdefault(symbol, [])
+        history.append(vol_measure)
+        if len(history) > self.max_history:
+            history.pop(0)
+
+        # Calculate volatility percentile within this symbol's own history.
+        atr_percentile = self._calculate_percentile(vol_measure, history)
+
         # Detect regime
         regime, confidence = self._classify_regime(
             adx=adx,
@@ -90,13 +120,14 @@ class MarketRegimeDetector:
             trend_direction=trend_direction,
             volume_ratio=volume_ratio
         )
-        
+
         detection = RegimeDetection(
             regime=regime,
             confidence=confidence,
             indicators={
                 'adx': adx,
                 'atr': atr,
+                'atr_pct': vol_measure,
                 'atr_percentile': atr_percentile,
                 'volume_ratio': volume_ratio
             },

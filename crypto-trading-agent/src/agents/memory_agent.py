@@ -337,13 +337,47 @@ class MemoryAgent(BaseAgent):
                 notes=payload.get('notes')
             )
             
-            # Update vector memory with outcome
+            # LEARNING LOOP: persist the trade OUTCOME into vector memory.
+            #
+            # Previously this block built `trade_data` but never called the
+            # vector store, so outcomes never reached vector memory and every
+            # similarity result carried "LOSS / P&L 0.00" placeholder text —
+            # the learning loop was a silent no-op. We now re-store (upsert) the
+            # SAME trade_id with the full setup context merged with the realized
+            # outcome, so future similarity searches return trades whose actual
+            # win/loss and P&L are embedded and available to callers.
             trade_data = {
+                # Setup context (from the authoritative DB record).
+                'symbol': trade_record.symbol,
+                'direction': trade_record.direction,
+                'strategy_type': trade_record.strategy_type,
+                'market_regime': trade_record.market_regime,
+                'confidence_score': trade_record.confidence_score,
+                'confluence_count': trade_record.confluence_count,
+                'smc_patterns': trade_record.smc_patterns or [],
+                'ict_setups': trade_record.ict_setups or [],
+                'volatility_percentile': trade_record.volatility_percentile,
+                # Realized outcome — the part the learning loop actually needs.
                 'is_winner': trade_record.is_winner,
                 'pnl': trade_record.pnl,
-                'risk_reward_ratio': trade_record.risk_reward_ratio
+                'risk_reward_ratio': trade_record.risk_reward_ratio,
             }
-            
+
+            # Best-effort: store_trade swallows its own failures and returns
+            # False, so a vector-memory outage cannot break the authoritative
+            # (already-committed) exit update above.
+            stored = await asyncio.to_thread(
+                self.vector_memory.store_trade,
+                trade_id=payload.get('trade_id'),
+                trade_data=trade_data
+            )
+            if not stored:
+                plog.warning(
+                    f"Trade outcome not persisted to vector memory: {payload.get('trade_id')}",
+                    agent="memory_agent",
+                    phase="trade_update"
+                )
+
             plog.info(
                 f"✅ Trade updated: {payload.get('trade_id')} - P&L: ${trade_record.pnl:.2f}",
                 agent="memory_agent",
@@ -499,13 +533,19 @@ class MemoryAgent(BaseAgent):
             if end_date and isinstance(end_date, str):
                 end_date = datetime.fromisoformat(end_date)
             
-            metrics = await self.performance_analytics.calculate_metrics(
+            # The analytics engine consumes a list of trade dicts plus the
+            # current balance (it is synchronous and does NOT take date/symbol
+            # filters). Previously this handler awaited it with keyword filters
+            # it never accepted, so every call raised TypeError and the handler
+            # could never succeed. We now fetch the matching trades ourselves,
+            # convert them to dicts, and call the engine with its real signature.
+            metrics = await self._compute_metrics(
                 start_date=start_date,
                 end_date=end_date,
                 symbol=symbol,
                 strategy_type=strategy_type
             )
-            
+
             plog.info(
                 f"✅ Performance metrics calculated: Win Rate {metrics.win_rate*100:.1f}%",
                 agent="memory_agent",
@@ -555,6 +595,7 @@ class MemoryAgent(BaseAgent):
 
         try:
             candles = payload.get('candles', [])
+            symbol = payload.get('symbol') or '_global'
 
             # Normalize input: orchestrator passes a dict keyed by timeframe.
             # Prefer the highest-resolution timeframe that has enough bars so
@@ -573,14 +614,28 @@ class MemoryAgent(BaseAgent):
                 self._compute_regime_indicators(ohlcv)
             )
 
-            # Classify via the shared detector (also tracks ATR history for
-            # percentile-based volatility classification across cycles).
+            # Seed the detector's per-symbol ATR% history from Redis so the
+            # volatility percentile is meaningful immediately after a restart
+            # (otherwise the first ~100 cycles fall back to the neutral 0.5
+            # default and VOLATILE/CALM can never fire, silently disabling the
+            # orchestrator's volatile-regime risk gate).
+            await self._load_regime_history(symbol)
+
+            # Classify via the shared detector. We feed normalized ATR% (keyed
+            # per symbol) so the volatility percentile is comparable across
+            # symbols with very different price scales.
             detection = self.regime_detector.detect_regime(
                 adx=adx,
                 atr=atr,
                 trend_direction=trend_direction,
-                volume_ratio=volume_ratio
+                volume_ratio=volume_ratio,
+                atr_pct=atr_pct,
+                symbol=symbol
             )
+
+            # Persist the updated ATR% history back to Redis so it survives
+            # restarts and the percentile stays warm across cycles.
+            await self._persist_regime_history(symbol)
 
             regime_result = detection.to_dict()
             # Surface ATR% alongside the detector's indicators for downstream use.
@@ -707,7 +762,117 @@ class MemoryAgent(BaseAgent):
             volume_ratio = 1.0
 
         return adx, atr, atr_pct, trend_direction, volume_ratio
-    
+
+    def _regime_history_key(self, symbol: str) -> str:
+        """Redis key under which a symbol's ATR% history is persisted."""
+        return f"regime:atr_pct_history:{symbol}"
+
+    async def _load_regime_history(self, symbol: str) -> None:
+        """Load a symbol's persisted ATR% history into the detector.
+
+        Best-effort: a Redis read failure must not block regime detection, so
+        we log and continue with whatever in-memory history the detector has.
+        """
+        try:
+            history = await self.state_manager.get(self._regime_history_key(symbol))
+            if isinstance(history, list) and history:
+                self.regime_detector.load_history(symbol, history)
+        except Exception as e:
+            plog.warning(
+                f"Could not load regime ATR% history for {symbol}: {e}",
+                agent="memory_agent",
+                phase="regime_detection"
+            )
+
+    async def _persist_regime_history(self, symbol: str) -> None:
+        """Persist a symbol's updated ATR% history to Redis.
+
+        Best-effort: a write failure is non-fatal to the current detection.
+        """
+        try:
+            history = self.regime_detector.get_history(symbol)
+            if history:
+                await self.state_manager.set(
+                    self._regime_history_key(symbol), history
+                )
+        except Exception as e:
+            plog.warning(
+                f"Could not persist regime ATR% history for {symbol}: {e}",
+                agent="memory_agent",
+                phase="regime_detection"
+            )
+
+    def _trade_record_to_dict(self, trade: Any) -> Dict[str, Any]:
+        """Convert a TradeRecord ORM row into the dict shape the analytics
+        engine expects (it reads is_winner/pnl/exit_time/entry_time/etc.)."""
+        return {
+            'trade_id': trade.trade_id,
+            'symbol': trade.symbol,
+            'direction': trade.direction,
+            'strategy_type': trade.strategy_type,
+            'entry_time': trade.entry_time,
+            'exit_time': trade.exit_time,
+            'pnl': trade.pnl,
+            'pnl_percentage': trade.pnl_percentage,
+            'is_winner': trade.is_winner,
+            'risk_reward_ratio': trade.risk_reward_ratio,
+            'duration_minutes': trade.duration_minutes,
+        }
+
+    async def _compute_metrics(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+        strategy_type: Optional[str] = None
+    ):
+        """Fetch matching trades and compute PerformanceMetrics.
+
+        Bridges the gap between the handlers (which think in date/symbol/strategy
+        filters) and PerformanceAnalyticsEngine.calculate_metrics(trades,
+        current_balance), which is synchronous and filter-free. Pulls the trades
+        from the authoritative trade-history store, applies the filters here,
+        derives the current balance from realized P&L, then delegates.
+        """
+        # Pull a generous window of recent trades and filter in Python. We use
+        # the existing get_recent_trades (optionally symbol-scoped) rather than
+        # adding a new query path.
+        trades = await asyncio.to_thread(
+            self.trade_history.get_recent_trades,
+            limit=1000,
+            symbol=symbol
+        )
+
+        trade_dicts = [self._trade_record_to_dict(t) for t in trades]
+
+        # Apply the remaining filters the engine can't do itself.
+        def _in_range(td: Dict[str, Any]) -> bool:
+            et = td.get('entry_time')
+            if start_date and et and et < start_date:
+                return False
+            if end_date and et and et > end_date:
+                return False
+            if strategy_type and td.get('strategy_type') != strategy_type:
+                return False
+            return True
+
+        trade_dicts = [td for td in trade_dicts if _in_range(td)]
+
+        # Current balance = initial capital + realized P&L on closed trades.
+        realized_pnl = sum(
+            (td.get('pnl') or 0.0)
+            for td in trade_dicts
+            if td.get('exit_time')
+        )
+        current_balance = self.performance_analytics.initial_capital + realized_pnl
+
+        # calculate_metrics is CPU-bound and synchronous; run off the event loop.
+        return await asyncio.to_thread(
+            self.performance_analytics.calculate_metrics,
+            trade_dicts,
+            current_balance
+        )
+
     async def _handle_get_performance_report(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive performance report"""
         self.performance_reports_generated += 1
@@ -719,9 +884,11 @@ class MemoryAgent(BaseAgent):
         )
         
         try:
-            # Get overall metrics
-            overall_metrics = await self.performance_analytics.calculate_metrics()
-            
+            # Get overall metrics via the shared helper (the analytics engine
+            # requires trades + balance, not a zero-arg call — the previous
+            # zero-arg await raised TypeError and this handler never succeeded).
+            overall_metrics = await self._compute_metrics()
+
             # Get strategy breakdown
             strategy_performance = await asyncio.to_thread(self.trade_history.get_strategy_performance)
             

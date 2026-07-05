@@ -85,8 +85,16 @@ class StrategyGenerationAgent(BaseAgent):
         if self.config.llm.openai_api_key:
             self.llm_client = AsyncOpenAI(api_key=self.config.llm.openai_api_key)
 
-        # Log LLM configuration
-        plog.info(f"Strategy Agent initialized with LLM chain: Claude (primary) → OpenRouter (fallback) → Groq (fallback) → OpenAI (final)", agent="strategy_agent", phase="setup")
+        # Log LLM configuration.
+        # This reflects the ACTUAL decision-path chain in _call_llm_strategy_creator:
+        # OpenRouter (free-tier DeepSeek, primary) → Groq → OpenAI (final).
+        # (The old log claimed a Claude-primary chain that no longer runs — see the
+        # dead _call_llm_strategy method annotation below.)
+        plog.info(
+            f"Strategy Agent initialized with LLM chain: OpenRouter/{self.config.llm.deepseek_model} (primary) "
+            f"→ Groq/{self.config.llm.groq_model} (fallback) → OpenAI/{self.config.llm.gpt_model} (final)",
+            agent="strategy_agent", phase="setup"
+        )
         plog.info(f"LLM Clients - OpenAI: {self.llm_client is not None}, OpenRouter: {self.openrouter_client is not None}, Groq: {self.groq_client is not None}", agent="strategy_agent", phase="setup")
         plog.debug(f"OpenAI API Key configured: {bool(self.config.llm.openai_api_key)}", agent="strategy_agent")
         plog.debug(f"OpenRouter API Key configured: {bool(self.config.llm.openrouter_api_key)}", agent="strategy_agent")
@@ -311,7 +319,17 @@ class StrategyGenerationAgent(BaseAgent):
                 current_price = await self._get_current_price(symbol, analysis)
                 atr = await self._get_atr(symbol, analysis, candles)
                 account_balance = await self._get_account_balance()
-                
+
+                # HARD GATE: without a real price and ATR every downstream number
+                # (entry zones, stops, targets, position size, RR) is garbage.
+                # Abort with a no-setup result rather than trading on fabricated data.
+                if current_price is None or atr is None:
+                    plog.error(
+                        f"Missing market data for {symbol} (price={current_price}, atr={atr}); skipping setup generation",
+                        agent="strategy_agent"
+                    )
+                    return {"trade_setup": None, "reason": "Missing market data (price/ATR unavailable)"}
+
                 # Use candles from payload (already provided by orchestrator)
                 candles_5m = candles.get('5m', [])
                 candles_15m = candles.get('15m', [])
@@ -533,8 +551,17 @@ class StrategyGenerationAgent(BaseAgent):
         entry_confirmation: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Call LLM for strategy refinement with intelligent fallback sequence
-        Primary: Claude Sonnet 4.5 (best for complex structured JSON)
+        DEAD CODE / NOT WIRED UP — kept for reference only.
+
+        This Claude-primary refinement chain (Claude → OpenRouter → Groq → OpenAI)
+        has no callers: the live decision path is the LLM-first
+        _call_llm_strategy_creator, which uses OpenRouter → Groq → OpenAI and does
+        NOT use Claude. The Anthropic key is optional and this path never runs on
+        the free-tier setup, so requiring it would be wrong. Do not re-enable this
+        without also updating the init log and confirming the Claude models here.
+
+        Original intent:
+        Primary: Claude (config.llm.claude_model)
         Fallback 1: OpenRouter DeepSeek
         Fallback 2: OpenAI GPT-4o
         Fallback 3: Groq Llama
@@ -1004,8 +1031,8 @@ class StrategyGenerationAgent(BaseAgent):
             'reason': 'LLM unavailable, using computational only'
         }
 
-    async def _get_current_price(self, symbol: str, analysis: Dict[str, Any] = None) -> float:
-        """Get current market price from analysis or state manager"""
+    async def _get_current_price(self, symbol: str, analysis: Dict[str, Any] = None) -> Optional[float]:
+        """Get current market price from analysis or state manager (None if unavailable)"""
         # First try to get from analysis (most accurate)
         if analysis:
             # Try different possible locations in analysis
@@ -1033,13 +1060,16 @@ class StrategyGenerationAgent(BaseAgent):
         if price:
             plog.debug(f"Current price from state manager: ${float(price):.2f}", agent="strategy_agent")
             return float(price)
-        
-        # Last resort: mock data
-        plog.warning(f"No price found for {symbol}, using mock fallback $43000", agent="strategy_agent")
-        return 43000.0
 
-    async def _get_atr(self, symbol: str, analysis: Dict[str, Any] = None, candles: Dict[str, List[Dict[str, Any]]] = None) -> float:
-        """Get current ATR from analysis, state manager, or calculate from candles"""
+        # HARD FAILURE: a missing price must never be replaced with a hardcoded
+        # literal. A mock price (previously $43000, a BTC-shaped number) produces
+        # garbage setups for any other symbol. Return None so the caller aborts
+        # setup generation instead of trading on fabricated data.
+        plog.error(f"No price found for {symbol} in analysis or state manager; aborting setup", agent="strategy_agent")
+        return None
+
+    async def _get_atr(self, symbol: str, analysis: Dict[str, Any] = None, candles: Dict[str, List[Dict[str, Any]]] = None) -> Optional[float]:
+        """Get current ATR from analysis, state manager, or calculate from candles (None if unavailable)"""
         # First try to get from analysis (most accurate)
         if analysis:
             atr = None
@@ -1077,10 +1107,12 @@ class StrategyGenerationAgent(BaseAgent):
         if atr:
             plog.debug(f"ATR from state manager: ${float(atr):.2f}", agent="strategy_agent")
             return float(atr)
-        
-        # Last resort: mock data (but warn loudly)
-        plog.warning(f"No ATR found for {symbol}, using mock fallback $150", agent="strategy_agent")
-        return 150.0
+
+        # HARD FAILURE: ATR drives stop-loss/target distances. A hardcoded literal
+        # (previously $150, a BTC-shaped number) yields nonsensical risk geometry
+        # for any other symbol. Return None so the caller aborts setup generation.
+        plog.error(f"No ATR found for {symbol} (analysis, candles, or state manager); aborting setup", agent="strategy_agent")
+        return None
 
     def _calculate_atr_from_candles(self, candles: List[Dict[str, Any]], period: int = 14) -> Optional[float]:
         """Calculate ATR from candle data"""
@@ -1114,11 +1146,19 @@ class StrategyGenerationAgent(BaseAgent):
             return None
 
     async def _get_account_balance(self) -> float:
-        """Get account balance"""
+        """Get account balance (falls back to configured paper-mode starting capital)"""
         portfolio = await self.state_manager.get_portfolio_state()
         balance = portfolio.get('account_balance') if portfolio else None
-        plog.debug(f"Account balance: ${balance or 10000.0:.2f}", agent="strategy_agent")
-        return float(balance) if balance is not None else 10000.0  # Default
+        if balance is not None:
+            plog.debug(f"Account balance: ${float(balance):.2f}", agent="strategy_agent")
+            return float(balance)
+
+        # No live portfolio balance yet (paper mode / cold start). Source the
+        # default from config instead of a hardcoded literal so it tracks the
+        # configured starting capital rather than an arbitrary $10k.
+        default_balance = float(self.config.trading.initial_capital)
+        plog.debug(f"No portfolio balance; using configured initial_capital ${default_balance:.2f}", agent="strategy_agent")
+        return default_balance
 
     async def _get_candles_5m(self, symbol: str) -> List[Dict[str, Any]]:
         """Get 5M candles for entry confirmation"""
@@ -1505,7 +1545,7 @@ class StrategyGenerationAgent(BaseAgent):
                     response = await loop.run_in_executor(
                         None,
                         lambda: self.groq_client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model=self.config.llm.groq_model,  # config-driven, not hardcoded
                             messages=[
                                 {"role": "system", "content": "You are an expert crypto trader who creates optimal trade setups."},
                                 {"role": "user", "content": prompt}
@@ -1540,7 +1580,7 @@ class StrategyGenerationAgent(BaseAgent):
                         plog.info("🤖 Attempting OpenAI GPT-4o for strategy creation", agent="strategy_agent")
                         
                         response = await self.llm_client.chat.completions.create(
-                            model="gpt-4o",
+                            model=self.config.llm.gpt_model,  # config-driven, not hardcoded
                             messages=[
                                 {"role": "system", "content": "You are an expert crypto trader who creates optimal trade setups."},
                                 {"role": "user", "content": prompt}
@@ -1605,7 +1645,24 @@ class StrategyGenerationAgent(BaseAgent):
             f"  - {c['factor']} ({c['category']}, weight: {c['weight']}, {c['timeframe']})"
             for c in confluences
         ]) if confluences else "  - No strong confluences identified"
-        
+
+        # Build the OUTPUT FORMAT example dynamically so its geometry matches the
+        # requested direction. A static SHORT example (SL above entry, descending
+        # TPs) gets copied verbatim by small models and produces invalid LONG
+        # setups. Anchor the illustrative numbers to the actual price and ATR.
+        ex_entry = current_price
+        ex_risk = atr  # ~1 ATR stop distance for the illustration
+        if direction == 'LONG':
+            ex_stop = ex_entry - ex_risk          # stop below entry
+            ex_tp1 = ex_entry + ex_risk * 1.5     # targets above entry (ascending)
+            ex_tp2 = ex_entry + ex_risk * 2.5
+            ex_tp3 = ex_entry + ex_risk * 3.5
+        else:  # SHORT
+            ex_stop = ex_entry + ex_risk          # stop above entry
+            ex_tp1 = ex_entry - ex_risk * 1.5     # targets below entry (descending)
+            ex_tp2 = ex_entry - ex_risk * 2.5
+            ex_tp3 = ex_entry - ex_risk * 3.5
+
         prompt = f"""You are an expert crypto trader. Create the OPTIMAL trade setup for {symbol} based on the comprehensive market analysis below.
 
 MARKET CONTEXT:
@@ -1645,20 +1702,21 @@ GUIDELINES:
   - {"Tighter" if volatility == "low" else "Wider"} stops recommended
   - {"Smaller" if volatility == "high" else "Larger"} position size appropriate
 
-OUTPUT FORMAT (JSON only, no markdown):
+OUTPUT FORMAT (JSON only, no markdown) — example geometry for a {direction} trade
+(stop {"below" if direction == "LONG" else "above"} entry, targets {"ascending" if direction == "LONG" else "descending"}):
 {{
   "trade_setup": {{
-    "entry_price": 90850.00,
-    "stop_loss": 91200.00,
+    "entry_price": {ex_entry:.2f},
+    "stop_loss": {ex_stop:.2f},
     "take_profit_levels": [
-      {{"price": 90200.00, "percentage": 33.33}},
-      {{"price": 89800.00, "percentage": 33.33}},
-      {{"price": 89400.00, "percentage": 33.34}}
+      {{"price": {ex_tp1:.2f}, "percentage": 33.33}},
+      {{"price": {ex_tp2:.2f}, "percentage": 33.33}},
+      {{"price": {ex_tp3:.2f}, "percentage": 33.34}}
     ],
     "risk_reward_ratio": 2.5,
     "confidence_score": 0.78,
-    "setup_reasoning": "Bearish trend alignment with order block entry",
-    "confluences": ["HTF Bearish Trend", "Bearish Order Block"],
+    "setup_reasoning": "Concise rationale referencing the confluences above",
+    "confluences": ["<confluence 1>", "<confluence 2>"],
     "direction": "{direction}",
     "symbol": "{symbol}"
   }}
@@ -1813,8 +1871,44 @@ CRITICAL: Return ONLY the JSON object above. Do NOT include any explanations, re
                     errors.append(f"LONG stop loss ${stop_loss:.2f} must be below entry ${entry_price:.2f}")
             
             # 3. RR is acceptable (relaxed to 1.5)
-            if rr_ratio < 1.5:
-                errors.append(f"RR ratio {rr_ratio:.2f} below minimum 1.5")
+            # Do NOT trust the LLM's self-reported risk_reward_ratio: recompute it
+            # from entry/SL and the percentage-weighted take-profits, then reject if
+            # the claimed value materially disagrees or the true RR is below floor.
+            RR_FLOOR = 1.5
+            risk = abs(entry_price - stop_loss)
+            computed_rr = None
+            if risk > 0 and tp_levels:
+                weighted_reward = 0.0
+                total_weight = 0.0
+                for tp in tp_levels:
+                    tp_price = float(tp['price'])
+                    # weight by allocation percentage; default to equal weight if absent
+                    weight = float(tp.get('percentage', 100.0 / len(tp_levels)))
+                    # reward is signed by direction so wrong-side TPs reduce RR
+                    if direction == 'SHORT':
+                        reward = entry_price - tp_price
+                    else:  # LONG
+                        reward = tp_price - entry_price
+                    weighted_reward += reward * weight
+                    total_weight += weight
+                if total_weight > 0:
+                    computed_rr = (weighted_reward / total_weight) / risk
+
+            if computed_rr is None:
+                errors.append("Cannot compute RR (zero risk distance or no TPs)")
+            else:
+                # Judge safety on the recomputed RR, not the claimed one.
+                if computed_rr < RR_FLOOR:
+                    errors.append(f"Recomputed RR {computed_rr:.2f} below minimum {RR_FLOOR:.1f}")
+                # Flag a materially inflated self-reported RR (LLM claiming a better
+                # ratio than the geometry supports). Tolerance: 20% relative or 0.3 absolute.
+                if abs(rr_ratio - computed_rr) > max(0.3, 0.20 * computed_rr):
+                    errors.append(
+                        f"Claimed RR {rr_ratio:.2f} disagrees with computed RR {computed_rr:.2f}"
+                    )
+            # Keep the original floor check on the claimed value as a cheap sanity gate.
+            if rr_ratio < RR_FLOOR:
+                errors.append(f"Claimed RR ratio {rr_ratio:.2f} below minimum {RR_FLOOR:.1f}")
             
             # 4. Confidence is reasonable
             if confidence < 0.3 or confidence > 1.0:

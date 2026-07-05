@@ -1,8 +1,9 @@
  # Core Framework
+# Only langgraph is imported (src/core/orchestrator.py); it pulls a compatible
+# langchain-core itself. The langchain / langchain-anthropic / langchain-openai
+# packages were pinned but never imported (LLM calls go through the anthropic/openai
+# SDKs directly) and were the main pip ResolutionImpossible source, so they're removed.
 langgraph==0.2.0
-langchain==0.2.0
-langchain-anthropic==0.1.15
-langchain-openai==0.1.8
 
 # LLM Clients
 anthropic==0.28.0
@@ -20,11 +21,20 @@ websockets==12.0
 requests==2.31.0
 
 # Data Processing
-pandas==2.2.2
-numpy>=1.26.4
+# pandas-ta 0.4.x requires pandas 3.x / numpy 2.x, so the old pandas==2.2.2 pin made
+# the file unresolvable. This range is the set the test suite + import smoke ran
+# against (pandas 3.0.x, numpy 2.2.x, pandas-ta 0.4.71b0). NOTE: pandas 3.0 is a major
+# bump vs the code's original 2.2 target — validate the SMC/ICT analysis at runtime.
+pandas>=2.2,<4
+numpy>=1.26.4,<3
 scipy>=1.13.0
-ta-lib==0.4.28
+# ta-lib removed: not imported anywhere (analysis uses pandas-ta), and the PyPI
+# package requires the TA-Lib C library to be installed separately, which broke
+# clean pip installs / Docker builds.
 pandas-ta>=0.4.67b0
+# Required by SQLAlchemy's async engine (asyncpg); was missing and only pulled in
+# transitively, so a clean install could fail at engine.dispose()/async use.
+greenlet>=3.0.0
 
 # Database
 redis==5.0.5
@@ -42,7 +52,9 @@ asyncpg==0.29.0
 
 # Utilities
 python-dotenv==1.0.1
-pydantic==2.7.3
+# >=2.7.4 required by langchain-core (via langgraph) on Python >=3.12.4; the old
+# ==2.7.3 pin made the whole file unresolvable. Upper-bounded below pydantic 3.
+pydantic>=2.7.4,<3
 pyyaml==6.0.1
 loguru==0.7.2
 tenacity==8.3.0
@@ -51,6 +63,9 @@ tenacity==8.3.0
 prometheus-client==0.20.0
 python-telegram-bot>=21.0
 
-# Dashboard
-streamlit==1.28.1
-plotly==5.17.0
+# Legacy standalone dashboard (dashboard.py) only — NOT used by the production
+# API/worker (the Next.js frontend is the real dashboard). streamlit 1.28.1 pinned
+# numpy<2 and made the whole file unresolvable against chromadb/scipy. Install these
+# separately (pip install streamlit plotly) if you want the legacy Python dashboard.
+# streamlit==1.28.1
+# plotly==5.17.0
