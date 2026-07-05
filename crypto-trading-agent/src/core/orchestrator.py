@@ -799,8 +799,9 @@ class TradingOrchestrator:
                 return None
                 
             finally:
-                # Always unsubscribe to prevent memory leaks
-                await self.message_bus.unsubscribe(response_channel)
+                # Remove only THIS waiter's handler so concurrent waiters on the same
+                # response channel keep listening.
+                await self.message_bus.unsubscribe(response_channel, response_handler)
             
         except Exception as e:
             plog.error(

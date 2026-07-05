@@ -47,7 +47,10 @@ class MessageBus:
         self.redis_url = redis_url
         self.redis_client: Optional[redis.Redis] = None
         self.pubsub: Optional[redis.client.PubSub] = None
-        self.subscribers: Dict[str, Callable] = {}
+        # channel -> list of callbacks. A list (not a single callable) so multiple
+        # concurrent subscribers to the same channel (e.g. overlapping request/response
+        # waiters) don't silently overwrite each other.
+        self.subscribers: Dict[str, List[Callable]] = {}
         self.running = False
 
     async def connect(self):
@@ -72,13 +75,24 @@ class MessageBus:
             raise
 
     async def disconnect(self):
-        """Disconnect from Redis"""
+        """Disconnect from Redis (idempotent).
+
+        Always clears self.pubsub / self.redis_client, even on error. This is what
+        lets the listen loop's reconnect guard (`if not self.pubsub`) fire after a
+        Redis blip — previously the handles were closed but left truthy, so the loop
+        kept calling listen() on a dead pubsub and could busy-spin. Never raises:
+        both the shutdown path and the error-recovery path call this, and a failing
+        teardown must not abort either.
+        """
         plog.method_entry("disconnect", agent="message_bus", phase="shutdown")
+        pubsub, redis_client = self.pubsub, self.redis_client
+        self.pubsub = None
+        self.redis_client = None
         try:
-            if self.pubsub:
-                await self.pubsub.close()
-            if self.redis_client:
-                await self.redis_client.close()
+            if pubsub:
+                await pubsub.close()
+            if redis_client:
+                await redis_client.close()
             plog.success(
                 "Message bus disconnected from Redis",
                 agent="message_bus",
@@ -86,13 +100,11 @@ class MessageBus:
             )
             plog.method_exit("disconnect", result="Redis connection closed")
         except Exception as e:
-            plog.error(
-                f"Error disconnecting message bus: {e}",
-                exception=e,
+            plog.warning(
+                f"Error during message bus disconnect (ignored): {e}",
                 agent="message_bus",
                 phase="shutdown"
             )
-            raise
 
     async def publish(self, channel: str, message: Dict[str, Any], persist: bool = True):
         """
@@ -172,11 +184,14 @@ class MessageBus:
             raise
 
     async def subscribe(self, channel: str, callback: Callable):
-        """Subscribe to channel"""
+        """Subscribe a callback to a channel (multiple callbacks per channel allowed)."""
         plog.method_entry("subscribe", agent="message_bus")
         try:
-            self.subscribers[channel] = callback
-            await self.pubsub.subscribe(channel)
+            is_new_channel = channel not in self.subscribers
+            self.subscribers.setdefault(channel, []).append(callback)
+            # Only issue the Redis SUBSCRIBE once per channel.
+            if is_new_channel:
+                await self.pubsub.subscribe(channel)
             plog.info(
                 f"Subscribed to channel: {channel}",
                 agent="message_bus",
@@ -203,13 +218,27 @@ class MessageBus:
             )
             raise
 
-    async def unsubscribe(self, channel: str):
-        """Unsubscribe from channel"""
+    async def unsubscribe(self, channel: str, callback: Optional[Callable] = None):
+        """Unsubscribe from a channel.
+
+        If `callback` is given, only that callback is removed and the Redis
+        UNSUBSCRIBE is issued only once the channel has no callbacks left — so one
+        request/response waiter tearing down does not silence the others still
+        listening on the same channel. If `callback` is None, all callbacks for the
+        channel are removed (backward-compatible behaviour).
+        """
         plog.method_entry("unsubscribe", agent="message_bus")
         try:
-            await self.pubsub.unsubscribe(channel)
-            if channel in self.subscribers:
-                del self.subscribers[channel]
+            callbacks = self.subscribers.get(channel)
+            if callbacks is not None and callback is not None:
+                try:
+                    callbacks.remove(callback)
+                except ValueError:
+                    pass
+            if callback is None or not self.subscribers.get(channel):
+                self.subscribers.pop(channel, None)
+                if self.pubsub:
+                    await self.pubsub.unsubscribe(channel)
             plog.info(
                 f"Unsubscribed from channel: {channel}",
                 agent="message_bus",
@@ -261,9 +290,9 @@ class MessageBus:
                                 phase="message_listening"
                             )
 
-                            # Call registered callback
-                            if channel in self.subscribers:
-                                await self.subscribers[channel](data)
+                            # Fan out to every registered callback for the channel.
+                            for cb in list(self.subscribers.get(channel, ())):
+                                await cb(data)
 
                     except Exception as e:
                         plog.error(
@@ -273,7 +302,14 @@ class MessageBus:
                             phase="message_listening"
                         )
                         continue
-                        
+
+                # listen() returned without raising -> the connection ended cleanly
+                # (or was closed). Drop the handles so the top of the loop reconnects,
+                # and pause briefly to avoid a tight spin if it keeps returning empty.
+                if self.running:
+                    await self.disconnect()
+                    await asyncio.sleep(1)
+
             except Exception as e:
                 plog.error(
                     f"Listen loop error: {e}, will retry in 5 seconds...",
@@ -281,12 +317,9 @@ class MessageBus:
                     agent="message_bus",
                     phase="message_listening"
                 )
+                # disconnect() nulls the handles so the loop top reconnects cleanly.
+                await self.disconnect()
                 await asyncio.sleep(5)
-                # Try to reconnect
-                try:
-                    await self.disconnect()
-                except:
-                    pass
                 # Loop will retry connection at the start
         
         plog.method_exit("_listen_loop", result="Listener stopped")

@@ -1851,7 +1851,7 @@ Analyze the following market data:
                     await asyncio.wait_for(response_received.wait(), timeout=5.0)
                     
                     # Unsubscribe from response channel
-                    await self.message_bus.unsubscribe(response_channel)
+                    await self.message_bus.unsubscribe(response_channel, response_handler)
                     
                     if response_data.get('success'):
                         trades = response_data.get('trades', [])
@@ -1876,7 +1876,7 @@ Analyze the following market data:
                         "Timeout waiting for Memory Agent response - proceeding without historical context",
                         agent="analysis_agent"
                     )
-                    await self.message_bus.unsubscribe(response_channel)
+                    await self.message_bus.unsubscribe(response_channel, response_handler)
                     return []
                     
             except Exception as e:
