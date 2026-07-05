@@ -228,6 +228,10 @@ class ExecutionAgent(BaseAgent):
         
         # Start sub-components (only if they exist)
         if self.order_tracker:
+            # OCO: link SL/TP legs so a filled leg cancels its siblings. Without this
+            # the legs are unmanaged — a hit stop-loss leaves the take-profit orders
+            # resting (holding margin) and vice versa.
+            self.order_tracker.register_on_fill(self._on_leg_fill_oco)
             await self.order_tracker.start()
 
         # Reconcile persisted risk/portfolio state with reality AFTER components
@@ -263,6 +267,60 @@ class ExecutionAgent(BaseAgent):
         plog.info("Position monitoring loop started (5s interval)", agent="execution_agent")
         plog.info("Pending trades monitor started (5s interval)", agent="execution_agent")
     
+    async def _on_leg_fill_oco(self, order) -> None:
+        """OCO: when a stop-loss or take-profit leg fills, cancel its siblings.
+
+        The legs are reduce-only, so an orphan can't open a new position, but leaving
+        it resting holds margin and clutters the book. Rules (safety first):
+          - Stop-loss fills  -> position is flat -> cancel ALL take-profit legs.
+          - Take-profit fills -> cancel the stop-loss ONLY when this execution has a
+            single TP (so the fill flattened the position). With multiple TPs the
+            position may still be partly open, so the stop-loss is kept to protect it.
+        """
+        try:
+            oid = getattr(order, "order_id", None)
+            if not oid or not self.order_manager:
+                return
+
+            execution = None
+            for ex in self.order_manager.active_executions.values():
+                leg_ids = set()
+                if ex.stop_loss_order:
+                    leg_ids.add(ex.stop_loss_order.order_id)
+                leg_ids.update(tp.order_id for tp in ex.take_profit_orders)
+                if oid in leg_ids:
+                    execution = ex
+                    break
+            if execution is None:
+                return  # entry fill or an order we don't manage — no OCO action
+
+            is_sl = bool(execution.stop_loss_order) and execution.stop_loss_order.order_id == oid
+            is_tp = any(tp.order_id == oid for tp in execution.take_profit_orders)
+
+            to_cancel = []
+            if is_sl:
+                to_cancel = list(execution.take_profit_orders)
+            elif is_tp and len(execution.take_profit_orders) == 1 and execution.stop_loss_order:
+                to_cancel = [execution.stop_loss_order]
+
+            for leg in to_cancel:
+                if leg and getattr(leg, "order_id", None) and leg.order_id != oid:
+                    try:
+                        await self.exchange.cancel_order(execution.symbol, leg.order_id)
+                        if self.order_tracker:
+                            self.order_tracker.untrack_order(leg.order_id)
+                        plog.info(
+                            f"OCO: cancelled sibling leg {leg.order_id} after {oid} filled",
+                            agent="execution_agent",
+                        )
+                    except Exception as e:
+                        plog.warning(
+                            f"OCO cancel failed for {leg.order_id}: {e}",
+                            agent="execution_agent",
+                        )
+        except Exception as e:
+            plog.error(f"OCO handler error: {e}", agent="execution_agent")
+
     async def _position_monitor_loop(self):
         """
         Continuously monitor open positions for SL/TP triggers
