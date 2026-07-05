@@ -74,7 +74,7 @@ export function Navbar() {
                                     }`}
                             >
                                 {/* Emerald brand mark */}
-                                <div className="chip-emerald w-full h-full group-hover:emerald-glow group-hover:scale-105 transition-all duration-300">
+                                <div className="chip-brand w-full h-full group-hover:brand-glow group-hover:scale-105 transition-all duration-300">
                                     <Activity className="w-5 h-5 text-accent-300" />
                                 </div>
                             </div>
@@ -147,7 +147,7 @@ export function Navbar() {
 
                                     <Link href="/auth/signup">
                                         <Button
-                                            className="h-10 px-6 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium emerald-glow transition-transform hover:scale-[1.03]"
+                                            className="h-10 px-6 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium brand-glow transition-transform hover:scale-[1.03]"
                                         >
                                             Sign up
                                         </Button>
@@ -216,7 +216,7 @@ export function Navbar() {
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button
-                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium emerald-glow"
+                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium brand-glow"
                                     >
                                         Go to Dashboard
                                     </Button>
@@ -256,7 +256,7 @@ export function Navbar() {
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button
-                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium emerald-glow"
+                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium brand-glow"
                                     >
                                         Sign up
                                     </Button>

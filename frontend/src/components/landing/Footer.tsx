@@ -53,7 +53,7 @@ export function Footer() {
                 <div className="mb-12 grid grid-cols-2 gap-8 md:grid-cols-4">
                     <div className="col-span-2 md:col-span-1">
                         <Link href="/" className="mb-4 flex items-center gap-2">
-                            <span className="chip-emerald h-8 w-8">
+                            <span className="chip-brand h-8 w-8">
                                 <Activity className="h-4 w-4" />
                             </span>
                             <span className="font-mono text-lg font-semibold tracking-tight text-foreground">

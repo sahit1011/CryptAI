@@ -31,7 +31,7 @@ export function CTASection() {
 
                     <h2 className="display-3 mt-4 text-balance">
                         Put your strategy on{" "}
-                        <span className="text-gradient-emerald animate-shine bg-[length:200%_auto]">
+                        <span className="text-gradient-brand animate-shine bg-[length:200%_auto]">
                             autopilot
                         </span>
                     </h2>
@@ -46,7 +46,7 @@ export function CTASection() {
                         <Button
                             asChild
                             size="lg"
-                            className="emerald-glow h-12 rounded-full px-8 text-base"
+                            className="brand-glow h-12 rounded-full px-8 text-base"
                         >
                             <Link href="/auth/signup">
                                 Start free on testnet

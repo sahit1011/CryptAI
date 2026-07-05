@@ -72,7 +72,7 @@ export function HeroSection() {
                     transition={{ duration: 0.5, delay: 0.1 }}
                     className="text-4xl md:text-6xl font-bold tracking-tight mb-7 leading-[1.08]"
                 >
-                    <span className="font-mono tracking-tighter text-gradient-emerald animate-shine bg-[length:200%_auto]">
+                    <span className="font-mono tracking-tighter text-gradient-brand animate-shine bg-[length:200%_auto]">
                         &lt;CryptAI /&gt;
                     </span>
                     <br />
@@ -127,7 +127,7 @@ export function HeroSection() {
                     <Link href="/dashboard">
                         <Button
                             size="lg"
-                            className="h-12 px-8 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium text-base emerald-glow transition-transform hover:scale-[1.03]"
+                            className="h-12 px-8 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium text-base brand-glow transition-transform hover:scale-[1.03]"
                         >
                             Start Trading <ArrowRight className="ml-2 w-4 h-4" />
                         </Button>
@@ -304,7 +304,7 @@ export function HeroSection() {
                                                     key={tf}
                                                     className={`num text-[7px] px-2 py-1 rounded font-medium transition-all ${
                                                         i === 1
-                                                            ? "bg-accent/15 text-accent-300 border border-accent/40 emerald-glow"
+                                                            ? "bg-accent/15 text-accent-300 border border-accent/40 brand-glow"
                                                             : "text-subtle-foreground border border-border"
                                                     }`}
                                                 >

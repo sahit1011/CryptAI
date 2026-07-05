@@ -57,7 +57,7 @@ export function FeaturesSection() {
                             transition={{ duration: 0.5, delay: i * 0.08, ease: [0.16, 1, 0.3, 1] }}
                             className="glass-panel glass-panel-hover p-6"
                         >
-                            <span className="chip-emerald w-10 h-10 mb-4">
+                            <span className="chip-brand w-10 h-10 mb-4">
                                 <feature.icon className="w-5 h-5" />
                             </span>
                             <h3 className="heading-4 mb-2">{feature.title}</h3>

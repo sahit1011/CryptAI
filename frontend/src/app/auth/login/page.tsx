@@ -93,7 +93,7 @@ export default function LoginPage() {
                     <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent/20 via-accent/10 to-accent/20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
 
                     <div className="text-center space-y-2 relative z-10">
-                        <h1 className="text-3xl font-bold tracking-tight text-gradient-emerald">
+                        <h1 className="text-3xl font-bold tracking-tight text-gradient-brand">
                             Welcome back
                         </h1>
                         <p className="text-sm text-muted-foreground">
@@ -155,7 +155,7 @@ export default function LoginPage() {
                         <Button
                             type="submit"
                             disabled={loading}
-                            className="w-full h-11 bg-primary text-primary-foreground hover:bg-accent-400 font-medium transition-all hover:scale-[1.02] emerald-glow relative z-10 group overflow-hidden"
+                            className="w-full h-11 bg-primary text-primary-foreground hover:bg-accent-400 font-medium transition-all hover:scale-[1.02] brand-glow relative z-10 group overflow-hidden"
                         >
                             <span className="relative z-10 flex items-center justify-center">
                                 {loading ? (

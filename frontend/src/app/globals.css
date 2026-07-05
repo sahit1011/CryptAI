@@ -6,7 +6,7 @@
  *
  * Palette philosophy:
  *   - Near-black canvas with layered elevated surfaces + hairline borders.
- *   - ONE confident accent = emerald (trading identity).
+ *   - ONE confident accent = crimson (red/black trading identity).
  *   - Red reserved strictly for loss / sell / danger. Amber = warning.
  *   - Monospace (Geist Mono) for ALL numeric/tabular data via the .num utility.
  *
@@ -42,7 +42,7 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  /* ---- Brand / semantic primary (emerald = accent = primary) ----------- */
+  /* ---- Brand / semantic primary (crimson = accent = primary) ----------- */
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
@@ -71,7 +71,7 @@
   --color-info-muted: var(--info-muted);
   --color-destructive: var(--loss);
 
-  /* ---- Chart palette (emerald-led, distinct hues) ---------------------- */
+  /* ---- Chart palette (crimson-led, distinct hues) ---------------------- */
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -144,11 +144,13 @@
 :root {
   --radius: 0.625rem;
 
-  /* Canvas + layered surfaces (near-black -> elevated) */
-  --background: oklch(0.16 0.006 260);   /* ~#0a0b0d */
-  --surface: oklch(0.185 0.007 260);     /* ~#111318 */
-  --elevated: oklch(0.215 0.008 260);    /* ~#16181d */
-  --foreground: oklch(0.97 0.005 260);   /* near-white */
+  /* Canvas + layered surfaces (neutral true black -> elevated).
+     Red/black identity: the blacks are NEUTRAL (no blue tint) and a step deeper
+     so the crimson accent reads hot against them. */
+  --background: oklch(0.135 0 0);        /* ~#070707 */
+  --surface: oklch(0.165 0 0);           /* ~#101010 */
+  --elevated: oklch(0.2 0 0);            /* ~#171717 */
+  --foreground: oklch(0.97 0 0);         /* near-white */
 
   --card: var(--surface);
   --card-foreground: var(--foreground);
@@ -156,34 +158,36 @@
   --popover-foreground: var(--foreground);
 
   /* Muted / subtle text tiers */
-  --muted: oklch(0.24 0.008 260);
-  --muted-foreground: oklch(0.66 0.01 260);   /* secondary text */
-  --subtle: oklch(0.22 0.008 260);
-  --subtle-foreground: oklch(0.5 0.01 260);   /* tertiary / axis labels */
+  --muted: oklch(0.23 0 0);
+  --muted-foreground: oklch(0.66 0 0);        /* secondary text */
+  --subtle: oklch(0.21 0 0);
+  --subtle-foreground: oklch(0.5 0 0);        /* tertiary / axis labels */
 
   /* Hairline borders */
   --border: oklch(1 0 0 / 0.08);
   --border-strong: oklch(1 0 0 / 0.14);
   --input: oklch(1 0 0 / 0.1);
-  --ring: oklch(0.72 0.15 158);               /* emerald focus ring */
+  --ring: oklch(0.66 0.19 26);                /* crimson focus ring */
 
-  /* Emerald accent scale (single brand hue ~158) */
-  --accent-50: oklch(0.95 0.03 160);
-  --accent-100: oklch(0.9 0.06 160);
-  --accent-200: oklch(0.84 0.1 159);
-  --accent-300: oklch(0.78 0.13 159);
-  --accent-400: oklch(0.74 0.15 158);
-  --accent-500: oklch(0.68 0.16 158);         /* base accent */
-  --accent-600: oklch(0.6 0.15 157);
-  --accent-700: oklch(0.5 0.13 156);
+  /* Crimson accent scale (single brand hue ~26 — red/black identity).
+     NOTE: brand crimson is for structure (CTAs, glows, active states, chips).
+     P&L semantics are untouched: profit stays green, loss stays red. */
+  --accent-50: oklch(0.94 0.03 20);
+  --accent-100: oklch(0.88 0.06 22);
+  --accent-200: oklch(0.8 0.1 24);
+  --accent-300: oklch(0.74 0.14 25);
+  --accent-400: oklch(0.66 0.19 26);
+  --accent-500: oklch(0.58 0.21 27);          /* base accent */
+  --accent-600: oklch(0.5 0.19 27);
+  --accent-700: oklch(0.42 0.16 28);
 
   --accent: var(--accent-500);
-  --accent-foreground: oklch(0.16 0.006 260); /* dark text on emerald */
+  --accent-foreground: oklch(0.98 0.005 20);  /* white text on crimson */
   --accent-muted: color-mix(in oklch, var(--accent-500) 14%, transparent);
 
-  /* primary == accent so bg-primary reads emerald */
+  /* primary == accent so bg-primary reads crimson */
   --primary: var(--accent-500);
-  --primary-foreground: oklch(0.16 0.006 260);
+  --primary-foreground: oklch(0.98 0.005 20);
 
   --secondary: var(--elevated);
   --secondary-foreground: var(--foreground);
@@ -198,18 +202,19 @@
   --info: oklch(0.68 0.13 235);               /* blue (informational) */
   --info-muted: color-mix(in oklch, var(--info) 15%, transparent);
 
-  /* Chart palette: emerald-led, then contrasting hues */
-  --chart-1: oklch(0.72 0.16 158);   /* emerald */
+  /* Chart palette: crimson-led (brand), then contrasting hues.
+     chart-5 is emerald so the 5-color set stays distinct now that red leads. */
+  --chart-1: oklch(0.62 0.21 27);    /* crimson */
   --chart-2: oklch(0.68 0.13 235);   /* blue */
   --chart-3: oklch(0.78 0.15 75);    /* amber */
   --chart-4: oklch(0.65 0.18 300);   /* violet */
-  --chart-5: oklch(0.63 0.2 25);     /* red */
+  --chart-5: oklch(0.72 0.16 158);   /* emerald */
 
   /* Sidebar */
-  --sidebar: oklch(0.17 0.006 260);
+  --sidebar: oklch(0.15 0 0);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--accent-500);
-  --sidebar-primary-foreground: oklch(0.16 0.006 260);
+  --sidebar-primary-foreground: oklch(0.98 0.005 20);
   --sidebar-accent: var(--elevated);
   --sidebar-accent-foreground: var(--foreground);
   --sidebar-border: var(--border);
@@ -317,14 +322,14 @@
 
   /* =====================================================================
    * LANDING VISUAL LANGUAGE  (marketing pages only)
-   * One brand hue = emerald (--accent-*). Reusable atmosphere + glass so
+   * One brand hue = crimson (--accent-*). Reusable atmosphere + glass so
    * sections stay cohesive instead of inlining random per-section glows.
    * All motion respects prefers-reduced-motion (see bottom of block).
    * ===================================================================== */
 
   /*
-   * .aurora — a soft, layered emerald atmosphere. Two large blurred radial
-   * emerald glows over the near-black canvas that slowly drift. Place as a
+   * .aurora — a soft, layered crimson atmosphere. Two large blurred radial
+   * crimson glows over the near-black canvas that slowly drift. Place as a
    * fixed/absolute z-0 layer behind page content (pointer-events-none).
    */
   .aurora {
@@ -342,7 +347,7 @@
     filter: blur(120px);
     will-change: transform, opacity;
   }
-  /* Primary glow — top, emerald */
+  /* Primary glow — top, crimson */
   .aurora::before {
     top: -22%;
     left: 50%;
@@ -357,7 +362,7 @@
     opacity: 0.55;
     animation: aurora-drift-a 22s ease-in-out infinite alternate;
   }
-  /* Secondary glow — lower, deeper emerald, offset for depth */
+  /* Secondary glow — lower, deeper crimson, offset for depth */
   .aurora::after {
     top: 34%;
     left: 12%;
@@ -408,7 +413,7 @@
   /*
    * .glass-panel — the canonical landing surface. Translucent elevated fill
    * + backdrop blur + hairline border + real elevation. On hover it lifts
-   * subtly and gains an emerald border + emerald glow. Rounded-xl.
+   * subtly and gains a crimson border + crimson glow. Rounded-xl.
    */
   .glass-panel {
     background-color: color-mix(in oklch, var(--surface) 60%, transparent);
@@ -431,24 +436,24 @@
   }
 
   /*
-   * .emerald-glow — reusable soft emerald halo for CTAs / focal elements.
+   * .brand-glow — reusable soft crimson halo for CTAs / focal elements.
    * Use on the primary button and hero accents. Utility, not per-section hex.
    */
-  .emerald-glow {
+  .brand-glow {
     box-shadow: 0 0 30px color-mix(in oklch, var(--accent-500) 35%, transparent);
   }
-  .emerald-glow-strong {
+  .brand-glow-strong {
     box-shadow:
       0 0 20px color-mix(in oklch, var(--accent-500) 40%, transparent),
       0 0 60px color-mix(in oklch, var(--accent-500) 22%, transparent);
   }
 
   /*
-   * .text-gradient-emerald — the wordmark / headline accent gradient. Uses
+   * .text-gradient-brand — the wordmark / headline accent gradient. Uses
    * the accent scale so it stays on-brand; pair with .animate-shine + a
    * 200% background-size for the slow sheen (already defined above).
    */
-  .text-gradient-emerald {
+  .text-gradient-brand {
     background-image: linear-gradient(
       to right,
       var(--accent-300),
@@ -474,8 +479,8 @@
     color: transparent;
   }
 
-  /* Emerald icon chip — small rounded emerald-tinted square for feature icons. */
-  .chip-emerald {
+  /* Brand icon chip — small rounded crimson-tinted square for feature icons. */
+  .chip-brand {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -494,7 +499,7 @@
     0%   { transform: translate(0, 0) scale(1); }
     100% { transform: translate(-5%, -4%) scale(1.12); }
   }
-  /* Slow vertical rise for background particles (emerald motes). */
+  /* Slow vertical rise for background particles (brand motes). */
   @keyframes particle-rise {
     0%   { transform: translateY(0); opacity: 0; }
     12%  { opacity: var(--p-opacity, 0.5); }

@@ -67,7 +67,7 @@ function CountUp({ stat }: { stat: Stat }) {
             decimals={stat.decimals}
             prefix={stat.prefix}
             suffix={stat.suffix}
-            className="display-3 text-4xl md:text-5xl text-gradient-emerald"
+            className="display-3 text-4xl md:text-5xl text-gradient-brand"
         />
     );
 }
