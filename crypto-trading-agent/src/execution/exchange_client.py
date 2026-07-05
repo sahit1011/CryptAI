@@ -278,23 +278,35 @@ class BingXClient(ExchangeClient):
         logger.info(f"BingX client initialized: {self.base_url}")
     
     def _sign_request(self, params: Dict[str, Any]) -> str:
+        """Sign a BingX request: HMAC-SHA256 over the sorted query string.
+
+        The signature is computed over the parameters in SORTED key order. The caller
+        MUST also transmit the parameters in that same sorted order (see _signed_query)
+        so the string BingX reconstructs is byte-identical to the string we signed.
         """
-        Sign BingX API request
-        
-        BingX uses HMAC SHA256 signature
-        """
-        # Sort parameters
         sorted_params = sorted(params.items())
-        query_string = '&'.join([f"{k}={v}" for k, v in sorted_params])
-        
-        # Generate signature
-        signature = hmac.new(
+        query_string = '&'.join(f"{k}={v}" for k, v in sorted_params)
+        return hmac.new(
             self.api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-        
-        return signature
+
+    def _signed_query(self, params: Dict[str, Any]) -> List[tuple]:
+        """Return an ordered (key, value) list to transmit for a signed request.
+
+        BingX verifies the signature against the query string it receives. We sign the
+        canonical SORTED query string (via _sign_request) and then transmit the params
+        in that SAME sorted order with the signature appended last, making the
+        transmitted string byte-identical to the signed string.
+
+        The previous implementation signed the sorted string but let the HTTP client
+        transmit params in insertion order, so any request whose insertion order
+        differed from sorted order (i.e. essentially every order) was rejected with a
+        signature error.
+        """
+        signature = self._sign_request(params)
+        return sorted(params.items()) + [('signature', signature)]
     
     @staticmethod
     def _format_symbol(symbol: str) -> str:
@@ -338,12 +350,13 @@ class BingXClient(ExchangeClient):
         if params is None:
             params = {}
 
+        request_params: Any = params
         if signed:
             # recvWindow guards against timestamp drift rejections.
             params.setdefault('recvWindow', 5000)
             params['timestamp'] = int(time.time() * 1000)
-            # Signature is computed over all params and appended last (never signed).
-            params['signature'] = self._sign_request(params)
+            # Build an ordered param list whose transmitted order == signed order.
+            request_params = self._signed_query(params)
 
         headers = {'X-BX-APIKEY': self.api_key}
         url = f"{self.base_url}{endpoint}"
@@ -351,7 +364,7 @@ class BingXClient(ExchangeClient):
         try:
             # Always send signed params in the query string so the transport matches
             # the signature, regardless of HTTP method.
-            async with self.session.request(method, url, params=params, headers=headers) as response:
+            async with self.session.request(method, url, params=request_params, headers=headers) as response:
                 text = await response.text()
                 try:
                     data = await response.json(content_type=None)
@@ -545,12 +558,12 @@ class BingXClient(ExchangeClient):
         """Get order status from BingX"""
         
         params = {
-            'symbol': symbol,
+            'symbol': self._format_symbol(symbol),
             'orderId': order_id
         }
-        
+
         response = await self._request('GET', '/openApi/swap/v2/trade/order', params)
-        
+
         return self._parse_order(response)
     
     async def get_account_balance(self) -> Dict[str, float]:
@@ -568,39 +581,77 @@ class BingXClient(ExchangeClient):
         """Get open positions from BingX"""
         
         response = await self._request('GET', '/openApi/swap/v2/user/positions')
-        
+
+        # BingX swap-v2 returns a list of position dicts. Its field names differ from
+        # Binance's /fapi positionRisk: BingX uses avgPrice (not entryPrice) and
+        # unrealizedProfit (not unRealizedProfit), and carries an explicit positionSide
+        # (LONG/SHORT/BOTH). Parsing Binance names raised KeyError on any real position.
         positions = []
-        for pos_data in response:
-            if float(pos_data.get('positionAmt', 0)) != 0:
-                position = Position(
-                    symbol=pos_data['symbol'],
-                    side='LONG' if float(pos_data['positionAmt']) > 0 else 'SHORT',
-                    quantity=abs(float(pos_data['positionAmt'])),
-                    entry_price=float(pos_data['entryPrice']),
-                    mark_price=float(pos_data['markPrice']),
-                    unrealized_pnl=float(pos_data['unRealizedProfit']),
-                    leverage=int(pos_data.get('leverage', 1))
-                )
-                positions.append(position)
-        
+        for pos_data in (response or []):
+            amt = float(pos_data.get('positionAmt', 0) or 0)
+            if amt == 0:
+                continue
+            position_side = str(pos_data.get('positionSide', '') or '').upper()
+            if position_side in ('LONG', 'SHORT'):
+                side = position_side
+            else:  # one-way (BOTH) mode: derive direction from the signed amount
+                side = 'LONG' if amt > 0 else 'SHORT'
+            entry_price = pos_data.get('avgPrice', pos_data.get('entryPrice', 0))
+            mark_price = pos_data.get('markPrice', 0)
+            unrealized = pos_data.get('unrealizedProfit', pos_data.get('unRealizedProfit', 0))
+            positions.append(Position(
+                symbol=pos_data['symbol'],
+                side=side,
+                quantity=abs(amt),
+                entry_price=float(entry_price or 0),
+                mark_price=float(mark_price or 0),
+                unrealized_pnl=float(unrealized or 0),
+                leverage=int(float(pos_data.get('leverage', 1) or 1)),
+            ))
+
         return positions
     
     def _parse_order(self, data: Dict[str, Any]) -> Order:
-        """Parse BingX order response into Order object"""
-        
+        """Parse a BingX order response into an Order object.
+
+        BingX wraps order payloads in a `data.order` envelope on both placement
+        (POST .../trade/order) and query (GET .../trade/order). `_request` already
+        unwraps the outer `data`, so here we unwrap the inner `order`. Without this
+        every field read missed and order_id came back as the string 'None', so the
+        system could never track, cancel, or reconcile a live order.
+        """
+        if isinstance(data, dict) and isinstance(data.get('order'), dict):
+            data = data['order']
+
+        order_id = data.get('orderId')
+        # BingX returns clientOrderID/clientOrderId inconsistently across endpoints.
+        client_order_id = data.get('clientOrderID', data.get('clientOrderId', '')) or ''
+
+        def _f(*keys, default=0.0):
+            for k in keys:
+                v = data.get(k)
+                if v not in (None, '', '0', 0):
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        continue
+            return default
+
+        raw_type = str(data.get('type', 'MARKET')).upper()
+        raw_status = str(data.get('status', 'NEW')).upper()
         return Order(
-            order_id=str(data.get('orderId')),
-            client_order_id=data.get('clientOrderId', ''),
+            order_id=str(order_id) if order_id is not None else '',
+            client_order_id=client_order_id,
             symbol=data.get('symbol'),
-            side=OrderSide.BUY if data.get('side') == 'BUY' else OrderSide.SELL,
-            order_type=OrderType[data.get('type', 'MARKET')],
-            price=float(data.get('price', 0)) if data.get('price') else None,
-            quantity=float(data.get('origQty', 0)),
-            status=OrderStatus[data.get('status', 'NEW')],
-            filled_quantity=float(data.get('executedQty', 0)),
-            average_price=float(data.get('avgPrice', 0)),
-            created_at=datetime.fromtimestamp(int(data.get('time', 0)) / 1000),
-            updated_at=datetime.fromtimestamp(int(data.get('updateTime', 0)) / 1000)
+            side=OrderSide.BUY if str(data.get('side')).upper() == 'BUY' else OrderSide.SELL,
+            order_type=OrderType[raw_type] if raw_type in OrderType.__members__ else OrderType.MARKET,
+            price=(_f('price') or None),
+            quantity=_f('origQty', 'quantity'),
+            status=OrderStatus[raw_status] if raw_status in OrderStatus.__members__ else OrderStatus.NEW,
+            filled_quantity=_f('executedQty'),
+            average_price=_f('avgPrice'),
+            created_at=datetime.fromtimestamp(int(data.get('time', 0) or 0) / 1000),
+            updated_at=datetime.fromtimestamp(int(data.get('updateTime', 0) or 0) / 1000)
         )
 
 

@@ -611,10 +611,41 @@ class ExecutionAgent(BaseAgent):
                 )
                 
                 plog.info(
-                    f"✅ Order Manager execution complete - ID: {execution.execution_id}",
+                    f"✅ Order Manager execution complete - ID: {execution.execution_id} "
+                    f"(status={execution.status})",
                     agent="execution_agent"
                 )
-                
+
+                # Guard: execute_trade_setup returns the execution record even when it
+                # FAILED (it catches internally, rolls back, and sets status='failed'
+                # or 'timeout'). Registering that as a live position — as the previous
+                # code did unconditionally — created phantom positions with no real
+                # orders behind them and reported failed trades as success. Only proceed
+                # when the setup is genuinely active.
+                if execution.status != "active":
+                    self.circuit_breaker.record_failure()
+                    self.trades_failed += 1
+                    plog.error(
+                        f"❌ Trade setup did not activate (status={execution.status}); "
+                        f"not registering position | {symbol} {direction}",
+                        agent="execution_agent"
+                    )
+                    await self.publish_activity(
+                        action="trade_failed",
+                        message=f"Trade setup failed ({execution.status}): {symbol} {direction}",
+                        phase="execution",
+                        severity="error",
+                        metadata={"execution_id": execution.execution_id, "reason": execution.status},
+                    )
+                    return {
+                        'status': 'failed',
+                        'execution_id': execution.execution_id,
+                        'symbol': symbol,
+                        'direction': direction,
+                        'reason': execution.status,
+                        'success': False,
+                    }
+
                 # Register with Position Monitor
                 plog.info(
                     f"📌 Registering position with Position Monitor...",

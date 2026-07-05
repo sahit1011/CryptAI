@@ -613,6 +613,16 @@ class OrderTracker:
     def get_tracked_orders(self) -> List[Order]:
         """Get all tracked orders"""
         return list(self.tracked_orders.values())
+
+    def get_active_orders(self) -> List[Order]:
+        """Get tracked orders that are still open (working) on the exchange.
+
+        Active == NEW or PARTIALLY_FILLED. Terminal orders (FILLED/CANCELED/
+        REJECTED/EXPIRED) are excluded so emergency cancel-all only targets orders
+        that can actually be cancelled.
+        """
+        active_statuses = {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
+        return [o for o in self.tracked_orders.values() if o.status in active_statuses]
     
     def get_recent_updates(self, limit: int = 10) -> List[OrderUpdate]:
         """Get recent order updates"""

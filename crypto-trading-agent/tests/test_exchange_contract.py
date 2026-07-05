@@ -121,9 +121,16 @@ async def test_request_sends_params_in_query_string_not_body():
     # (a JSON body would not match the query-string signature -> rejected).
     assert call["json"] is None
     assert call["params"] is not None
-    assert call["params"]["clientOrderID"] == "cai123e"
-    assert "signature" in call["params"]
-    assert call["params"]["recvWindow"] == 5000
+    # Signed requests are transmitted as an ordered list of (key, value) tuples so the
+    # wire order matches the signed (sorted) order; signature must be appended last.
+    sent_items = call["params"]
+    assert isinstance(sent_items, list)
+    assert sent_items[-1][0] == "signature"
+    keys_before_sig = [k for k, _ in sent_items[:-1]]
+    assert keys_before_sig == sorted(keys_before_sig)  # transmitted in sorted order
+    sent = dict(sent_items)
+    assert sent["clientOrderID"] == "cai123e"
+    assert sent["recvWindow"] == 5000
 
 
 @pytest.mark.asyncio
@@ -172,7 +179,7 @@ async def test_close_position_is_reduce_only_market():
     sess = _FakeSession()
     c = _client(sess)
     await c.close_position("BTCUSDT", OrderSide.SELL, 0.5)
-    p = sess.calls[-1]["params"]
+    p = dict(sess.calls[-1]["params"])
     assert p["type"] == "MARKET"
     assert p["reduceOnly"] == "true"
 

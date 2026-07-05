@@ -335,20 +335,45 @@ class OrderManager:
         return False
     
     async def _rollback_execution(self, execution: TradeExecution):
-        """Rollback failed execution (cancel all orders)"""
-        
+        """Roll back a failed execution.
+
+        The dangerous case is a FILLED entry whose stop-loss/take-profit placement
+        then failed: cancelling a filled order is a no-op, so the previous code left
+        a naked, unprotected open position behind. When the entry is filled we must
+        instead CLOSE it with a reduce-only market order; only an unfilled entry is
+        cancelled.
+        """
         logger.warning(f"Rolling back execution: {execution.execution_id}")
-        
-        # Cancel entry order if not filled
-        if execution.entry_order and not execution.entry_filled:
-            try:
-                await self.exchange.cancel_order(
-                    symbol=execution.symbol,
-                    order_id=execution.entry_order.order_id
-                )
-            except Exception as e:
-                logger.error(f"Failed to cancel entry order: {e}")
-        
+
+        if execution.entry_order:
+            if execution.entry_filled:
+                # Entry is on the book as an open position — flatten it reduce-only.
+                close_side = OrderSide.SELL if execution.direction == 'LONG' else OrderSide.BUY
+                try:
+                    logger.warning(
+                        f"Rollback: closing filled entry (reduce-only) for "
+                        f"{execution.symbol} {execution.direction}"
+                    )
+                    await self.exchange.close_position(
+                        symbol=execution.symbol,
+                        side=close_side,
+                        quantity=execution.entry_order.filled_quantity or execution.entry_order.quantity,
+                    )
+                except Exception as e:
+                    logger.critical(
+                        f"ROLLBACK FAILED to close filled entry for {execution.symbol}: {e} — "
+                        f"position may be OPEN AND UNPROTECTED, manual intervention required"
+                    )
+            else:
+                # Unfilled entry — just cancel it.
+                try:
+                    await self.exchange.cancel_order(
+                        symbol=execution.symbol,
+                        order_id=execution.entry_order.order_id
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to cancel entry order: {e}")
+
         # Cancel stop-loss
         if execution.stop_loss_order:
             try:
