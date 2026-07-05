@@ -77,9 +77,9 @@ export function LiveTicker() {
     if (ticks.length === 0) return null;
 
     return (
-        <div className="fixed bottom-0 left-0 right-0 z-50 w-full bg-[#0A0A0A]/80 backdrop-blur-md border-t border-white/10 py-3 overflow-hidden">
-            <div className="absolute inset-y-0 left-0 w-32 bg-gradient-to-r from-[#0A0A0A] to-transparent z-10" />
-            <div className="absolute inset-y-0 right-0 w-32 bg-gradient-to-l from-[#0A0A0A] to-transparent z-10" />
+        <div className="fixed bottom-0 left-0 right-0 z-50 w-full bg-background/80 backdrop-blur-md border-t border-border py-3 overflow-hidden">
+            <div className="absolute inset-y-0 left-0 w-32 bg-gradient-to-r from-background to-transparent z-10" />
+            <div className="absolute inset-y-0 right-0 w-32 bg-gradient-to-l from-background to-transparent z-10" />
 
             <motion.div
                 className="flex gap-12 whitespace-nowrap"
@@ -92,9 +92,9 @@ export function LiveTicker() {
             >
                 {[...ticks, ...ticks, ...ticks].map((coin, i) => (
                     <div key={i} className="flex items-center gap-3 text-sm">
-                        <span className="font-bold text-white">{coin.symbol}</span>
-                        <span className="text-muted-foreground">{coin.price}</span>
-                        <span className={coin.change.startsWith('+') ? "text-emerald-400" : "text-red-400"}>
+                        <span className="font-mono font-bold text-foreground">{coin.symbol}</span>
+                        <span className="font-mono text-muted-foreground">{coin.price}</span>
+                        <span className={`font-mono ${coin.change.startsWith('+') ? "text-profit" : "text-loss"}`}>
                             {coin.change}
                         </span>
                     </div>

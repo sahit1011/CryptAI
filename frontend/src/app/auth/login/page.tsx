@@ -64,24 +64,24 @@ export default function LoginPage() {
     };
 
     return (
-        <div className="flex min-h-screen items-center justify-center bg-[#0A0A0A] text-foreground relative overflow-hidden">
+        <div className="flex min-h-screen items-center justify-center bg-background text-foreground relative overflow-hidden">
             {/* Background Grid */}
             <BackgroundGrid />
 
             {/* Additional Emerald-Cyan Glow */}
             <div className="absolute inset-0 z-0 pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-emerald-500/10 blur-[120px]" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-cyan-500/10 blur-[120px]" />
+                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-accent/10 blur-[120px]" />
+                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-accent/10 blur-[120px]" />
             </div>
 
             <div className="w-full max-w-md p-8 relative z-10">
                 {/* Logo */}
                 <Link href="/" className="flex justify-center mb-8 group">
                     <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center border border-white/10 backdrop-blur-md shadow-xl group-hover:bg-white/15 group-hover:scale-105 transition-all">
-                            <Activity className="w-6 h-6 text-white" />
+                        <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center border border-border backdrop-blur-md shadow-xl group-hover:bg-accent/15 group-hover:scale-105 transition-all">
+                            <Activity className="w-6 h-6 text-foreground" />
                         </div>
-                        <span className="text-2xl font-bold tracking-tight text-white group-hover:text-emerald-300 transition-colors">
+                        <span className="text-2xl font-bold tracking-tight text-foreground group-hover:text-accent-300 transition-colors">
                             CryptAI
                         </span>
                     </div>
@@ -90,10 +90,10 @@ export default function LoginPage() {
                 {/* Auth Card */}
                 <div className="glass-card rounded-2xl p-8 space-y-6 relative overflow-hidden">
                     {/* Gradient Border Effect */}
-                    <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-emerald-500/20 via-cyan-500/20 to-emerald-500/20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                    <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent/20 via-accent/10 to-accent/20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
 
                     <div className="text-center space-y-2 relative z-10">
-                        <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-emerald-400 via-cyan-400 to-emerald-400 bg-clip-text text-transparent">
+                        <h1 className="text-3xl font-bold tracking-tight text-gradient-emerald">
                             Welcome back
                         </h1>
                         <p className="text-sm text-muted-foreground">
@@ -109,16 +109,16 @@ export default function LoginPage() {
 
                     <form onSubmit={handleLogin} className="space-y-4 relative z-10">
                         <div className="space-y-2">
-                            <Label htmlFor="email" className="text-sm font-medium text-gray-300">
+                            <Label htmlFor="email" className="text-sm font-medium text-muted-foreground">
                                 Email
                             </Label>
                             <div className="relative group">
-                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 group-focus-within:text-emerald-400 transition-colors" />
+                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subtle-foreground group-focus-within:text-accent transition-colors" />
                                 <Input
                                     id="email"
                                     type="email"
                                     placeholder="name@example.com"
-                                    className="pl-10 h-11 bg-white/5 border-white/10 focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/20 placeholder:text-muted-foreground/50 transition-all"
+                                    className="pl-10 h-11 bg-elevated border-border focus:border-accent/50 focus:ring-2 focus:ring-accent/20 placeholder:text-muted-foreground/50 transition-all"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
                                     required
@@ -128,23 +128,23 @@ export default function LoginPage() {
 
                         <div className="space-y-2">
                             <div className="flex items-center justify-between">
-                                <Label htmlFor="password" className="text-sm font-medium text-gray-300">
+                                <Label htmlFor="password" className="text-sm font-medium text-muted-foreground">
                                     Password
                                 </Label>
                                 <Link
                                     href="/auth/forgot-password"
-                                    className="text-xs text-muted-foreground hover:text-emerald-400 transition-colors"
+                                    className="text-xs text-muted-foreground hover:text-accent transition-colors"
                                 >
                                     Forgot password?
                                 </Link>
                             </div>
                             <div className="relative group">
-                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 group-focus-within:text-emerald-400 transition-colors" />
+                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subtle-foreground group-focus-within:text-accent transition-colors" />
                                 <Input
                                     id="password"
                                     type="password"
                                     placeholder="••••••••"
-                                    className="pl-10 h-11 bg-white/5 border-white/10 focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/20 placeholder:text-muted-foreground/50 transition-all"
+                                    className="pl-10 h-11 bg-elevated border-border focus:border-accent/50 focus:ring-2 focus:ring-accent/20 placeholder:text-muted-foreground/50 transition-all"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     required
@@ -155,7 +155,7 @@ export default function LoginPage() {
                         <Button
                             type="submit"
                             disabled={loading}
-                            className="w-full h-11 bg-white text-black hover:bg-white/90 font-medium transition-all hover:scale-[1.02] shadow-lg shadow-white/20 relative z-10 group overflow-hidden"
+                            className="w-full h-11 bg-primary text-primary-foreground hover:bg-accent-400 font-medium transition-all hover:scale-[1.02] emerald-glow relative z-10 group overflow-hidden"
                         >
                             <span className="relative z-10 flex items-center justify-center">
                                 {loading ? (
@@ -173,10 +173,10 @@ export default function LoginPage() {
 
                     <div className="relative z-10">
                         <div className="absolute inset-0 flex items-center">
-                            <span className="w-full border-t border-white/10" />
+                            <span className="w-full border-t border-border" />
                         </div>
                         <div className="relative flex justify-center text-xs uppercase">
-                            <span className="bg-[#0A0A0A] px-2 text-muted-foreground">
+                            <span className="bg-background px-2 text-muted-foreground">
                                 Or continue with
                             </span>
                         </div>
@@ -186,7 +186,7 @@ export default function LoginPage() {
                         variant="outline"
                         onClick={handleGoogleLogin}
                         disabled={loading}
-                        className="w-full h-11 border-white/10 bg-white/5 hover:bg-white/10 hover:text-white hover:border-emerald-500/30 transition-all relative z-10 group"
+                        className="w-full h-11 border-border bg-elevated hover:bg-muted hover:text-foreground hover:border-accent/30 transition-all relative z-10 group"
                     >
                         <GoogleIcon />
                         Google
@@ -197,7 +197,7 @@ export default function LoginPage() {
                     Don&apos;t have an account?{" "}
                     <Link
                         href="/auth/signup"
-                        className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors hover:underline"
+                        className="text-accent hover:text-accent-300 font-medium transition-colors hover:underline"
                     >
                         Sign up
                     </Link>

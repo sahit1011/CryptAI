@@ -314,4 +314,203 @@
     border-radius: 4px;
   }
   .scroll-terminal::-webkit-scrollbar-track { background: transparent; }
+
+  /* =====================================================================
+   * LANDING VISUAL LANGUAGE  (marketing pages only)
+   * One brand hue = emerald (--accent-*). Reusable atmosphere + glass so
+   * sections stay cohesive instead of inlining random per-section glows.
+   * All motion respects prefers-reduced-motion (see bottom of block).
+   * ===================================================================== */
+
+  /*
+   * .aurora — a soft, layered emerald atmosphere. Two large blurred radial
+   * emerald glows over the near-black canvas that slowly drift. Place as a
+   * fixed/absolute z-0 layer behind page content (pointer-events-none).
+   */
+  .aurora {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    background: var(--background);
+  }
+  .aurora::before,
+  .aurora::after {
+    content: "";
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(120px);
+    will-change: transform, opacity;
+  }
+  /* Primary glow — top, emerald */
+  .aurora::before {
+    top: -22%;
+    left: 50%;
+    width: min(1100px, 90vw);
+    height: 560px;
+    transform: translateX(-50%);
+    background: radial-gradient(
+      closest-side,
+      color-mix(in oklch, var(--accent-500) 26%, transparent),
+      transparent 72%
+    );
+    opacity: 0.55;
+    animation: aurora-drift-a 22s ease-in-out infinite alternate;
+  }
+  /* Secondary glow — lower, deeper emerald, offset for depth */
+  .aurora::after {
+    top: 34%;
+    left: 12%;
+    width: min(760px, 70vw);
+    height: 480px;
+    background: radial-gradient(
+      closest-side,
+      color-mix(in oklch, var(--accent-700) 22%, transparent),
+      transparent 70%
+    );
+    opacity: 0.4;
+    animation: aurora-drift-b 26s ease-in-out infinite alternate;
+  }
+
+  /*
+   * .grid-perspective — hairline grid with a mask that fades it out toward
+   * the edges so it reads as depth/atmosphere, not a hard overlay. Emerald
+   * lines at very low opacity. Pair inside .aurora or on its own z-0 layer.
+   */
+  .grid-perspective {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(
+        to right,
+        color-mix(in oklch, var(--accent-500) 8%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        color-mix(in oklch, var(--accent-500) 8%, transparent) 1px,
+        transparent 1px
+      );
+    background-size: 46px 46px;
+    -webkit-mask-image: radial-gradient(
+      ellipse 90% 60% at 50% 0%,
+      black 10%,
+      transparent 78%
+    );
+    mask-image: radial-gradient(
+      ellipse 90% 60% at 50% 0%,
+      black 10%,
+      transparent 78%
+    );
+  }
+
+  /*
+   * .glass-panel — the canonical landing surface. Translucent elevated fill
+   * + backdrop blur + hairline border + real elevation. On hover it lifts
+   * subtly and gains an emerald border + emerald glow. Rounded-xl.
+   */
+  .glass-panel {
+    background-color: color-mix(in oklch, var(--surface) 60%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-elevation-mid);
+    transition:
+      transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 0.35s ease,
+      box-shadow 0.35s ease;
+  }
+  .glass-panel-hover:hover {
+    transform: translateY(-3px);
+    border-color: color-mix(in oklch, var(--accent-500) 45%, transparent);
+    box-shadow:
+      var(--shadow-elevation-high),
+      0 0 34px color-mix(in oklch, var(--accent-500) 22%, transparent);
+  }
+
+  /*
+   * .emerald-glow — reusable soft emerald halo for CTAs / focal elements.
+   * Use on the primary button and hero accents. Utility, not per-section hex.
+   */
+  .emerald-glow {
+    box-shadow: 0 0 30px color-mix(in oklch, var(--accent-500) 35%, transparent);
+  }
+  .emerald-glow-strong {
+    box-shadow:
+      0 0 20px color-mix(in oklch, var(--accent-500) 40%, transparent),
+      0 0 60px color-mix(in oklch, var(--accent-500) 22%, transparent);
+  }
+
+  /*
+   * .text-gradient-emerald — the wordmark / headline accent gradient. Uses
+   * the accent scale so it stays on-brand; pair with .animate-shine + a
+   * 200% background-size for the slow sheen (already defined above).
+   */
+  .text-gradient-emerald {
+    background-image: linear-gradient(
+      to right,
+      var(--accent-300),
+      var(--accent-500),
+      var(--accent-300)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  /* Neutral sheen for the rotating headline — bright to dim to bright. */
+  .text-sheen {
+    background-image: linear-gradient(
+      to right,
+      var(--foreground),
+      var(--foreground),
+      color-mix(in oklch, var(--foreground) 45%, transparent),
+      var(--foreground),
+      var(--foreground)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Emerald icon chip — small rounded emerald-tinted square for feature icons. */
+  .chip-emerald {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-md);
+    background-color: color-mix(in oklch, var(--accent-500) 12%, transparent);
+    border: 1px solid color-mix(in oklch, var(--accent-500) 28%, transparent);
+    color: var(--accent-300);
+  }
+
+  /* ---- Landing keyframes ---------------------------------------------- */
+  @keyframes aurora-drift-a {
+    0%   { transform: translateX(-50%) translate(0, 0) scale(1); }
+    100% { transform: translateX(-50%) translate(4%, 3%) scale(1.08); }
+  }
+  @keyframes aurora-drift-b {
+    0%   { transform: translate(0, 0) scale(1); }
+    100% { transform: translate(-5%, -4%) scale(1.12); }
+  }
+  /* Slow vertical rise for background particles (emerald motes). */
+  @keyframes particle-rise {
+    0%   { transform: translateY(0); opacity: 0; }
+    12%  { opacity: var(--p-opacity, 0.5); }
+    88%  { opacity: var(--p-opacity, 0.5); }
+    100% { transform: translateY(-120px); opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .aurora::before,
+    .aurora::after {
+      animation: none;
+    }
+    .glass-panel,
+    .glass-panel-hover:hover {
+      transition: none;
+      transform: none;
+    }
+  }
 }

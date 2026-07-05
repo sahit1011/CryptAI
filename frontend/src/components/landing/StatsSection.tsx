@@ -1,87 +1,105 @@
 "use client";
 
 import { motion, useInView } from "framer-motion";
-import { useRef, useState, useEffect } from "react";
-import { cn } from "@/lib/utils";
+import { useEffect, useRef, useState } from "react";
 
-const stats = [
-    { label: "Total Volume Traded", value: "$2.4B+", color: "text-white", glow: "shadow-indigo-500/20" },
-    { label: "Active Agents", value: "12,450", color: "text-indigo-300", glow: "shadow-indigo-500/20" },
-    { label: "Uptime", value: "99.99%", color: "text-emerald-300", glow: "shadow-emerald-500/20" },
-    { label: "Avg. Execution Speed", value: "<50ms", color: "text-purple-300", glow: "shadow-purple-500/20" },
+import { Value } from "@/components/ui/value";
+
+/*
+ * StatsSection — an illustrative marketing band. Numbers are clearly labelled
+ * "Illustrative" so they never read as live/reported metrics, render in Geist
+ * Mono via <Value>, and animate with a deterministic count-up (no Math.random
+ * during render). Emerald accents only; sits on bg-background with a shared
+ * aurora atmosphere layer for a continuous feel.
+ */
+
+interface Stat {
+    /** Numeric target the count-up animates toward. */
+    target: number;
+    /** Decimal places for the animated value. */
+    decimals: number;
+    prefix?: string;
+    suffix?: string;
+    label: string;
+}
+
+const stats: Stat[] = [
+    { target: 2.4, decimals: 1, prefix: "$", suffix: "B", label: "Simulated volume routed" },
+    { target: 12, decimals: 0, suffix: "+", label: "Specialized agent types" },
+    { target: 99.99, decimals: 2, suffix: "%", label: "Target uptime" },
+    { target: 50, decimals: 0, prefix: "<", suffix: "ms", label: "Signal-to-order latency" },
 ];
 
-const ScrambleText = ({ children, className, delay = 0 }: { children: string, className?: string, delay?: number }) => {
-    const ref = useRef(null);
-    const isInView = useInView(ref, { once: true, margin: "-50px" });
-    const [text, setText] = useState(children);
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
+/*
+ * CountUp — animates a value from 0 → target when it scrolls into view, using
+ * requestAnimationFrame (client-only, deterministic — no randomness). Renders
+ * through <Value> so the number stays in Geist Mono + tabular figures.
+ */
+function CountUp({ stat }: { stat: Stat }) {
+    const ref = useRef<HTMLSpanElement>(null);
+    const inView = useInView(ref, { once: true, margin: "-60px" });
+    const [display, setDisplay] = useState(0);
 
     useEffect(() => {
-        if (!isInView) return;
+        if (!inView) return;
 
-        const timeout = setTimeout(() => {
-            let iteration = 0;
-            const interval = setInterval(() => {
-                setText(
-                    children
-                        .split("")
-                        .map((letter, index) => {
-                            if (index < iteration) {
-                                return children[index];
-                            }
-                            return chars[Math.floor(Math.random() * chars.length)];
-                        })
-                        .join("")
-                );
+        let raf = 0;
+        const duration = 1100;
+        let start: number | null = null;
 
-                if (iteration >= children.length) {
-                    clearInterval(interval);
-                }
+        const tick = (now: number) => {
+            if (start === null) start = now;
+            const t = Math.min((now - start) / duration, 1);
+            // easeOutCubic for a smooth, premium settle.
+            const eased = 1 - Math.pow(1 - t, 3);
+            setDisplay(stat.target * eased);
+            if (t < 1) raf = requestAnimationFrame(tick);
+        };
 
-                iteration += 1 / 3;
-            }, 30);
-
-            return () => clearInterval(interval);
-        }, delay * 1000);
-
-        return () => clearTimeout(timeout);
-    }, [isInView, children, delay]);
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+    }, [inView, stat.target]);
 
     return (
-        <span ref={ref} className={cn("inline-block tabular-nums", className)}>
-            {text}
-        </span>
+        <Value
+            ref={ref}
+            value={display}
+            decimals={stat.decimals}
+            prefix={stat.prefix}
+            suffix={stat.suffix}
+            className="display-3 text-4xl md:text-5xl text-gradient-emerald"
+        />
     );
-};
+}
 
 export function StatsSection() {
     return (
-        <section className="py-12 border-b border-white/10 bg-[#0A0A0A] relative overflow-hidden">
-            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-indigo-900/20 via-[#0A0A0A] to-[#0A0A0A] pointer-events-none" />
+        <section className="relative overflow-hidden border-y border-border py-20 md:py-24">
+            {/* Shared emerald atmosphere — keeps the page one continuous feel. */}
+            <div className="aurora z-0 opacity-70" aria-hidden />
 
-            {/* Grid Pattern - Increased opacity */}
-            <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808015_1px,transparent_1px),linear-gradient(to_bottom,#80808015_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] pointer-events-none" />
+            <div className="container relative z-10 mx-auto px-4 md:px-6">
+                <div className="mx-auto mb-12 max-w-2xl text-center">
+                    <span className="label-md text-accent-300">By the numbers</span>
+                    <h2 className="display-3 mt-3 text-balance">Built to run at market speed</h2>
+                    <p className="body-sm mt-3">
+                        Illustrative figures shown to convey scale and design targets — not
+                        reported production metrics.
+                    </p>
+                </div>
 
-            <div className="container mx-auto px-4 md:px-6 relative z-10">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-0">
+                <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
                     {stats.map((stat, i) => (
                         <motion.div
-                            key={i}
-                            initial={{ opacity: 0, y: 20 }}
+                            key={stat.label}
+                            initial={{ opacity: 0, y: 24 }}
                             whileInView={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.5, delay: i * 0.1 }}
-                            viewport={{ once: true }}
-                            className="flex flex-col items-center justify-center text-center p-6 group relative transition-colors duration-300"
+                            viewport={{ once: true, margin: "-80px" }}
+                            transition={{ duration: 0.5, delay: i * 0.08, ease: [0.16, 1, 0.3, 1] }}
+                            className="glass-panel glass-panel-hover flex flex-col items-center justify-center px-4 py-8 text-center"
                         >
-                            <div className={cn("text-4xl md:text-5xl font-bold mb-3 tracking-tight relative z-10 drop-shadow-sm", stat.color)}>
-                                <ScrambleText delay={i * 0.1 + 0.2}>
-                                    {stat.value}
-                                </ScrambleText>
-                            </div>
-                            <div className="text-sm text-muted-foreground uppercase tracking-wider font-medium relative z-10 group-hover:text-white transition-colors duration-300">
-                                {stat.label}
-                            </div>
+                            <CountUp stat={stat} />
+                            <div className="label-md mt-3 text-subtle-foreground">{stat.label}</div>
                         </motion.div>
                     ))}
                 </div>

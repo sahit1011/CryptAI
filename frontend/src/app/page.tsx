@@ -1,26 +1,30 @@
+import { Navbar } from "@/components/landing/Navbar";
 import { HeroSection } from "@/components/landing/HeroSection";
-
+import { FeaturesSection } from "@/components/landing/FeaturesSection";
+import { StatsSection } from "@/components/landing/StatsSection";
 import { ArchitectureSection } from "@/components/landing/ArchitectureSection";
-
 import { CTASection } from "@/components/landing/CTASection";
 import { Footer } from "@/components/landing/Footer";
-import { Navbar } from "@/components/landing/Navbar";
 
+/*
+ * Landing composition — one continuous emerald atmosphere on bg-background.
+ * Order: Hero (with its own aurora) → Features → Stats → Architecture → CTA.
+ * Selection is emerald to match the brand. No hardcoded canvas hex.
+ */
 export default function LandingPage() {
-  return (
-    <div className="min-h-screen bg-[#0A0A0A] text-foreground overflow-x-hidden font-sans selection:bg-indigo-500/30">
+    return (
+        <div className="min-h-screen bg-background text-foreground overflow-x-hidden font-sans selection:bg-accent/30 selection:text-foreground">
+            <Navbar />
 
-      {/* Enhanced Navbar */}
-      <Navbar />
+            <main>
+                <HeroSection />
+                <FeaturesSection />
+                <StatsSection />
+                <ArchitectureSection />
+                <CTASection />
+            </main>
 
-      <main>
-        <HeroSection />
-
-        <ArchitectureSection />
-        <CTASection />
-      </main>
-
-      <Footer />
-    </div>
-  );
+            <Footer />
+        </div>
+    );
 }

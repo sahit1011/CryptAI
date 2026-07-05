@@ -7,24 +7,24 @@ import { BackgroundGrid } from "@/components/landing/BackgroundGrid";
 
 export default function AuthCodeErrorPage() {
     return (
-        <div className="flex min-h-screen items-center justify-center bg-[#0A0A0A] text-foreground relative overflow-hidden">
+        <div className="flex min-h-screen items-center justify-center bg-background text-foreground relative overflow-hidden">
             {/* Background Grid */}
             <BackgroundGrid />
 
             {/* Additional Emerald-Cyan Glow */}
             <div className="absolute inset-0 z-0 pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-emerald-500/10 blur-[120px]" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-cyan-500/10 blur-[120px]" />
+                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-accent/10 blur-[120px]" />
+                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-accent/10 blur-[120px]" />
             </div>
 
             <div className="w-full max-w-md p-8 relative z-10">
                 {/* Logo */}
                 <Link href="/" className="flex justify-center mb-8 group">
                     <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center border border-white/10 backdrop-blur-md shadow-xl group-hover:bg-white/15 group-hover:scale-105 transition-all">
-                            <Activity className="w-6 h-6 text-white" />
+                        <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center border border-border backdrop-blur-md shadow-xl group-hover:bg-accent/15 group-hover:scale-105 transition-all">
+                            <Activity className="w-6 h-6 text-foreground" />
                         </div>
-                        <span className="text-2xl font-bold tracking-tight text-white group-hover:text-emerald-300 transition-colors">
+                        <span className="text-2xl font-bold tracking-tight text-foreground group-hover:text-accent-300 transition-colors">
                             CryptAI
                         </span>
                     </div>
@@ -65,7 +65,7 @@ export default function AuthCodeErrorPage() {
                     <div className="space-y-3 relative z-10">
                         <Link href="/auth/login" className="block">
                             <Button
-                                className="w-full h-11 bg-white text-black hover:bg-white/90 font-medium transition-all hover:scale-[1.02] shadow-lg shadow-white/20 relative z-10 group overflow-hidden"
+                                className="w-full h-11 bg-primary text-primary-foreground hover:bg-accent-400 font-medium transition-all hover:scale-[1.02] emerald-glow relative z-10 group overflow-hidden"
                             >
                                 <span className="relative z-10 flex items-center justify-center">
                                     Try Again <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
@@ -78,7 +78,7 @@ export default function AuthCodeErrorPage() {
                         <Link href="/auth/signup" className="block">
                             <Button
                                 variant="outline"
-                                className="w-full h-11 border-white/10 bg-white/5 hover:bg-white/10 hover:text-white hover:border-emerald-500/30 transition-all"
+                                className="w-full h-11 border-border bg-elevated hover:bg-muted hover:text-foreground hover:border-accent/30 transition-all"
                             >
                                 Create New Account
                             </Button>
@@ -90,7 +90,7 @@ export default function AuthCodeErrorPage() {
                     Need help?{" "}
                     <Link
                         href="/"
-                        className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors hover:underline"
+                        className="text-accent hover:text-accent-300 font-medium transition-colors hover:underline"
                     >
                         Contact Support
                     </Link>

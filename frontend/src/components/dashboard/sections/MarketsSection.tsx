@@ -4,6 +4,9 @@ import dynamic from "next/dynamic";
 import { SectionHeader } from "../ui/SectionHeader";
 import { TickerWidget } from "../widgets/TickerWidget";
 import { OrderBookWidget } from "../widgets/OrderBookWidget";
+import { ConnectionStatus } from "@/components/ui/connection-status";
+import { LoadingState } from "@/components/ui/states";
+import { useMarketStore } from "@/hooks/useMarketData";
 import { LineChart } from "lucide-react";
 
 // Dynamically import ChartWidget
@@ -12,14 +15,16 @@ const ChartWidget = dynamic(
     {
         ssr: false,
         loading: () => (
-            <div className="h-full w-full glass-card animate-pulse rounded-xl flex items-center justify-center">
-                <span className="text-muted-foreground text-sm">Loading Chart...</span>
+            <div className="flex h-full w-full items-center justify-center rounded-xl border border-border bg-surface/60 backdrop-blur-md">
+                <LoadingState title="Loading chart…" />
             </div>
         ),
     }
 );
 
 export function MarketsSection() {
+    const status = useMarketStore((s) => s.status);
+
     return (
         <div className="space-y-8">
             {/* Header */}
@@ -27,7 +32,8 @@ export function MarketsSection() {
                 title="Markets"
                 description="Real-time price charts, order books, and market data"
                 icon={LineChart}
-                iconColor="bg-cyan-500/10 text-cyan-400"
+                iconColor="bg-accent-muted text-accent-300"
+                actions={<ConnectionStatus status={status} />}
             />
 
             {/* Main Chart + Order Book Layout */}
@@ -35,7 +41,7 @@ export function MarketsSection() {
                 {/* Chart - 2 columns */}
                 <div className="lg:col-span-2 space-y-6">
                     {/* Live Price Chart */}
-                    <div className="h-[600px] rounded-xl overflow-hidden border border-white/5 bg-[#0A0A0A]/50 backdrop-blur-sm">
+                    <div className="h-[600px] overflow-hidden rounded-xl border border-border bg-surface/60 shadow-[var(--shadow-elevation-low)] backdrop-blur-md">
                         <ChartWidget />
                     </div>
 

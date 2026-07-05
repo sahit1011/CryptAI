@@ -1,37 +1,51 @@
 "use client";
 
-import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 
-type Star = {
-    x: string;
-    y: string;
+/*
+ * BackgroundGrid — the shared landing atmosphere.
+ *
+ * Layers (back to front):
+ *   1. .aurora            — two drifting blurred emerald radial glows over canvas
+ *   2. .grid-perspective  — hairline emerald grid, masked to fade at the edges
+ *   3. emerald motes      — very subtle drifting particles (client-only)
+ *
+ * It should feel like one continuous emerald atmosphere down the page. All
+ * colors come from the --accent-* tokens; no off-brand hues, no hardcoded hex.
+ * Particle positions are generated client-side (Math.random never runs during
+ * render — the initial render has an empty particle list) to avoid hydration
+ * mismatch and satisfy the React compiler.
+ */
+
+type Mote = {
+    left: string;
+    top: string;
+    size: number;
     opacity: number;
-    destinationY: string;
+    delay: number;
     duration: number;
 };
 
-// Decorative particle positions. Generated outside render (impure Math.random)
-// and only on the client to avoid an SSR/client hydration mismatch.
-function generateStars(): Star[] {
-    return [...Array(20)].map(() => ({
-        x: Math.random() * 100 + "%",
-        y: Math.random() * 100 + "%",
-        opacity: Math.random(),
-        destinationY: Math.random() * -100 + "%",
-        duration: Math.random() * 10 + 10,
+function generateMotes(): Mote[] {
+    return Array.from({ length: 22 }, () => ({
+        left: `${Math.random() * 100}%`,
+        top: `${55 + Math.random() * 45}%`,
+        size: Math.random() * 2 + 1.5,
+        opacity: Math.random() * 0.35 + 0.15,
+        delay: Math.random() * 12,
+        duration: Math.random() * 10 + 14,
     }));
 }
 
 export const BackgroundGrid = () => {
-    const [stars, setStars] = useState<Star[]>([]);
+    const [motes, setMotes] = useState<Mote[]>([]);
 
     useEffect(() => {
-        // Defer to a microtask so the state update happens in a callback rather
-        // than synchronously in the effect body (client-only, runs once).
+        // Client-only: defer so the impure generation runs in a callback, not
+        // synchronously during the effect's first paint path. Runs once.
         let cancelled = false;
         queueMicrotask(() => {
-            if (!cancelled) setStars(generateStars());
+            if (!cancelled) setMotes(generateMotes());
         });
         return () => {
             cancelled = true;
@@ -40,36 +54,25 @@ export const BackgroundGrid = () => {
 
     return (
         <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-            {/* Radial Gradient for Spotlight effect */}
-            <div className="absolute top-[-20%] left-1/2 -translate-x-1/2 w-[1000px] h-[500px] bg-indigo-500/20 blur-[120px] rounded-full opacity-50" />
+            {/* Emerald aurora + masked perspective grid (pure CSS utilities). */}
+            <div className="aurora">
+                <div className="grid-perspective" />
+            </div>
 
-            {/* Grid Perspective */}
-            <div
-                className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"
-                style={{
-                    maskImage: "linear-gradient(to bottom, transparent, black 10%, black 90%, transparent)"
-                }}
-            />
-
-            {/* Moving Stars / Particles */}
+            {/* Subtle emerald motes drifting upward. */}
             <div className="absolute inset-0">
-                {stars.map((star, i) => (
-                    <motion.div
+                {motes.map((mote, i) => (
+                    <span
                         key={i}
-                        className="absolute w-1 h-1 bg-white rounded-full"
-                        initial={{
-                            x: star.x,
-                            y: star.y,
-                            opacity: star.opacity
-                        }}
-                        animate={{
-                            y: [null, star.destinationY],
-                            opacity: [0, 1, 0]
-                        }}
-                        transition={{
-                            duration: star.duration,
-                            repeat: Infinity,
-                            ease: "linear"
+                        className="absolute rounded-full bg-accent-300"
+                        style={{
+                            left: mote.left,
+                            top: mote.top,
+                            width: mote.size,
+                            height: mote.size,
+                            animation: `particle-rise ${mote.duration}s ease-in-out ${mote.delay}s infinite`,
+                            // Per-particle peak opacity read by the keyframe.
+                            ["--p-opacity" as string]: mote.opacity,
                         }}
                     />
                 ))}
