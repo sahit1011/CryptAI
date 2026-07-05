@@ -184,6 +184,7 @@ class PortfolioStateTracker:
         # Performance tracking
         self.peak_equity = initial_balance
         self.daily_start_equity = initial_balance
+        self.daily_start_date = datetime.now().date()
         self.daily_trades = 0
         self.daily_wins = 0
         self.daily_losses = 0
@@ -220,6 +221,32 @@ class PortfolioStateTracker:
             agent="risk_agent",
             phase="initialization"
         )
+
+    def _total_equity_unlocked(self) -> float:
+        """Total equity (balance + unrealized P&L).
+
+        The caller MUST already hold self._lock. Methods that already hold the lock
+        must use this instead of get_current_snapshot() (which re-acquires the
+        non-reentrant lock and would deadlock).
+        """
+        return self.account_balance + sum(
+            pos.unrealized_pnl for pos in self.positions.values()
+        )
+
+    def _maybe_roll_daily_unlocked(self) -> None:
+        """Reset daily counters when the calendar day has rolled over.
+
+        Caller MUST hold self._lock. Without this the daily-loss circuit breaker's
+        baseline (daily_start_equity) never resets, so daily_pnl drifts from the
+        account's inception balance instead of the start of the current day.
+        """
+        today = datetime.now().date()
+        if today != self.daily_start_date:
+            self.daily_start_date = today
+            self.daily_start_equity = self._total_equity_unlocked()
+            self.daily_trades = 0
+            self.daily_wins = 0
+            self.daily_losses = 0
 
     async def add_position(
         self,
@@ -364,6 +391,10 @@ class PortfolioStateTracker:
         Get current portfolio snapshot with all metrics
         """
         async with self._lock:
+            # Roll daily counters if the calendar day changed, so the daily-loss
+            # circuit breaker measures against today's opening equity.
+            self._maybe_roll_daily_unlocked()
+
             # Update all positions with latest prices
             total_unrealized = sum(
                 pos.unrealized_pnl for pos in self.positions.values()
@@ -459,10 +490,16 @@ class PortfolioStateTracker:
         return can_add
 
     async def reset_daily_stats(self):
-        """Reset daily statistics (call at start of each day)"""
+        """Reset daily statistics (call at start of each day).
+
+        Daily reset also happens automatically on the day boundary inside
+        get_current_snapshot(); this remains for explicit/manual resets.
+        """
         async with self._lock:
-            snapshot = await self.get_current_snapshot()
-            self.daily_start_equity = snapshot.total_equity
+            # Use the unlocked helper — get_current_snapshot() would re-acquire the
+            # lock we already hold and deadlock.
+            self.daily_start_equity = self._total_equity_unlocked()
+            self.daily_start_date = datetime.now().date()
             self.daily_trades = 0
             self.daily_wins = 0
             self.daily_losses = 0
@@ -595,9 +632,12 @@ class PortfolioStateTracker:
                     weight = 1.0 if same_direction else 0.5
                     total_exposure += position.risk_amount * weight
             
-            # Calculate correlation risk score (0-1)
-            snapshot = await self.get_current_snapshot()
-            correlation_pct = total_exposure / snapshot.total_equity if snapshot.total_equity > 0 else 0
+            # Calculate correlation risk score (0-1). Use the unlocked equity helper —
+            # calling get_current_snapshot() here would re-acquire self._lock (which we
+            # already hold) and deadlock, so this check always timed out after 5s and
+            # the correlation limit was never actually enforced.
+            total_equity = self._total_equity_unlocked()
+            correlation_pct = total_exposure / total_equity if total_equity > 0 else 0
             
             # Risk score: 0 = no correlation, 1 = high correlation
             risk_score = min(correlation_pct / 0.04, 1.0)  # 4% = max acceptable
