@@ -1,359 +1,317 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/*
+ * CryptAI — "Trading Terminal" design system (dark only).
+ *
+ * Palette philosophy:
+ *   - Near-black canvas with layered elevated surfaces + hairline borders.
+ *   - ONE confident accent = emerald (trading identity).
+ *   - Red reserved strictly for loss / sell / danger. Amber = warning.
+ *   - Monospace (Geist Mono) for ALL numeric/tabular data via the .num utility.
+ *
+ * All raw values live on :root as CSS vars; the @theme inline block maps them
+ * to Tailwind color/utility names so `bg-background`, `text-muted-foreground`,
+ * `border-border`, `bg-surface`, `text-profit`, `text-accent`, etc. all resolve.
+ */
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* ---- Core surfaces / text -------------------------------------------- */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--foreground);
+  --color-elevated: var(--elevated);
+  --color-elevated-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-subtle-foreground: var(--subtle-foreground);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* ---- Brand / semantic primary (emerald = accent = primary) ----------- */
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-muted: var(--accent-muted);
+
+  --color-accent-50: var(--accent-50);
+  --color-accent-100: var(--accent-100);
+  --color-accent-200: var(--accent-200);
+  --color-accent-300: var(--accent-300);
+  --color-accent-400: var(--accent-400);
+  --color-accent-500: var(--accent-500);
+  --color-accent-600: var(--accent-600);
+  --color-accent-700: var(--accent-700);
+
+  /* ---- Semantic trading colors ----------------------------------------- */
+  --color-profit: var(--profit);
+  --color-profit-muted: var(--profit-muted);
+  --color-loss: var(--loss);
+  --color-loss-muted: var(--loss-muted);
+  --color-warning: var(--warning);
+  --color-warning-muted: var(--warning-muted);
+  --color-info: var(--info);
+  --color-info-muted: var(--info-muted);
+  --color-destructive: var(--loss);
+
+  /* ---- Chart palette (emerald-led, distinct hues) ---------------------- */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* ---- Sidebar --------------------------------------------------------- */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* ---- Typography ------------------------------------------------------ */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  /* ---- Radius ---------------------------------------------------------- */
+  --radius-sm: calc(var(--radius) - 3px);
+  --radius-md: calc(var(--radius) - 1px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* Custom Animations */
-  --animate-fade-in: fade-in 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-slide-up: slide-up 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-slide-in-right: slide-in-right 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-  --animate-pulse-subtle: pulse-subtle 3s infinite ease-in-out;
-  --animate-float: float 6s ease-in-out infinite;
+  /* ---- Elevation (subtle, dark-native) --------------------------------- */
+  --shadow-elevation-low: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --shadow-elevation-mid: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
+  --shadow-elevation-high: 0 12px 40px -8px rgba(0, 0, 0, 0.6);
+
+  /* ---- Motion (restrained) --------------------------------------------- */
+  --animate-fade-in: fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-slide-up: slide-up 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-pulse-subtle: pulse-subtle 2.4s ease-in-out infinite;
+  --animate-flash-up: flash-up 0.6s ease-out;
+  --animate-flash-down: flash-down 0.6s ease-out;
+  --animate-shine: shine 4s linear infinite;
 
   @keyframes fade-in {
-    from {
-      opacity: 0;
-    }
-
-    to {
-      opacity: 1;
-    }
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
-
   @keyframes slide-up {
-    from {
-      transform: translateY(20px);
-      opacity: 0;
-    }
-
-    to {
-      transform: translateY(0);
-      opacity: 1;
-    }
+    from { transform: translateY(8px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
   }
-
-  @keyframes slide-in-right {
-    from {
-      transform: translateX(20px);
-      opacity: 0;
-    }
-
-    to {
-      transform: translateX(0);
-      opacity: 1;
-    }
-  }
-
   @keyframes pulse-subtle {
-
-    0%,
-    100% {
-      opacity: 1;
-    }
-
-    50% {
-      opacity: 0.7;
-    }
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
   }
-
-  @keyframes float {
-    0% {
-      transform: translateY(0px);
-    }
-
-    50% {
-      transform: translateY(-10px);
-    }
-
-    100% {
-      transform: translateY(0px);
-    }
+  @keyframes flash-up {
+    0% { background-color: color-mix(in oklch, var(--profit) 22%, transparent); }
+    100% { background-color: transparent; }
   }
-
+  @keyframes flash-down {
+    0% { background-color: color-mix(in oklch, var(--loss) 22%, transparent); }
+    100% { background-color: transparent; }
+  }
   @keyframes shine {
-    from {
-      background-position: 200% 0%;
-    }
-
-    to {
-      background-position: 0% 0%;
-    }
+    from { background-position: 200% 0%; }
+    to { background-position: 0% 0%; }
   }
-
-  --animate-shine: shine 4s linear infinite;
 }
 
+/*
+ * Dark-only application. We define tokens on :root so they apply regardless of
+ * the .dark class; layout.tsx also sets .dark for any dark: variants in libs.
+ */
 :root {
-  --radius: 0.5rem;
-  /* Light Mode - Clean, crisp, minimal */
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.13 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.13 0.02 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.13 0.02 260);
-  --primary: oklch(0.13 0.02 260);
-  --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.13 0.02 260);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.55 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.13 0.02 260);
-  --destructive: oklch(0.58 0.2 27);
-  --border: oklch(0.92 0 0);
-  --input: oklch(0.92 0 0);
-  --ring: oklch(0.13 0.02 260);
+  --radius: 0.625rem;
 
-  --chart-1: oklch(0.65 0.2 40);
-  --chart-2: oklch(0.6 0.12 180);
-  --chart-3: oklch(0.4 0.07 230);
-  --chart-4: oklch(0.83 0.19 85);
-  --chart-5: oklch(0.77 0.19 70);
+  /* Canvas + layered surfaces (near-black -> elevated) */
+  --background: oklch(0.16 0.006 260);   /* ~#0a0b0d */
+  --surface: oklch(0.185 0.007 260);     /* ~#111318 */
+  --elevated: oklch(0.215 0.008 260);    /* ~#16181d */
+  --foreground: oklch(0.97 0.005 260);   /* near-white */
 
-  --sidebar: oklch(0.98 0 0);
-  --sidebar-foreground: oklch(0.13 0.02 260);
-  --sidebar-primary: oklch(0.13 0.02 260);
-  --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.96 0.01 260);
-  --sidebar-accent-foreground: oklch(0.13 0.02 260);
-  --sidebar-border: oklch(0.92 0.01 260);
-  --sidebar-ring: oklch(0.13 0.02 260);
+  --card: var(--surface);
+  --card-foreground: var(--foreground);
+  --popover: var(--elevated);
+  --popover-foreground: var(--foreground);
+
+  /* Muted / subtle text tiers */
+  --muted: oklch(0.24 0.008 260);
+  --muted-foreground: oklch(0.66 0.01 260);   /* secondary text */
+  --subtle: oklch(0.22 0.008 260);
+  --subtle-foreground: oklch(0.5 0.01 260);   /* tertiary / axis labels */
+
+  /* Hairline borders */
+  --border: oklch(1 0 0 / 0.08);
+  --border-strong: oklch(1 0 0 / 0.14);
+  --input: oklch(1 0 0 / 0.1);
+  --ring: oklch(0.72 0.15 158);               /* emerald focus ring */
+
+  /* Emerald accent scale (single brand hue ~158) */
+  --accent-50: oklch(0.95 0.03 160);
+  --accent-100: oklch(0.9 0.06 160);
+  --accent-200: oklch(0.84 0.1 159);
+  --accent-300: oklch(0.78 0.13 159);
+  --accent-400: oklch(0.74 0.15 158);
+  --accent-500: oklch(0.68 0.16 158);         /* base accent */
+  --accent-600: oklch(0.6 0.15 157);
+  --accent-700: oklch(0.5 0.13 156);
+
+  --accent: var(--accent-500);
+  --accent-foreground: oklch(0.16 0.006 260); /* dark text on emerald */
+  --accent-muted: color-mix(in oklch, var(--accent-500) 14%, transparent);
+
+  /* primary == accent so bg-primary reads emerald */
+  --primary: var(--accent-500);
+  --primary-foreground: oklch(0.16 0.006 260);
+
+  --secondary: var(--elevated);
+  --secondary-foreground: var(--foreground);
+
+  /* Semantic trading colors */
+  --profit: oklch(0.72 0.16 158);             /* emerald green */
+  --profit-muted: color-mix(in oklch, var(--profit) 15%, transparent);
+  --loss: oklch(0.63 0.2 25);                 /* red */
+  --loss-muted: color-mix(in oklch, var(--loss) 15%, transparent);
+  --warning: oklch(0.78 0.15 75);             /* amber */
+  --warning-muted: color-mix(in oklch, var(--warning) 15%, transparent);
+  --info: oklch(0.68 0.13 235);               /* blue (informational) */
+  --info-muted: color-mix(in oklch, var(--info) 15%, transparent);
+
+  /* Chart palette: emerald-led, then contrasting hues */
+  --chart-1: oklch(0.72 0.16 158);   /* emerald */
+  --chart-2: oklch(0.68 0.13 235);   /* blue */
+  --chart-3: oklch(0.78 0.15 75);    /* amber */
+  --chart-4: oklch(0.65 0.18 300);   /* violet */
+  --chart-5: oklch(0.63 0.2 25);     /* red */
+
+  /* Sidebar */
+  --sidebar: oklch(0.17 0.006 260);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--accent-500);
+  --sidebar-primary-foreground: oklch(0.16 0.006 260);
+  --sidebar-accent: var(--elevated);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
+/* Keep .dark identical — app is dark-only, but libs may key off dark: */
 .dark {
-  /* Premium Dark Mode - Deep Obsidian/Void */
-  --background: oklch(0.08 0.005 260);
-  /* Deeper than standard zinc */
-  --foreground: oklch(0.98 0 0);
-
-  --card: oklch(0.12 0.01 260);
-  --card-foreground: oklch(0.98 0 0);
-
-  --popover: oklch(0.08 0.005 260);
-  --popover-foreground: oklch(0.98 0 0);
-
-  --primary: oklch(0.98 0 0);
-  --primary-foreground: oklch(0.08 0.005 260);
-
-  --secondary: oklch(0.15 0.01 260);
-  --secondary-foreground: oklch(0.98 0 0);
-
-  --muted: oklch(0.15 0.01 260);
-  --muted-foreground: oklch(0.6 0.01 260);
-
-  --accent: oklch(0.15 0.01 260);
-  --accent-foreground: oklch(0.98 0 0);
-
-  --destructive: oklch(0.4 0.15 25);
-
-  --border: oklch(0.2 0.01 260);
-  --input: oklch(0.2 0.01 260);
-  --ring: oklch(0.8 0 0);
-
-  --chart-1: oklch(0.6 0.2 260);
-  /* Blue-ish */
-  --chart-2: oklch(0.7 0.15 160);
-  /* Teal-ish */
-  --chart-3: oklch(0.75 0.15 70);
-  /* Orange-ish */
-  --chart-4: oklch(0.65 0.25 300);
-  /* Purple-ish */
-  --chart-5: oklch(0.65 0.2 20);
-  /* Red-ish */
-
-  --sidebar: oklch(0.08 0.005 260);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-primary: oklch(0.6 0.2 260);
-  --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.15 0.01 260);
-  --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(0.2 0.01 260);
-  --sidebar-ring: oklch(0.8 0 0);
+  color-scheme: dark;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Sensible focus ring for keyboard nav */
+  :focus-visible {
+    outline: none;
   }
 }
 
 @layer utilities {
-  .glass {
-    @apply bg-white/5 backdrop-blur-md border border-white/10;
+  /*
+   * NUMERIC CONVENTION — every price, P&L, size, %, timestamp uses `.num`.
+   * It forces Geist Mono + tabular figures so columns align like a terminal.
+   * Prefer the <Value>/<PnL> primitives, which apply this automatically.
+   */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1, "zero" 1;
+    letter-spacing: -0.01em;
   }
 
-  .glass-card {
-    @apply bg-card/40 backdrop-blur-xl border border-white/5 shadow-2xl;
+  /* Hairline divider matching the token border */
+  .hairline {
+    border-color: var(--border);
   }
 
-  .glass-panel {
-    @apply bg-[#0A0A0A]/80 backdrop-blur-2xl border border-white/5;
-  }
+  .text-balance { text-wrap: balance; }
+  .text-pretty { text-wrap: pretty; }
 
-  .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-b from-white via-white/90 to-white/50;
-  }
-
-  .text-gradient-primary {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400;
-  }
-
-  .mesh-bg {
-    background-image:
-      radial-gradient(at 0% 0%, hsla(253, 16%, 7%, 1) 0, transparent 50%),
-      radial-gradient(at 50% 0%, hsla(225, 39%, 30%, 1) 0, transparent 50%),
-      radial-gradient(at 100% 0%, hsla(339, 49%, 30%, 1) 0, transparent 50%);
-  }
-
-  .perspective-1000 {
-    perspective: 1000px;
-  }
-
-  .rotate-x-12 {
-    transform: rotateX(12deg);
-  }
-
-  .rotate-x-0 {
-    transform: rotateX(0deg);
-  }
-
-  /* Professional Typography System */
-  .display-1 {
-    @apply text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight;
-  }
-
-  .display-2 {
-    @apply text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight;
-  }
-
-  .display-3 {
-    @apply text-3xl md:text-4xl lg:text-5xl font-bold tracking-tight;
-  }
-
-  .heading-1 {
-    @apply text-3xl md:text-4xl font-bold tracking-tight;
-  }
-
-  .heading-2 {
-    @apply text-2xl md:text-3xl font-bold tracking-tight;
-  }
-
-  .heading-3 {
-    @apply text-xl md:text-2xl font-semibold tracking-tight;
-  }
-
-  .heading-4 {
-    @apply text-lg md:text-xl font-semibold;
-  }
-
-  .heading-5 {
-    @apply text-base md:text-lg font-semibold;
-  }
-
-  .heading-6 {
-    @apply text-sm md:text-base font-semibold;
-  }
-
-  .body-lg {
-    @apply text-lg font-normal leading-relaxed;
-  }
-
-  .body-md {
-    @apply text-base font-normal leading-relaxed;
-  }
-
-  .body-sm {
-    @apply text-sm font-normal leading-relaxed;
-  }
-
-  .body-xs {
-    @apply text-xs font-normal leading-relaxed;
-  }
-
-  .label-lg {
-    @apply text-sm font-medium tracking-wide uppercase;
-  }
-
+  /*
+   * Typography scale (sans for prose/labels). Kept lean and token-aligned; used
+   * across dashboard sections + landing. Numbers must still use .num / <Value>.
+   */
+  .display-3 { @apply text-3xl md:text-4xl font-semibold tracking-tight; }
+  .heading-2 { @apply text-2xl font-semibold tracking-tight; }
+  .heading-4 { @apply text-base font-semibold tracking-tight; }
+  .body-md { @apply text-base leading-relaxed; }
+  .body-sm { @apply text-sm leading-relaxed text-muted-foreground; }
+  .body-xs { @apply text-xs leading-relaxed text-muted-foreground; }
   .label-md {
-    @apply text-xs font-medium tracking-wide uppercase;
+    @apply text-[11px] font-medium tracking-wider uppercase text-muted-foreground;
   }
 
-  .label-sm {
-    @apply text-[10px] font-medium tracking-wider uppercase;
-  }
-
-  /* Financial Data Typography */
+  /*
+   * Financial number utilities — monospace + tabular. Equivalent to .num at set
+   * sizes. Prefer <Value>/<PnL>, but these keep existing markup styled.
+   */
   .financial-lg {
-    @apply text-2xl md:text-3xl font-mono font-bold tabular-nums;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    @apply text-2xl md:text-3xl font-semibold;
   }
-
   .financial-md {
-    @apply text-xl md:text-2xl font-mono font-bold tabular-nums;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    @apply text-xl font-semibold;
   }
-
   .financial-sm {
-    @apply text-base md:text-lg font-mono font-semibold tabular-nums;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    @apply text-base font-medium;
   }
-
   .financial-xs {
-    @apply text-sm font-mono font-medium tabular-nums;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    @apply text-sm font-medium;
   }
 
-  /* Text Utilities */
-  .text-balance {
-    text-wrap: balance;
+  /* Legacy surface class kept for auth pages + section skeletons. */
+  .glass-card {
+    @apply bg-surface/70 backdrop-blur-md border border-border shadow-[var(--shadow-elevation-mid)];
   }
 
-  .text-pretty {
-    text-wrap: pretty;
+  /* Terminal scrollbar */
+  .scroll-terminal {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
   }
+  .scroll-terminal::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-terminal::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 4px;
+  }
+  .scroll-terminal::-webkit-scrollbar-track { background: transparent; }
 }

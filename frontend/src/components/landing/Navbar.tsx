@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Activity, Menu, X, User, LogOut } from "lucide-react";
+import { Activity, Menu, X, LogOut } from "lucide-react";
 import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { useRouter } from "next/navigation";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 
 export function Navbar() {
     const [isScrolled, setIsScrolled] = useState(false);
@@ -14,7 +13,6 @@ export function Navbar() {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [userEmail, setUserEmail] = useState<string | null>(null);
     const [isLoggingOut, setIsLoggingOut] = useState(false);
-    const router = useRouter();
     const supabase = createClient();
 
     useEffect(() => {

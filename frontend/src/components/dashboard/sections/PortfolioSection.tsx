@@ -1,155 +1,187 @@
-
 "use client";
 
-import { SectionHeader } from "../ui/SectionHeader";
-import { GlassCard } from "@/components/ui/glass-card";
-import { PortfolioCard } from "../widgets/PortfolioCard";
-import { Wallet, Download, TrendingUp, ArrowUpRight } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { useStore } from "@/store/useStore";
+import { Wallet, TrendingUp, PieChart } from "lucide-react";
 
+import { SectionHeader } from "../ui/SectionHeader";
+import { Card } from "@/components/ui/card";
+import { StatTile } from "@/components/ui/stat-tile";
+import { Value, PnL } from "@/components/ui/value";
+import { ConnectionStatus } from "@/components/ui/connection-status";
+import { EmptyState } from "@/components/ui/states";
+import { useStore } from "@/store/useStore";
+import { useMarketStore } from "@/hooks/useMarketData";
+import { safeDiv } from "@/lib/utils";
+
+/**
+ * PortfolioSection — account equity + performance, driven entirely by real data.
+ *
+ * `portfolio` is populated by the WS `balance_update` frame (see useMarketData);
+ * `activeTrades` is the live open-positions set. There are NO fabricated numbers:
+ * before the feed delivers anything we show an honest waiting state, and any
+ * metric the backend doesn't provide renders as "—" via the primitives.
+ */
 export function PortfolioSection() {
     const { portfolio, activeTrades } = useStore();
+    const status = useMarketStore((s) => s.status);
+
+    // Have we ever received real account data? balance_update sets these > 0.
+    const hasData =
+        portfolio.totalValue > 0 ||
+        portfolio.balance > 0 ||
+        portfolio.totalTrades > 0;
+
+    const usdtAllocationPct = safeDiv(portfolio.balance, portfolio.totalValue) * 100;
 
     return (
         <div className="space-y-8">
-            {/* Header */}
             <SectionHeader
                 title="Portfolio"
-                description="Track your crypto assets and performance metrics"
+                description="Account equity, allocation, and lifetime performance"
                 icon={Wallet}
-                iconColor="bg-emerald-500/10 text-emerald-400"
-                actions={
-                    <Button
-                        variant="outline"
-                        className="border-white/10 bg-white/5 hover:bg-white/10 hover:text-white"
-                    >
-                        <Download className="mr-2 h-4 w-4" /> Export Report
-                    </Button>
-                }
+                iconColor="bg-accent-muted text-accent-300"
+                actions={<ConnectionStatus status={status} />}
             />
 
-            {/* Portfolio Summary */}
-            <div className="grid gap-6 md:grid-cols-3">
-                <GlassCard className="p-6 md:col-span-2">
-                    <div className="space-y-4">
-                        <div className="flex items-start justify-between">
-                            <div>
-                                <div className="label-md text-muted-foreground mb-2">
-                                    Total Portfolio Value
+            {!hasData ? (
+                <Card>
+                    <EmptyState
+                        icon={<Wallet />}
+                        title={status === "open" ? "No account data yet" : "Waiting for the live feed"}
+                        description={
+                            status === "open"
+                                ? "Account equity and balances will appear here as soon as the backend reports them."
+                                : "Portfolio metrics stream from the trading backend. They’ll populate once the feed connects."
+                        }
+                    />
+                </Card>
+            ) : (
+                <>
+                    {/* Equity + balance breakdown */}
+                    <div className="grid gap-4 md:grid-cols-3">
+                        <Card className="gap-4 md:col-span-2">
+                            <div className="flex items-start justify-between px-4">
+                                <div className="space-y-1.5">
+                                    <div className="label-md">Total Portfolio Value</div>
+                                    <Value
+                                        value={portfolio.totalValue}
+                                        prefix="$"
+                                        decimals={2}
+                                        className="financial-lg text-foreground"
+                                    />
+                                    <div className="flex items-center gap-2">
+                                        <PnL value={portfolio.totalPnl} prefix="$" className="financial-xs" />
+                                        <PnL value={portfolio.totalPnlPercent} percent chip className="text-[11px]" />
+                                        <span className="body-xs text-subtle-foreground">total</span>
+                                    </div>
                                 </div>
-                                <div className="financial-lg text-white">${portfolio.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                <div className="rounded-lg bg-accent-muted p-2.5 text-accent-300">
+                                    <TrendingUp className="h-5 w-5" />
+                                </div>
                             </div>
-                            <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-400">
-                                <TrendingUp className="w-6 h-6" />
-                            </div>
-                        </div>
 
-                        <div className="grid grid-cols-3 gap-4 pt-4 border-t border-white/10">
-                            <div>
-                                <div className="body-xs text-muted-foreground mb-1">24h Change</div>
-                                <div className={`flex items-center gap-1 ${portfolio.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    <ArrowUpRight className={`w-3 h-3 ${portfolio.totalPnl < 0 ? 'rotate-180' : ''}`} />
-                                    <span className="financial-sm">{portfolio.totalPnl >= 0 ? '+' : ''}${portfolio.totalPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                                </div>
-                                <div className={`body-xs ${portfolio.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{portfolio.totalPnl >= 0 ? '+' : ''}{portfolio.totalPnlPercent.toFixed(2)}%</div>
-                            </div>
-                            <div>
-                                <div className="body-xs text-muted-foreground mb-1">Total Invested</div>
-                                <div className="financial-sm text-white">${portfolio.totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                            </div>
-                            <div>
-                                <div className="body-xs text-muted-foreground mb-1">Available Balance</div>
-                                <div className="financial-sm text-white">${portfolio.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                            </div>
-                        </div>
-                    </div>
-                </GlassCard>
-
-                <GlassCard className="p-6">
-                    <div className="space-y-4">
-                        <div className="label-md text-muted-foreground">Asset Allocation</div>
-                        <div className="space-y-3">
-                            <div>
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="body-sm text-white">USDT</span>
-                                    <span className="body-sm text-muted-foreground">
-                                        {portfolio.totalValue > 0
-                                            ? `${(portfolio.balance / portfolio.totalValue * 100).toFixed(1)}%`
-                                            : '0.0%'}
-                                    </span>
-                                </div>
-                                <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                                    <div
-                                        className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400"
-                                        style={{ width: `${portfolio.totalValue > 0 ? (portfolio.balance / portfolio.totalValue * 100) : 0}%` }}
+                            <div className="grid grid-cols-3 gap-4 border-t border-border px-4 pt-4">
+                                <div className="space-y-1">
+                                    <div className="body-xs">Available Balance</div>
+                                    <Value
+                                        value={portfolio.balance}
+                                        prefix="$"
+                                        decimals={2}
+                                        className="financial-xs text-foreground"
                                     />
                                 </div>
+                                <div className="space-y-1">
+                                    <div className="body-xs">Total Invested</div>
+                                    <Value
+                                        value={portfolio.totalInvested}
+                                        prefix="$"
+                                        decimals={2}
+                                        className="financial-xs text-foreground"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="body-xs">Unrealized P&amp;L</div>
+                                    <PnL value={portfolio.unrealizedPnl} prefix="$" className="financial-xs" />
+                                </div>
                             </div>
-                            {/* Dynamically list other assets based on active trades */}
-                            {activeTrades.map(trade => (
-                                <div key={trade.symbol}>
-                                    <div className="flex items-center justify-between mb-2">
-                                        <span className="body-sm text-white">{trade.symbol}</span>
-                                        <span className="body-sm text-muted-foreground">Active</span>
+                        </Card>
+
+                        {/* Real allocation: USDT balance + live open positions only. */}
+                        <Card className="gap-4">
+                            <div className="flex items-center gap-2 px-4">
+                                <PieChart className="h-4 w-4 text-muted-foreground" />
+                                <div className="label-md">Asset Allocation</div>
+                            </div>
+                            <div className="space-y-3 px-4">
+                                <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between">
+                                        <span className="body-sm text-foreground">USDT</span>
+                                        <Value
+                                            value={Number.isFinite(usdtAllocationPct) ? usdtAllocationPct : 0}
+                                            decimals={1}
+                                            suffix="%"
+                                            className="body-sm text-muted-foreground"
+                                        />
                                     </div>
-                                    <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                                    <div className="h-1.5 overflow-hidden rounded-full bg-elevated">
                                         <div
-                                            className="h-full bg-gradient-to-r from-purple-400 to-pink-400"
-                                            style={{ width: "100%" }}
+                                            className="h-full rounded-full bg-accent"
+                                            style={{
+                                                width: `${Math.min(Math.max(usdtAllocationPct, 0), 100)}%`,
+                                            }}
                                         />
                                     </div>
                                 </div>
-                            ))}
-                        </div>
+
+                                {activeTrades.length === 0 ? (
+                                    <p className="body-xs text-subtle-foreground">
+                                        No open positions — capital is fully in USDT.
+                                    </p>
+                                ) : (
+                                    activeTrades.map((trade) => (
+                                        <div key={trade.id} className="space-y-1.5">
+                                            <div className="flex items-center justify-between">
+                                                <span className="body-sm text-foreground">{trade.symbol}</span>
+                                                <PnL value={trade.pnl} prefix="$" className="text-xs" />
+                                            </div>
+                                            <div className="h-1.5 overflow-hidden rounded-full bg-elevated">
+                                                <div className="h-full rounded-full bg-info" style={{ width: "100%" }} />
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </Card>
                     </div>
-                </GlassCard>
-            </div>
 
-            {/* Asset Holdings */}
-            <div>
-                <div className="heading-4 text-white mb-6">Your Assets</div>
-                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                    <PortfolioCard
-                        symbol="USDT"
-                        name="Tether"
-                        amount={portfolio.balance}
-                        value={portfolio.balance}
-                        change={0}
-                        changePercent={0}
-                    />
-                    {/* Add other assets here if we had a full wallet manager */}
-                </div>
-            </div>
-
-            {/* Performance Metrics */}
-            <div className="grid gap-6 md:grid-cols-4">
-                <GlassCard className="p-6">
-                    <div className="label-md text-muted-foreground mb-3">Win Rate</div>
-                    <div className="financial-md text-white mb-1">{portfolio.winRate.toFixed(1)}%</div>
-                    <div className="body-xs text-muted-foreground">Lifetime</div>
-                </GlassCard>
-
-                <GlassCard className="p-6">
-                    <div className="label-md text-muted-foreground mb-3">Total Trades</div>
-                    <div className="financial-md text-white mb-1">{portfolio.totalTrades}</div>
-                    <div className="body-xs text-emerald-400">Executed</div>
-                </GlassCard>
-
-                <GlassCard className="p-6">
-                    <div className="label-md text-muted-foreground mb-3">Realized P&L</div>
-                    <div className={`financial-md mb-1 ${portfolio.realizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${portfolio.realizedPnl.toLocaleString()}</div>
-                    <div className="body-xs text-muted-foreground">Locked in</div>
-                </GlassCard>
-
-                <GlassCard className="p-6">
-                    {/* No real risk-scoring feed exists yet, so we show a neutral
-                        placeholder instead of a fabricated score on a money dashboard. */}
-                    <div className="label-md text-muted-foreground mb-3">Risk Score</div>
-                    <div className="financial-md text-muted-foreground mb-1">—</div>
-                    <div className="body-xs text-muted-foreground">Not available yet</div>
-                </GlassCard>
-            </div>
+                    {/* Performance metrics — only real, backend-sourced values. */}
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                        <StatTile
+                            label="Win Rate"
+                            value={portfolio.winRate}
+                            decimals={1}
+                            suffix="%"
+                            hint="Lifetime"
+                        />
+                        <StatTile
+                            label="Total Trades"
+                            value={portfolio.totalTrades}
+                            hint="Executed"
+                        />
+                        <StatTile label="Realized P&L" hint="Locked in">
+                            <PnL
+                                value={portfolio.realizedPnl}
+                                prefix="$"
+                                className="text-lg font-semibold"
+                            />
+                        </StatTile>
+                        <StatTile
+                            label="Risk Score"
+                            value="—"
+                            hint="Not available yet"
+                        />
+                    </div>
+                </>
+            )}
         </div>
     );
 }

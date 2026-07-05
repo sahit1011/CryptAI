@@ -1,99 +1,113 @@
-
 "use client"
 
 import { useRef, useEffect } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
+import { EmptyState } from "@/components/ui/states"
+import { ConnectionStatus } from "@/components/ui/connection-status"
 import { useStore } from "@/store/useStore"
+import { useMarketStore } from "@/hooks/useMarketData"
 import { cn } from "@/lib/utils"
-import { GlassCard } from "@/components/ui/glass-card"
+import { Terminal } from "lucide-react"
+import type { AgentLog } from "@/store/useStore"
+
+/*
+ * Agent Feed — the terminal's log stream. Real agent activity flows in from the
+ * WS (agent_activity / agent_update) into the zustand store; nothing is faked.
+ * When there are no events we render an honest EmptyState. The live pill is
+ * driven by the actual WS connection status.
+ *
+ * Timestamps + message text use monospace so the stream reads like a terminal.
+ * Agents/severities map to semantic tokens only (emerald / red / amber / blue).
+ */
+
+// Each agent maps to one of the chart/semantic hues — no raw tailwind colors.
+const AGENT_BADGE: Record<AgentLog["agent"], string> = {
+    DATA: "bg-info-muted text-info",
+    ANALYSIS: "bg-accent-muted text-accent-300",
+    STRATEGY: "bg-warning-muted text-warning",
+    RISK: "bg-loss-muted text-loss",
+    EXECUTION: "bg-profit-muted text-profit",
+}
+
+// Severity tints the message text against the neutral default.
+const SEVERITY_TEXT: Record<AgentLog["severity"], string> = {
+    success: "text-profit",
+    warning: "text-warning",
+    error: "text-loss",
+    info: "text-foreground",
+}
 
 export function AgentFeed() {
     const { agentLogs } = useStore()
+    const { status } = useMarketStore()
     const scrollRef = useRef<HTMLDivElement>(null)
 
-    // Smooth auto-scroll to bottom when new logs arrive (like a real terminal)
+    // Auto-scroll to the newest entry as logs stream in (real terminal behavior).
     useEffect(() => {
-        if (scrollRef.current) {
-            const scrollContainer = scrollRef.current.querySelector('[data-radix-scroll-area-viewport]');
-            if (scrollContainer) {
-                // Smooth scroll animation
-                scrollContainer.scrollTo({
-                    top: scrollContainer.scrollHeight,
-                    behavior: 'smooth'
-                });
-            }
+        const viewport = scrollRef.current?.querySelector(
+            "[data-radix-scroll-area-viewport]",
+        )
+        if (viewport) {
+            viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" })
         }
-    }, [agentLogs]);
+    }, [agentLogs])
 
     return (
-        <GlassCard className="flex flex-col h-[500px] overflow-hidden">
-            <div className="p-4 border-b border-white/5 bg-white/5 flex items-center justify-between">
+        <div className="flex h-[500px] flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-[var(--shadow-elevation-low)]">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-border bg-elevated/40 px-4 py-3">
                 <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-white">Agent Neural Feed</h3>
-                    <span className="text-xs text-muted-foreground font-mono">
-                        ({agentLogs.length} events)
+                    <Terminal className="h-4 w-4 text-subtle-foreground" />
+                    <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                        Agent Feed
+                    </h3>
+                    <span className="num text-xs text-subtle-foreground">
+                        {agentLogs.length} events
                     </span>
                 </div>
-                <div className="flex items-center gap-2">
-                    <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-xs text-emerald-500 font-medium">Live</span>
-                </div>
+                <ConnectionStatus status={status} />
             </div>
-            <ScrollArea className="flex-1 p-4" ref={scrollRef}>
-                <div className="space-y-2">
-                    {agentLogs.length === 0 && (
-                        <div className="text-center text-muted-foreground text-sm py-10">
-                            <div className="animate-pulse">Waiting for agent activity...</div>
-                            <div className="text-xs mt-2 opacity-50">
-                                Trading cycles run every 5 minutes
-                            </div>
-                        </div>
-                    )}
-                    {agentLogs.map((log, index) => (
-                        <div
-                            key={log.id}
-                            className="flex items-start gap-3 text-sm font-mono animate-fade-in py-1.5 px-2 rounded hover:bg-white/5 transition-colors"
-                            style={{
-                                animation: `fadeIn 0.3s ease-in-out ${index * 0.05}s both`
-                            }}
-                        >
-                            <span className="text-muted-foreground text-xs mt-0.5 min-w-[60px]">
-                                {log.timestamp}
-                            </span>
-                            <Badge variant="outline" className={cn(
-                                "text-[10px] px-2 py-0.5 border-0 font-medium min-w-[80px] text-center",
-                                log.agent === 'DATA' && "text-blue-400 bg-blue-400/10",
-                                log.agent === 'ANALYSIS' && "text-purple-400 bg-purple-400/10",
-                                log.agent === 'STRATEGY' && "text-yellow-400 bg-yellow-400/10",
-                                log.agent === 'RISK' && "text-red-400 bg-red-400/10",
-                                log.agent === 'EXECUTION' && "text-emerald-400 bg-emerald-400/10",
-                            )}>
-                                {log.agent}
-                            </Badge>
-                            <span className={cn(
-                                "flex-1 leading-relaxed",
-                                log.severity === 'success' && "text-emerald-300",
-                                log.severity === 'warning' && "text-yellow-300",
-                                log.severity === 'error' && "text-red-300",
-                                log.severity === 'info' && "text-gray-300"
-                            )}>
-                                {log.message}
-                            </span>
-                        </div>
-                    ))}
-                </div>
-            </ScrollArea>
 
-            {/* Scroll indicator */}
-            {agentLogs.length > 10 && (
-                <div className="absolute bottom-20 right-6 pointer-events-none">
-                    <div className="bg-white/10 backdrop-blur-sm px-3 py-1 rounded-full text-xs text-white/60 animate-pulse">
-                        ↓ Auto-scrolling
+            {/* Stream */}
+            <ScrollArea className="scroll-terminal flex-1" ref={scrollRef}>
+                {agentLogs.length === 0 ? (
+                    <EmptyState
+                        icon={<Terminal />}
+                        title="Waiting for agent activity"
+                        description="Autonomous trading cycles run on the backend. Live agent decisions will stream here as they happen."
+                    />
+                ) : (
+                    <div className="divide-y divide-border/60">
+                        {agentLogs.map((log) => (
+                            <div
+                                key={log.id}
+                                className="flex items-start gap-3 px-4 py-2 text-sm transition-colors hover:bg-elevated/40 animate-fade-in"
+                            >
+                                <span className="num mt-0.5 min-w-[64px] text-xs text-subtle-foreground">
+                                    {log.timestamp}
+                                </span>
+                                <Badge
+                                    className={cn(
+                                        "num min-w-[84px] justify-center border-transparent px-2 py-0.5 text-[10px] font-medium",
+                                        AGENT_BADGE[log.agent],
+                                    )}
+                                >
+                                    {log.agent}
+                                </Badge>
+                                <span
+                                    className={cn(
+                                        "flex-1 leading-relaxed",
+                                        SEVERITY_TEXT[log.severity] ?? "text-foreground",
+                                    )}
+                                >
+                                    {log.message}
+                                </span>
+                            </div>
+                        ))}
                     </div>
-                </div>
-            )}
-        </GlassCard>
+                )}
+            </ScrollArea>
+        </div>
     )
 }
-

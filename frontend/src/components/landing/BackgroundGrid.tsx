@@ -1,27 +1,41 @@
 "use client";
 
-import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 
+type Star = {
+    x: string;
+    y: string;
+    opacity: number;
+    destinationY: string;
+    duration: number;
+};
+
+// Decorative particle positions. Generated outside render (impure Math.random)
+// and only on the client to avoid an SSR/client hydration mismatch.
+function generateStars(): Star[] {
+    return [...Array(20)].map(() => ({
+        x: Math.random() * 100 + "%",
+        y: Math.random() * 100 + "%",
+        opacity: Math.random(),
+        destinationY: Math.random() * -100 + "%",
+        duration: Math.random() * 10 + 10,
+    }));
+}
+
 export const BackgroundGrid = () => {
-    const [stars, setStars] = useState<Array<{
-        x: string;
-        y: string;
-        opacity: number;
-        destinationY: string;
-        duration: number;
-    }>>([]);
+    const [stars, setStars] = useState<Star[]>([]);
 
     useEffect(() => {
-        const generatedStars = [...Array(20)].map(() => ({
-            x: Math.random() * 100 + "%",
-            y: Math.random() * 100 + "%",
-            opacity: Math.random(),
-            destinationY: Math.random() * -100 + "%",
-            duration: Math.random() * 10 + 10,
-        }));
-        setStars(generatedStars);
+        // Defer to a microtask so the state update happens in a callback rather
+        // than synchronously in the effect body (client-only, runs once).
+        let cancelled = false;
+        queueMicrotask(() => {
+            if (!cancelled) setStars(generateStars());
+        });
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     return (

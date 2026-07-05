@@ -65,7 +65,7 @@ interface AppState {
 
 export const useStore = create<AppState>()(
     persist(
-        (set, get) => ({
+        (set) => ({
             agentLogs: [],
             addLog: (log) => set((state) => ({
                 agentLogs: [log, ...state.agentLogs].slice(0, 100)

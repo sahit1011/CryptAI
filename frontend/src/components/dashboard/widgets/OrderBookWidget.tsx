@@ -1,57 +1,157 @@
 "use client"
 
-import { GlassCard } from "@/components/ui/glass-card"
+import { BookOpen } from "lucide-react"
+
+import { Card } from "@/components/ui/card"
+import { Value } from "@/components/ui/value"
+import { EmptyState } from "@/components/ui/states"
+import { ConnectionStatus } from "@/components/ui/connection-status"
 import { useMarketStore } from "@/hooks/useMarketData"
-import { safeNum, safeFixed } from "@/lib/utils"
+import { cn, safeNum } from "@/lib/utils"
+
+const LEVELS = 12
+
+type Level = { price: number; qty: number }
+
+/** Parse raw [price, qty] tuples into finite numbers, dropping malformed rows. */
+function parseLevels(rows: [string, string][] | undefined, count: number): Level[] {
+    if (!rows) return []
+    const out: Level[] = []
+    for (const row of rows) {
+        const price = safeNum(row?.[0], NaN)
+        const qty = safeNum(row?.[1], NaN)
+        if (Number.isFinite(price) && Number.isFinite(qty) && qty > 0) {
+            out.push({ price, qty })
+        }
+        if (out.length >= count) break
+    }
+    return out
+}
+
+/** A single book row with a data-driven depth bar sized relative to the book max. */
+function BookRow({
+    level,
+    maxQty,
+    side,
+}: {
+    level: Level
+    maxQty: number
+    side: "ask" | "bid"
+}) {
+    const width = maxQty > 0 ? Math.min((level.qty / maxQty) * 100, 100) : 0
+    const isAsk = side === "ask"
+    return (
+        <div className="relative grid grid-cols-2 gap-2 px-3 py-[3px] leading-tight">
+            <div
+                aria-hidden
+                className={cn(
+                    "absolute inset-y-0 right-0 transition-[width] duration-200",
+                    isAsk ? "bg-loss-muted" : "bg-profit-muted",
+                )}
+                style={{ width: `${width}%` }}
+            />
+            <Value
+                className={cn("relative z-10 text-xs", isAsk ? "text-loss" : "text-profit")}
+                value={level.price}
+                decimals={2}
+            />
+            <Value
+                className="relative z-10 text-right text-xs text-muted-foreground"
+                value={level.qty}
+                decimals={4}
+            />
+        </div>
+    )
+}
 
 export function OrderBookWidget() {
-    const { orderBook } = useMarketStore()
+    const { orderBook, status } = useMarketStore()
 
-    // Take top 10 asks (reversed to show lowest ask at bottom) and top 10 bids
-    const asks = orderBook?.a.slice(0, 10).reverse() || []
-    const bids = orderBook?.b.slice(0, 10) || []
-    // Best ask may be absent if the book is empty; guard the [0][0] access.
-    const bestAsk = orderBook?.a?.[0]?.[0]
+    // Asks reversed so the lowest ask sits just above the spread; bids descend.
+    const asks = parseLevels(orderBook?.a, LEVELS).reverse()
+    const bids = parseLevels(orderBook?.b, LEVELS)
+
+    const bestAsk = asks.length ? asks[asks.length - 1].price : undefined
+    const bestBid = bids.length ? bids[0].price : undefined
+    const spread =
+        bestAsk !== undefined && bestBid !== undefined ? bestAsk - bestBid : undefined
+    const spreadPct =
+        spread !== undefined && bestBid ? (spread / bestBid) * 100 : undefined
+    const mid =
+        bestAsk !== undefined && bestBid !== undefined
+            ? (bestAsk + bestBid) / 2
+            : bestAsk ?? bestBid
+
+    // Data-driven depth scale: bars are sized against the deepest visible level.
+    const maxQty = Math.max(
+        0,
+        ...asks.map((l) => l.qty),
+        ...bids.map((l) => l.qty),
+    )
+
+    const hasBook = asks.length > 0 || bids.length > 0
 
     return (
-        <GlassCard className="h-full flex flex-col overflow-hidden">
-            <div className="p-3 border-b border-white/5">
-                <h3 className="text-sm font-medium text-muted-foreground">Order Book</h3>
-            </div>
-            <div className="flex-1 font-mono text-xs flex flex-col">
-                <div className="grid grid-cols-2 gap-2 p-2 text-muted-foreground/70 border-b border-white/5">
-                    <span>Price (USDT)</span>
-                    <span className="text-right">Amount (BTC)</span>
+        <Card className="flex h-full flex-col overflow-hidden py-0">
+            <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+                <div className="flex items-center gap-2">
+                    <BookOpen className="size-4 text-muted-foreground" />
+                    <h3 className="heading-4">Order Book</h3>
                 </div>
+                <ConnectionStatus status={status} />
+            </div>
 
-                <div className="flex flex-col flex-1 min-h-0">
-                    {/* Asks (Sells) - Red */}
-                    <div className="flex-1 flex flex-col justify-end overflow-hidden">
-                        {asks.map(([price, qty], i) => (
-                            <div key={`ask-${i}`} className="grid grid-cols-2 gap-2 px-2 py-0.5 hover:bg-red-500/5 relative group">
-                                <span className="text-red-400 z-10">{safeFixed(price, 2)}</span>
-                                <span className="text-muted-foreground text-right z-10">{safeFixed(qty, 4)}</span>
-                                <div className="absolute right-0 top-0 bottom-0 bg-red-500/10 transition-all duration-200" style={{ width: `${Math.min(safeNum(qty) * 100, 100)}%` }} />
-                            </div>
+            {/* Column headers */}
+            <div className="grid grid-cols-2 gap-2 border-b border-border px-3 py-1.5">
+                <span className="label-md">Price · USDT</span>
+                <span className="label-md text-right">Amount · BTC</span>
+            </div>
+
+            {hasBook ? (
+                <div className="scroll-terminal flex min-h-0 flex-1 flex-col">
+                    {/* Asks */}
+                    <div className="flex flex-1 flex-col justify-end overflow-hidden">
+                        {asks.map((level, i) => (
+                            <BookRow key={`ask-${i}`} level={level} maxQty={maxQty} side="ask" />
                         ))}
                     </div>
 
-                    <div className="border-t border-b border-white/10 my-1 py-1 text-center text-white font-bold bg-white/5">
-                        {bestAsk !== undefined ? safeFixed(bestAsk, 2, '---') : '---'}
+                    {/* Spread / mid marker */}
+                    <div className="flex items-center justify-between border-y border-border-strong bg-elevated px-3 py-1.5">
+                        <Value
+                            className="text-sm font-semibold text-foreground"
+                            value={mid}
+                            decimals={2}
+                        />
+                        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <span className="label-md">Spread</span>
+                            <Value value={spread} decimals={2} />
+                            {spreadPct !== undefined ? (
+                                <Value value={spreadPct} decimals={3} prefix="(" suffix="%)" />
+                            ) : null}
+                        </span>
                     </div>
 
-                    {/* Bids (Buys) - Green */}
+                    {/* Bids */}
                     <div className="flex-1 overflow-hidden">
-                        {bids.map(([price, qty], i) => (
-                            <div key={`bid-${i}`} className="grid grid-cols-2 gap-2 px-2 py-0.5 hover:bg-green-500/5 relative group">
-                                <span className="text-green-400 z-10">{safeFixed(price, 2)}</span>
-                                <span className="text-muted-foreground text-right z-10">{safeFixed(qty, 4)}</span>
-                                <div className="absolute right-0 top-0 bottom-0 bg-green-500/10 transition-all duration-200" style={{ width: `${Math.min(safeNum(qty) * 100, 100)}%` }} />
-                            </div>
+                        {bids.map((level, i) => (
+                            <BookRow key={`bid-${i}`} level={level} maxQty={maxQty} side="bid" />
                         ))}
                     </div>
                 </div>
-            </div>
-        </GlassCard>
+            ) : (
+                <div className="flex flex-1 items-center justify-center">
+                    <EmptyState
+                        icon={<BookOpen />}
+                        title="No order book data"
+                        description={
+                            status === "open"
+                                ? "Waiting for the first depth update from the feed."
+                                : "The market feed is offline — order book will populate once connected."
+                        }
+                    />
+                </div>
+            )}
+        </Card>
     )
 }

@@ -3,8 +3,10 @@
 import { useEffect, useRef } from 'react'
 import { create } from 'zustand'
 import { useStore } from '@/store/useStore'
-import { WS_URL } from '@/lib/api'
+import { buildWsUrl } from '@/lib/api'
 import { safeNum, safeDiv } from '@/lib/utils'
+import type { Trade } from '@/store/useStore'
+import type { ConnState } from '@/components/ui/connection-status'
 
 interface TickerData {
     s: string // Symbol
@@ -23,239 +25,310 @@ interface OrderBookData {
 interface MarketStore {
     ticker: TickerData | null
     orderBook: OrderBookData | null
+    /** WS connection status the UI can render (drives <ConnectionStatus>). */
+    status: ConnState
+    /** Back-compat boolean derived from status === 'open'. */
     isConnected: boolean
+    /** Number of reconnect attempts since last clean open (for backoff/UI). */
+    reconnectAttempts: number
     setTicker: (data: TickerData) => void
     setOrderBook: (data: OrderBookData) => void
+    setStatus: (status: ConnState) => void
+    /** Back-compat setter used by older callers. */
     setConnected: (status: boolean) => void
+    setReconnectAttempts: (n: number) => void
 }
 
 export const useMarketStore = create<MarketStore>((set) => ({
     ticker: null,
     orderBook: null,
+    status: 'closed',
     isConnected: false,
+    reconnectAttempts: 0,
     setTicker: (data) => set({ ticker: data }),
     setOrderBook: (data) => set({ orderBook: data }),
-    setConnected: (status) => set({ isConnected: status }),
+    setStatus: (status) => set({ status, isConnected: status === 'open' }),
+    setConnected: (isConnected) =>
+        set({ isConnected, status: isConnected ? 'open' : 'closed' }),
+    setReconnectAttempts: (reconnectAttempts) => set({ reconnectAttempts }),
 }))
 
+// Reconnect backoff: exponential with jitter, capped.
+const BASE_DELAY = 1000
+const MAX_DELAY = 30000
+function backoffDelay(attempt: number): number {
+    const exp = Math.min(MAX_DELAY, BASE_DELAY * 2 ** attempt)
+    return exp / 2 + Math.random() * (exp / 2) // 50–100% of exp
+}
+
 export function useMarketData() {
-    const { setTicker, setOrderBook, setConnected } = useMarketStore()
-    const { addLog } = useStore()
     const wsRef = useRef<WebSocket | null>(null)
 
     useEffect(() => {
-        let connectTimeout: NodeJS.Timeout;
-        let isUnmounting = false;
+        let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+        let attempt = 0
+        let isUnmounting = false
+
+        const { setTicker, setOrderBook, setStatus, setReconnectAttempts } =
+            useMarketStore.getState()
+        const { addLog } = useStore.getState()
+
+        const scheduleReconnect = () => {
+            if (isUnmounting) return
+            const delay = backoffDelay(attempt)
+            attempt += 1
+            setReconnectAttempts(attempt)
+            setStatus('reconnecting')
+            reconnectTimer = setTimeout(connect, delay)
+        }
 
         const connect = () => {
-            if (isUnmounting) return;
-
-            // Prevent multiple connections
-            if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
+            if (isUnmounting) return
+            if (
+                wsRef.current?.readyState === WebSocket.OPEN ||
+                wsRef.current?.readyState === WebSocket.CONNECTING
+            ) {
                 return
             }
 
-            // Backend WebSocket URL comes from NEXT_PUBLIC_WS_URL (falls back to
-            // localhost for dev). Use wss:// in production to avoid mixed-content.
-            const url = WS_URL
-            console.log('Attempting to connect to WebSocket:', url)
+            // Append ?token= when a read-only token is configured — browsers can't
+            // send Authorization on a WS upgrade, so the backend accepts ?token=.
+            const url = buildWsUrl()
+            setStatus(attempt === 0 ? 'connecting' : 'reconnecting')
 
+            let ws: WebSocket
             try {
-                const ws = new WebSocket(url)
-                wsRef.current = ws
-
-                ws.onopen = () => {
-                    if (isUnmounting) {
-                        ws.close();
-                        return;
-                    }
-                    console.log('✅ Connected to backend WebSocket')
-                    setConnected(true)
-                }
-
-                ws.onclose = (event) => {
-                    if (isUnmounting) return;
-
-                    console.log('❌ Disconnected from backend WebSocket', {
-                        code: event.code,
-                        reason: event.reason,
-                        wasClean: event.wasClean
-                    })
-                    setConnected(false)
-                    // Reconnect after 3s
-                    connectTimeout = setTimeout(connect, 3000)
-                }
-
-                ws.onerror = (error) => {
-                    if (isUnmounting) return;
-
-                    console.error('WebSocket error occurred:', {
-                        readyState: ws.readyState,
-                        url: ws.url,
-                        error: error
-                    })
-
-                    // Check if backend is reachable
-                    if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-                        console.error('❌ Cannot connect to backend. Please ensure:')
-                        console.error('   1. Backend server is running on port 8000')
-                        console.error('   2. Run: cd crypto-trading-agent && .\\start_system.ps1')
-                        console.error('   3. Or manually: python -m uvicorn src.api.server:app --host 0.0.0.0 --port 8000 --reload')
-                    }
-                }
-
-                ws.onmessage = (event) => {
-                    if (isUnmounting) return;
-                    try {
-                        const payload = JSON.parse(event.data)
-                        const { type, data } = payload
-
-                        // ... rest of message handling ...
-                        handleMessage(type, data);
-                    } catch (e) {
-                        console.error('❌ Error parsing WebSocket message:', e)
-                    }
-                }
+                ws = new WebSocket(url)
             } catch (e) {
-                console.error('Failed to create WebSocket:', e);
-                // Retry
-                connectTimeout = setTimeout(connect, 3000);
+                console.error('Failed to create WebSocket:', e)
+                scheduleReconnect()
+                return
+            }
+            wsRef.current = ws
+
+            ws.onopen = () => {
+                if (isUnmounting) {
+                    ws.close()
+                    return
+                }
+                attempt = 0
+                setReconnectAttempts(0)
+                setStatus('open')
+            }
+
+            ws.onclose = () => {
+                if (isUnmounting) return
+                wsRef.current = null
+                scheduleReconnect()
+            }
+
+            ws.onerror = () => {
+                if (isUnmounting) return
+                setStatus('error')
+                // onclose fires after onerror and drives the reconnect.
+            }
+
+            ws.onmessage = (event) => {
+                if (isUnmounting) return
+                try {
+                    const payload = JSON.parse(event.data)
+                    handleMessage(payload)
+                } catch (e) {
+                    console.error('Error parsing WebSocket message:', e)
+                }
             }
         }
 
-        // Initial connection delay to handle Strict Mode
-        connectTimeout = setTimeout(connect, 100);
+        // --- Message routing ------------------------------------------------
+        const handleMessage = (payload: { type?: string; data?: unknown }) => {
+            const { type, data } = payload
+
+            switch (type) {
+                case '24hrTicker':
+                    setTicker(data as TickerData)
+                    break
+
+                case 'depthUpdate':
+                    setOrderBook(data as OrderBookData)
+                    break
+
+                case 'balance_update':
+                    applyBalance(data)
+                    break
+
+                case 'position_update':
+                    applyPositions(data)
+                    break
+
+                case 'update_trade':
+                    applyTradeUpdate(data)
+                    break
+
+                case 'panic_close':
+                    // Emergency close acknowledged: clear active positions; the
+                    // authoritative empty set arrives on the next position_update.
+                    useStore.getState().setTrades([])
+                    addLog(makeLog('EXECUTION', 'Panic close dispatched — closing all positions', 'warning'))
+                    break
+
+                case 'execution_status':
+                    applyExecutionStatus(data)
+                    break
+
+                case 'agent_activity':
+                case 'agent_update':
+                    applyAgentActivity(type, data)
+                    break
+
+                case 'initial_state':
+                    applyInitialState(data)
+                    break
+
+                default:
+                    // Unknown message types are ignored (forward-compatible).
+                    break
+            }
+        }
+
+        // --- Handlers -------------------------------------------------------
+        const applyBalance = (raw: unknown) => {
+            const p = (raw ?? {}) as Record<string, unknown>
+            const totalPnl = safeNum(p.realized_pnl) + safeNum(p.unrealized_pnl)
+            useStore.getState().setPortfolio({
+                totalValue: safeNum(p.total_equity),
+                totalInvested: safeNum(p.total_equity) - safeNum(p.current_balance),
+                totalPnl,
+                totalPnlPercent: safeDiv(totalPnl, p.initial_balance) * 100,
+                balance: safeNum(p.current_balance),
+                unrealizedPnl: safeNum(p.unrealized_pnl),
+                realizedPnl: safeNum(p.realized_pnl),
+                winRate: safeNum(p.win_rate),
+                totalTrades: safeNum(p.total_trades),
+            })
+        }
+
+        const applyPositions = (raw: unknown) => {
+            const list = Array.isArray(raw) ? raw : []
+            const trades: Trade[] = list.map((pos: Record<string, unknown>) => ({
+                id: String(pos.position_id ?? `${pos.symbol}-${Date.now()}`),
+                symbol: String(pos.symbol ?? ''),
+                side: (pos.positionSide as Trade['side']) ?? 'LONG',
+                entry: safeNum(pos.entryPrice),
+                current: safeNum(pos.markPrice),
+                pnl: safeNum(pos.unRealizedProfit),
+                pnlPercent:
+                    safeDiv(
+                        safeNum(pos.unRealizedProfit),
+                        safeNum(pos.entryPrice) * safeNum(pos.positionAmt),
+                    ) * 100,
+                status: 'OPEN',
+                stopLoss: pos.stopLoss != null ? safeNum(pos.stopLoss) : undefined,
+                takeProfit: pos.takeProfit != null ? safeNum(pos.takeProfit) : undefined,
+            }))
+            useStore.getState().setTrades(trades)
+        }
+
+        const applyTradeUpdate = (raw: unknown) => {
+            const t = (raw ?? {}) as Record<string, unknown>
+            if (!t.symbol && !t.id) return
+            const trade: Trade = {
+                id: String(t.id ?? t.position_id ?? `${t.symbol}-${Date.now()}`),
+                symbol: String(t.symbol ?? ''),
+                side: (t.side as Trade['side']) ?? (t.positionSide as Trade['side']) ?? 'LONG',
+                entry: safeNum(t.entry ?? t.entryPrice),
+                current: safeNum(t.current ?? t.markPrice),
+                pnl: safeNum(t.pnl ?? t.unRealizedProfit),
+                pnlPercent: safeNum(t.pnlPercent),
+                status: (t.status as Trade['status']) ?? 'OPEN',
+                entryTime: t.entryTime as string | undefined,
+                exitTime: t.exitTime as string | undefined,
+                exitReason: t.exitReason as string | undefined,
+                strategy: t.strategy as string | undefined,
+                leverage: t.leverage != null ? safeNum(t.leverage) : undefined,
+                confidence: t.confidence != null ? safeNum(t.confidence) : undefined,
+                isWinner: t.isWinner as boolean | undefined,
+            }
+            if (trade.status === 'CLOSED') {
+                useStore.getState().closeTrade(trade.id, trade.current, trade.exitReason ?? 'closed')
+            } else {
+                useStore.getState().updateTrade(trade)
+            }
+        }
+
+        // Legacy nested shape: { type: 'execution_status', data: { type, payload } }
+        const applyExecutionStatus = (raw: unknown) => {
+            const d = (raw ?? {}) as { type?: string; payload?: unknown }
+            if (d.type === 'balance_update') applyBalance(d.payload)
+            else if (d.type === 'position_update') applyPositions(d.payload)
+            else if (d.type === 'update_trade') applyTradeUpdate(d.payload)
+            else if (d.type === 'panic_close') {
+                useStore.getState().setTrades([])
+            }
+        }
+
+        const applyAgentActivity = (type: string, raw: unknown) => {
+            const d = (raw ?? {}) as Record<string, unknown>
+            const sender = String(d.sender ?? '').toLowerCase()
+            let agent: 'DATA' | 'ANALYSIS' | 'STRATEGY' | 'RISK' | 'EXECUTION' = 'DATA'
+            if (sender.includes('analysis')) agent = 'ANALYSIS'
+            else if (sender.includes('strategy')) agent = 'STRATEGY'
+            else if (sender.includes('risk')) agent = 'RISK'
+            else if (sender.includes('execution')) agent = 'EXECUTION'
+
+            let message = String(d.message ?? d.action ?? d.type ?? 'Activity update')
+            const payload = d.payload as Record<string, unknown> | undefined
+            if (type === 'agent_update' && payload) {
+                if (payload.summary) message = String(payload.summary)
+                else if (payload.signal) message = `Signal: ${payload.signal} ${payload.symbol ?? ''}`.trim()
+                else if (payload.decision) message = `Decision: ${payload.decision}`
+                else if (payload.status) message = `Status: ${payload.status}`
+            }
+
+            const sevMap: Record<string, 'info' | 'success' | 'warning' | 'error'> = {
+                info: 'info', success: 'success', warning: 'warning', error: 'error',
+            }
+            addLog(makeLog(agent, message, sevMap[String(d.severity)] ?? 'info', d.id as string | undefined))
+        }
+
+        const applyInitialState = (raw: unknown) => {
+            const d = (raw ?? {}) as Record<string, unknown>
+            if (d.portfolio) {
+                const current = useStore.getState().portfolio
+                useStore.getState().setPortfolio({ ...current, ...(d.portfolio as object) } as never)
+            }
+            if (Array.isArray(d.positions)) applyPositions(d.positions)
+            if (Array.isArray(d.recentLogs)) {
+                for (const log of d.recentLogs) addLog(log as never)
+            }
+        }
+
+        // Small startup delay tames React StrictMode double-invoke in dev.
+        reconnectTimer = setTimeout(connect, 100)
 
         return () => {
-            isUnmounting = true;
-            clearTimeout(connectTimeout);
+            isUnmounting = true
+            if (reconnectTimer) clearTimeout(reconnectTimer)
+            useMarketStore.getState().setStatus('closed')
             if (wsRef.current) {
+                wsRef.current.onclose = null
                 wsRef.current.close()
-                wsRef.current = null;
+                wsRef.current = null
             }
         }
-    }, [setTicker, setOrderBook, setConnected, addLog])
+    }, [])
+}
 
-    // Helper to handle messages (moved out of effect for clarity)
-    const handleMessage = (type: string, data: any) => {
-        if (type === '24hrTicker') {
-            setTicker(data)
-        } else if (type === 'depthUpdate') {
-            setOrderBook(data)
-        } else if (type === 'agent_activity') {
-            // Handle agent_activity messages
-            console.log('🤖 Agent activity received:', JSON.stringify(data, null, 2));
-
-            let agentType: 'DATA' | 'ANALYSIS' | 'STRATEGY' | 'RISK' | 'EXECUTION' = 'DATA';
-            const sender = data.sender?.toLowerCase() || '';
-
-            if (sender.includes('analysis')) agentType = 'ANALYSIS';
-            else if (sender.includes('strategy')) agentType = 'STRATEGY';
-            else if (sender.includes('risk')) agentType = 'RISK';
-            else if (sender.includes('execution')) agentType = 'EXECUTION';
-            else if (sender.includes('memory')) agentType = 'DATA';
-
-            // Use the message field directly from backend
-            const message = data.message || data.action || 'Activity update';
-            console.log('🤖 Extracted message:', message);
-
-            // Map severity from backend to frontend format
-            const severityMap: Record<string, 'info' | 'success' | 'warning' | 'error'> = {
-                'info': 'info',
-                'success': 'success',
-                'warning': 'warning',
-                'error': 'error'
-            };
-            const severity = severityMap[data.severity] || 'info';
-
-            addLog({
-                id: Math.random().toString(),
-                timestamp: new Date().toLocaleTimeString(),
-                agent: agentType,
-                message: message,
-                severity: severity
-            });
-        } else if (type === 'agent_update') {
-            // Handle legacy agent messages
-            let agentType: 'DATA' | 'ANALYSIS' | 'STRATEGY' | 'RISK' | 'EXECUTION' = 'DATA';
-            const sender = data.sender?.toLowerCase() || '';
-
-            if (sender.includes('analysis')) agentType = 'ANALYSIS';
-            else if (sender.includes('strategy')) agentType = 'STRATEGY';
-            else if (sender.includes('risk')) agentType = 'RISK';
-            else if (sender.includes('execution')) agentType = 'EXECUTION';
-
-            let message = data.type;
-            if (data.payload) {
-                if (data.payload.summary) message = data.payload.summary;
-                else if (data.payload.signal) message = `Signal: ${data.payload.signal} ${data.payload.symbol}`;
-                else if (data.payload.decision) message = `Decision: ${data.payload.decision}`;
-                else if (data.payload.status) message = `Status: ${data.payload.status}`;
-                else message = `${data.type} - ${JSON.stringify(data.payload).substring(0, 50)}...`;
-            }
-
-            addLog({
-                id: data.id || Math.random().toString(),
-                timestamp: new Date().toLocaleTimeString(),
-                agent: agentType,
-                message: message,
-                severity: 'info'
-            })
-        } else if (type === 'execution_status') {
-            // Handle execution updates
-            const { type: updateType, payload: execPayload } = data;
-
-            if (updateType === 'balance_update') {
-                console.log('📊 Portfolio update received:', execPayload);
-                const totalPnl = safeNum(execPayload.realized_pnl) + safeNum(execPayload.unrealized_pnl);
-                useStore.getState().setPortfolio({
-                    totalValue: safeNum(execPayload.total_equity),
-                    totalInvested: safeNum(execPayload.total_equity) - safeNum(execPayload.current_balance),
-                    totalPnl,
-                    // Guard a zero/missing initial_balance which would yield NaN/Infinity.
-                    totalPnlPercent: safeDiv(totalPnl, execPayload.initial_balance) * 100,
-                    balance: safeNum(execPayload.current_balance),
-                    unrealizedPnl: safeNum(execPayload.unrealized_pnl),
-                    realizedPnl: safeNum(execPayload.realized_pnl),
-                    winRate: safeNum(execPayload.win_rate),
-                    totalTrades: safeNum(execPayload.total_trades)
-                });
-            } else if (updateType === 'position_update') {
-                console.log('📈 Position update received:', execPayload);
-                const trades = execPayload.map((pos: any) => ({
-                    id: pos.position_id || `${pos.symbol}-${Date.now()}`,  // CRITICAL FIX: Use unique position_id
-                    symbol: pos.symbol,
-                    side: pos.positionSide,
-                    entry: safeNum(pos.entryPrice),
-                    current: safeNum(pos.markPrice),
-                    pnl: safeNum(pos.unRealizedProfit),
-                    // Guard a zero notional (entryPrice * positionAmt) -> NaN/Infinity.
-                    pnlPercent: safeDiv(
-                        safeNum(pos.unRealizedProfit),
-                        safeNum(pos.entryPrice) * safeNum(pos.positionAmt)
-                    ) * 100,
-                    status: 'OPEN',
-                    stopLoss: pos.stopLoss ? safeNum(pos.stopLoss) : undefined,
-                    takeProfit: pos.takeProfit ? safeNum(pos.takeProfit) : undefined
-                }));
-                useStore.getState().setTrades(trades);
-            }
-        } else if (type === 'initial_state') {
-            // Handle initial state when connecting
-            console.log('🔄 Initial state received from backend');
-            if (data.portfolio) {
-                const currentPortfolio = useStore.getState().portfolio;
-                useStore.getState().setPortfolio({
-                    ...currentPortfolio,
-                    ...data.portfolio
-                });
-            }
-            if (data.positions) {
-                useStore.getState().setTrades(data.positions);
-            }
-            if (data.recentLogs) {
-                data.recentLogs.forEach((log: any) => addLog(log));
-            }
-        }
+function makeLog(
+    agent: 'DATA' | 'ANALYSIS' | 'STRATEGY' | 'RISK' | 'EXECUTION',
+    message: string,
+    severity: 'info' | 'success' | 'warning' | 'error',
+    id?: string,
+) {
+    return {
+        id: id ?? (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Math.random())),
+        timestamp: new Date().toLocaleTimeString(),
+        agent,
+        message,
+        severity,
     }
 }

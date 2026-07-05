@@ -16,16 +16,14 @@ const ScrambleText = ({ children, className, delay = 0 }: { children: string, cl
     const isInView = useInView(ref, { once: true, margin: "-50px" });
     const [text, setText] = useState(children);
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
-    const [isAnimating, setIsAnimating] = useState(false);
 
     useEffect(() => {
         if (!isInView) return;
 
         const timeout = setTimeout(() => {
-            setIsAnimating(true);
             let iteration = 0;
             const interval = setInterval(() => {
-                setText(prev =>
+                setText(
                     children
                         .split("")
                         .map((letter, index) => {
@@ -39,7 +37,6 @@ const ScrambleText = ({ children, className, delay = 0 }: { children: string, cl
 
                 if (iteration >= children.length) {
                     clearInterval(interval);
-                    setIsAnimating(false);
                 }
 
                 iteration += 1 / 3;

@@ -32,9 +32,9 @@ function formatPrice(value: number): string {
 }
 
 export function LiveTicker() {
-    // Real prices fetched from Binance's public 24h ticker endpoint (the same
-    // public API the dashboard chart already uses). Falls back to nothing on
-    // error rather than displaying fabricated prices.
+    // Live prices via our same-origin proxy (/api/ticker), which fetches Binance
+    // server-side — avoids the browser CORS/ad-blocker/region failures of calling
+    // api.binance.com directly. Renders nothing until real data arrives.
     const [ticks, setTicks] = useState<TickerEntry[]>([]);
 
     useEffect(() => {
@@ -42,30 +42,31 @@ export function LiveTicker() {
 
         const fetchPrices = async () => {
             try {
-                const results = await Promise.all(
-                    SYMBOLS.map(async (coin) => {
-                        const res = await fetch(
-                            `https://api.binance.com/api/v3/ticker/24hr?symbol=${coin.pair}`,
-                            { cache: "no-store" }
-                        );
-                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                        const data = await res.json();
-                        const pct = parseFloat(data.priceChangePercent);
-                        return {
-                            symbol: coin.symbol,
-                            price: formatPrice(parseFloat(data.lastPrice)),
-                            change: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`,
-                        };
-                    })
+                const res = await fetch("/api/ticker", { cache: "no-store" });
+                if (!res.ok) return;
+                const json = await res.json();
+                const bySymbol = new Map<string, { lastPrice: string; priceChangePercent: string }>(
+                    (json.ticks || []).map((t: { symbol: string; lastPrice: string; priceChangePercent: string }) => [t.symbol, t])
                 );
-                if (!cancelled) setTicks(results);
-            } catch (e) {
-                console.error("LiveTicker: failed to fetch prices", e);
+                const live: TickerEntry[] = [];
+                for (const coin of SYMBOLS) {
+                    const d = bySymbol.get(coin.pair);
+                    if (!d) continue;
+                    const pct = parseFloat(d.priceChangePercent);
+                    live.push({
+                        symbol: coin.symbol,
+                        price: formatPrice(parseFloat(d.lastPrice)),
+                        change: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`,
+                    });
+                }
+                if (!cancelled && live.length > 0) setTicks(live);
+            } catch {
+                // Contained: proxy/feed unavailable — leave the ticker hidden, no overlay.
             }
         };
 
-        fetchPrices();
-        const interval = setInterval(fetchPrices, 30000); // refresh every 30s
+        void fetchPrices();
+        const interval = setInterval(() => void fetchPrices(), 30000); // refresh every 30s
         return () => {
             cancelled = true;
             clearInterval(interval);

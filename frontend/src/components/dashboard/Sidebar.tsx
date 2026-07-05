@@ -1,84 +1,57 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname, useRouter } from "next/navigation"
-import { LayoutDashboard, Activity, Bot, Settings, FileText, LogOut, TrendingUp, Home } from "lucide-react"
+import { usePathname } from "next/navigation"
+import { LayoutDashboard, Activity, Bot, Settings, FileText, LogOut, TrendingUp, TrendingDown, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { GlassCard } from "@/components/ui/glass-card"
+import { PnL } from "@/components/ui/value"
 import { createClient } from "@/utils/supabase/client"
 import { useState } from "react"
 import { useStore } from "@/store/useStore"
 import { useMarketStore } from "@/hooks/useMarketData"
 
 const routes = [
-    {
-        label: "Home",
-        icon: Home,
-        href: "/",
-        color: "text-emerald-400",
-    },
-    {
-        label: "Dashboard",
-        icon: LayoutDashboard,
-        href: "/dashboard",
-        color: "text-blue-400",
-    },
-    {
-        label: "Analytics",
-        icon: Activity,
-        href: "/dashboard/analytics",
-        color: "text-purple-400",
-    },
-    {
-        label: "Agents",
-        icon: Bot,
-        href: "/dashboard/agents",
-        color: "text-pink-400",
-    },
-    {
-        label: "Logs",
-        icon: FileText,
-        href: "/dashboard/logs",
-        color: "text-orange-400",
-    },
-    {
-        label: "Settings",
-        icon: Settings,
-        href: "/dashboard/settings",
-        color: "text-gray-400",
-    },
+    { label: "Home", icon: Home, href: "/" },
+    { label: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
+    { label: "Analytics", icon: Activity, href: "/dashboard/analytics" },
+    { label: "Agents", icon: Bot, href: "/dashboard/agents" },
+    { label: "Logs", icon: FileText, href: "/dashboard/logs" },
+    { label: "Settings", icon: Settings, href: "/dashboard/settings" },
 ]
 
 export function Sidebar() {
     const pathname = usePathname()
-    const router = useRouter()
     const supabase = createClient()
     const [isLoggingOut, setIsLoggingOut] = useState(false)
     const { portfolio } = useStore()
-    const { isConnected } = useMarketStore()
+    const { status } = useMarketStore()
+
+    // Only trust P&L once the live feed is open; otherwise show honest dashes.
+    const live = status === "open"
+    const gain = portfolio.totalPnl >= 0
 
     const handleLogout = async () => {
         setIsLoggingOut(true)
         await supabase.auth.signOut()
-        // Use window.location to force full page reload and clear auth state
+        // Force full page reload to clear auth state.
         window.location.href = "/"
     }
 
     return (
-        <div className="flex flex-col h-full bg-[#0A0A0A] border-r border-white/5">
+        <div className="flex h-full flex-col border-r border-border bg-sidebar">
             {/* Logo */}
             <div className="px-6 py-8">
-                <Link href="/" className="flex items-center gap-3 group">
-                    <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center border border-white/10 group-hover:bg-white/10 transition-colors">
-                        <Activity className="w-5 h-5 text-white" />
+                <Link href="/" className="group flex items-center gap-3">
+                    <div className="flex size-8 items-center justify-center rounded-lg border border-border bg-accent-muted text-accent transition-colors group-hover:border-border-strong">
+                        <Activity className="size-5" />
                     </div>
-                    <span className="text-lg font-medium tracking-tight text-white">CryptAI</span>
+                    <span className="text-lg font-semibold tracking-tight text-foreground">CryptAI</span>
                 </Link>
             </div>
 
             {/* Navigation */}
-            <nav className="flex-1 px-4 space-y-1">
+            <nav className="flex-1 space-y-1 px-4">
                 {routes.map((route) => {
                     const isActive = pathname === route.href
                     return (
@@ -86,32 +59,53 @@ export function Sidebar() {
                             key={route.href}
                             href={route.href}
                             className={cn(
-                                "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-all duration-200",
+                                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200",
                                 isActive
-                                    ? "bg-white/10 text-white shadow-sm ring-1 ring-white/5"
-                                    : "text-muted-foreground hover:text-white hover:bg-white/5"
+                                    ? "bg-elevated text-foreground ring-1 ring-border"
+                                    : "text-muted-foreground hover:bg-elevated/60 hover:text-foreground"
                             )}
                         >
-                            <route.icon className={cn("h-4 w-4", isActive ? "text-white" : "text-muted-foreground/70")} />
+                            <route.icon
+                                className={cn(
+                                    "size-4 transition-colors",
+                                    isActive ? "text-accent" : "text-subtle-foreground"
+                                )}
+                            />
                             {route.label}
                         </Link>
                     )
                 })}
             </nav>
 
-            {/* Performance Card */}
+            {/* Total P&L — real store data, honest dashes when feed is down */}
             <div className="px-4 pb-4">
-                <div className="p-4 rounded-xl bg-gradient-to-b from-white/5 to-transparent border border-white/5 space-y-3">
+                <div className="space-y-3 rounded-xl border border-border bg-surface p-4">
                     <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-muted-foreground">Total P&L</span>
-                        <TrendingUp className={cn("h-3.5 w-3.5", portfolio.totalPnl >= 0 ? "text-emerald-400" : "text-red-400")} />
+                        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                            Total P&L
+                        </span>
+                        {live ? (
+                            gain ? (
+                                <TrendingUp className="size-3.5 text-profit" />
+                            ) : (
+                                <TrendingDown className="size-3.5 text-loss" />
+                            )
+                        ) : (
+                            <TrendingUp className="size-3.5 text-subtle-foreground" />
+                        )}
                     </div>
                     <div className="space-y-1">
-                        <div className={cn("text-2xl font-mono font-medium", portfolio.totalPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
-                            {isConnected ? `$${portfolio.totalPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "---"}
-                        </div>
-                        <div className={cn("text-xs font-medium", portfolio.totalPnl >= 0 ? "text-emerald-400" : "text-red-400")}>
-                            {isConnected ? `${portfolio.totalPnl >= 0 ? '+' : ''}${portfolio.totalPnlPercent.toFixed(2)}%` : "---"}
+                        <PnL
+                            value={live ? portfolio.totalPnl : null}
+                            prefix="$"
+                            className="text-2xl font-semibold"
+                        />
+                        <div>
+                            <PnL
+                                value={live ? portfolio.totalPnlPercent : null}
+                                percent
+                                className="text-xs font-medium"
+                            />
                         </div>
                     </div>
                 </div>
@@ -123,10 +117,10 @@ export function Sidebar() {
                     variant="ghost"
                     onClick={handleLogout}
                     disabled={isLoggingOut}
-                    className="w-full justify-start text-muted-foreground hover:text-white hover:bg-white/5 h-9"
+                    className="h-9 w-full justify-start"
                 >
-                    <LogOut className="h-4 w-4 mr-3" />
-                    {isLoggingOut ? "Logging out..." : "Logout"}
+                    <LogOut className="mr-3 size-4" />
+                    {isLoggingOut ? "Logging out…" : "Logout"}
                 </Button>
             </div>
         </div>

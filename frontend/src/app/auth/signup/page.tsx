@@ -60,8 +60,8 @@ export default function SignupPage() {
                 setError("Please check your email to confirm your account.");
             }
 
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : "Something went wrong.");
         } finally {
             setLoading(false);
         }
@@ -78,8 +78,8 @@ export default function SignupPage() {
                 },
             });
             if (error) throw error;
-        } catch (err: any) {
-            setError(err.message);
+        } catch (err: unknown) {
+            setError(err instanceof Error ? err.message : "Something went wrong.");
             setLoading(false);
         }
     };

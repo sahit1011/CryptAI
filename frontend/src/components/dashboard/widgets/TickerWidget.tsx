@@ -1,65 +1,87 @@
 "use client"
 
-import { GlassCard } from "@/components/ui/glass-card"
+import { Card } from "@/components/ui/card"
 import { useMarketStore } from "@/hooks/useMarketData"
-import { ArrowUp, ArrowDown, Activity } from "lucide-react"
-import { cn, safeNum, safeFixed } from "@/lib/utils"
+import { LoadingState, ErrorState } from "@/components/ui/states"
+import { Value, PnL } from "@/components/ui/value"
+import { ArrowUp, ArrowDown, Activity, WifiOff } from "lucide-react"
+import { cn, safeNum } from "@/lib/utils"
 
+/*
+ * Live BTC/USDT ticker. Renders real WS data only — honest loading/offline states
+ * until the feed provides a ticker. Numbers are monospace via <Value>/<PnL>.
+ */
 export function TickerWidget() {
-    const { ticker, isConnected } = useMarketStore()
+    const ticker = useMarketStore((s) => s.ticker)
+    const status = useMarketStore((s) => s.status)
 
     if (!ticker) {
+        // No data yet: distinguish "still connecting" from "feed down".
+        const down = status === "error" || status === "closed"
         return (
-            <GlassCard className="h-full">
-                <div className="p-6 flex items-center justify-center h-full">
-                    <div className="flex items-center gap-2 text-muted-foreground animate-pulse">
-                        <Activity className="h-4 w-4" />
-                        <span>Connecting to Market Data...</span>
-                    </div>
-                </div>
-            </GlassCard>
+            <Card className="h-full justify-center">
+                {down ? (
+                    <ErrorState
+                        icon={<WifiOff />}
+                        title="Market feed offline"
+                        description="Waiting to reconnect to the live market data stream."
+                    />
+                ) : (
+                    <LoadingState icon={<Activity />} title="Connecting to market data…" />
+                )}
+            </Card>
         )
     }
 
-    const price = safeNum(ticker.c).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    const change = safeNum(ticker.p)
     const changePercent = safeNum(ticker.P)
-    const isPositive = change >= 0
+    const isPositive = changePercent >= 0
 
     return (
-        <GlassCard className="overflow-hidden relative">
-            <div className={cn(
-                "absolute top-0 left-0 w-1 h-full transition-colors duration-300",
-                isPositive ? "bg-emerald-500" : "bg-red-500"
-            )} />
-            <div className="p-6">
-                <div className="flex justify-between items-start">
+        <Card className="relative overflow-hidden py-0">
+            {/* Accent rail flips emerald/red with the 24h direction. */}
+            <div
+                className={cn(
+                    "absolute inset-y-0 left-0 w-0.5 transition-colors duration-300",
+                    isPositive ? "bg-profit" : "bg-loss",
+                )}
+            />
+            <div className="p-5">
+                <div className="flex items-start justify-between">
                     <div>
-                        <h3 className="text-muted-foreground text-sm font-medium mb-1">BTC/USDT</h3>
-                        <div className="text-4xl font-bold text-white tracking-tight font-mono">
-                            ${price}
-                        </div>
+                        <h3 className="label-md mb-1">BTC/USDT</h3>
+                        <Value
+                            value={ticker.c}
+                            decimals={2}
+                            prefix="$"
+                            className="text-3xl font-semibold text-foreground tracking-tight"
+                        />
                     </div>
-                    <div className={cn(
-                        "flex items-center px-2.5 py-1 rounded-full text-sm font-medium border",
-                        isPositive ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-red-500/10 text-red-500 border-red-500/20"
-                    )}>
-                        {isPositive ? <ArrowUp className="h-4 w-4 mr-1" /> : <ArrowDown className="h-4 w-4 mr-1" />}
-                        {safeFixed(Math.abs(changePercent), 2)}%
+                    <div
+                        className={cn(
+                            "flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium",
+                            isPositive ? "bg-profit-muted text-profit" : "bg-loss-muted text-loss",
+                        )}
+                    >
+                        {isPositive ? (
+                            <ArrowUp className="h-3.5 w-3.5" />
+                        ) : (
+                            <ArrowDown className="h-3.5 w-3.5" />
+                        )}
+                        <PnL value={changePercent} percent showSign={false} className="text-sm" />
                     </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 mt-6">
+                <div className="mt-5 grid grid-cols-2 gap-4">
                     <div>
-                        <p className="text-muted-foreground text-xs uppercase tracking-wider">24h Volume (BTC)</p>
-                        <p className="text-white font-mono mt-1">{safeFixed(ticker.v, 2)}</p>
+                        <p className="label-md">24h Change</p>
+                        <PnL value={ticker.p} decimals={2} prefix="$" className="mt-1 text-sm" />
                     </div>
                     <div>
-                        <p className="text-muted-foreground text-xs uppercase tracking-wider">24h Quote (USDT)</p>
-                        <p className="text-white font-mono mt-1">{safeFixed(safeNum(ticker.q) / 1000000, 2)}M</p>
+                        <p className="label-md">24h Volume (BTC)</p>
+                        <Value value={ticker.v} decimals={2} className="mt-1 block text-sm text-foreground" />
                     </div>
                 </div>
             </div>
-        </GlassCard>
+        </Card>
     )
 }

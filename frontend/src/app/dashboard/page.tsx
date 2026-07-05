@@ -7,6 +7,8 @@ import { PortfolioSection } from "@/components/dashboard/sections/PortfolioSecti
 import { MarketsSection } from "@/components/dashboard/sections/MarketsSection";
 import { AgentsSection } from "@/components/dashboard/sections/AgentsSection";
 import { useMarketData } from "@/hooks/useMarketData";
+import { Badge } from "@/components/ui/badge";
+import { Wrench } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function DashboardPage() {
@@ -54,12 +56,13 @@ export default function DashboardPage() {
                         {activeSection === "markets" && <MarketsSection />}
                         {activeSection === "agents" && <AgentsSection />}
                         {activeSection === "trading" && (
-                            <div className="text-center py-20">
-                                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-medium text-muted-foreground mb-6">
+                            <div className="flex flex-col items-center py-20 text-center">
+                                <Badge variant="secondary" className="mb-6 gap-1.5">
+                                    <Wrench className="size-3" />
                                     Coming soon
-                                </div>
-                                <h2 className="heading-2 text-white mb-4">Manual Trading</h2>
-                                <p className="body-md text-muted-foreground max-w-md mx-auto">
+                                </Badge>
+                                <h2 className="heading-2 mb-4 text-foreground">Manual Trading</h2>
+                                <p className="body-md mx-auto max-w-md text-muted-foreground">
                                     A manual order-entry interface is not available yet. Trading is
                                     currently handled by the autonomous agents — monitor activity in
                                     the Overview and Agents tabs.
