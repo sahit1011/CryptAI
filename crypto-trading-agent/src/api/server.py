@@ -202,6 +202,10 @@ manager = ConnectionManager()
 binance_client = BinanceWebSocketClient()
 message_bus: Optional[MessageBus] = None
 state_manager: Optional[StateManager] = None
+# Shared, created once at startup. Building a TradeHistoryManager runs create_all DDL
+# and opens a sync engine, so constructing it per request (as /api/trades used to)
+# blocked the event loop and leaked engines.
+trade_history_manager = None
 
 
 async def handle_binance_update(data: Dict[str, Any]):
@@ -286,9 +290,19 @@ async def startup_event():
         
         state_manager = StateManager()
         await state_manager.connect()
-        
+
         # Pass state_manager to connection manager
         manager.set_state_manager(state_manager)
+
+        # Build the shared trade-history manager once (sync engine + create_all).
+        global trade_history_manager
+        try:
+            from src.memory.trade_history_manager import TradeHistoryManager
+            trade_history_manager = await asyncio.to_thread(
+                TradeHistoryManager, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize TradeHistoryManager: {e}")
 
         
         # Subscribe to all relevant agent channels
@@ -358,13 +372,16 @@ async def get_trades(
     """
     limit = max(1, min(limit, 500))  # clamp to a sane range
     try:
-        from src.memory.trade_history_manager import TradeHistoryManager
-        from src.utils.config import get_config
-        
-        config = get_config()
-        trade_manager = TradeHistoryManager(config.database.postgres_url)
-        trades = trade_manager.get_recent_trades(limit=limit)
-        
+        if trade_history_manager is None:
+            logger.error("TradeHistoryManager not initialized")
+            return {"error": "trade history unavailable", "trades": []}
+
+        # get_recent_trades is a blocking sync DB call — run it off the event loop
+        # on the shared manager (no per-request engine / DDL).
+        trades = await asyncio.to_thread(
+            trade_history_manager.get_recent_trades, limit
+        )
+
         # Format trades for frontend
         formatted_trades = []
         for trade in trades:
