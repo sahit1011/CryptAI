@@ -102,9 +102,13 @@ class TechnicalIndicators:
                     # Find columns
                     upper, middle, lower = None, None, None
                     for col in bb_cols:
+                        # NOTE: pandas-ta bbands returns BBL/BBM/BBU plus BBB_
+                        # (bandwidth) and BBP_ (percent). The middle band is BBM_ only —
+                        # matching 'BBB_' here overwrote the middle band with bandwidth
+                        # (a ~0.02 value), corrupting bb_middle and bb_width.
                         if 'BBU_' in col or 'upper' in col.lower():
                             upper = bb_result[col]
-                        elif 'BBM_' in col or 'middle' in col.lower() or 'BBB_' in col:
+                        elif 'BBM_' in col or 'middle' in col.lower():
                             middle = bb_result[col]
                         elif 'BBL_' in col or 'lower' in col.lower():
                             lower = bb_result[col]
