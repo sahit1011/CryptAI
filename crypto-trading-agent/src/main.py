@@ -20,6 +20,8 @@ from src.agents.analysis_agent import MarketAnalysisAgent
 from src.agents.strategy_agent import StrategyGenerationAgent
 from src.agents.risk_agent import RiskManagementAgent
 from src.agents.memory_agent import MemoryAgent
+from src.execution.execution_agent import ExecutionAgent
+from src.execution.paper_trading_engine import PaperTradingEngine
 from src.utils.pipeline_logger import PipelineLogger
 from src.utils.config import get_config
 
@@ -53,7 +55,11 @@ class TradingSystem:
         self.strategy_agent: Optional[StrategyGenerationAgent] = None
         self.risk_agent: Optional[RiskManagementAgent] = None
         self.memory_agent: Optional[MemoryAgent] = None
-        
+        self.execution_agent: Optional[ExecutionAgent] = None
+
+        # Trading engine (paper by default; live path is hard-gated in ExecutionAgent)
+        self.paper_engine: Optional[PaperTradingEngine] = None
+
         # Orchestrator
         self.orchestrator: Optional[TradingOrchestrator] = None
         
@@ -100,14 +106,12 @@ class TradingSystem:
             anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
             database_url = os.getenv("DATABASE_URL", "sqlite:///./trading_data.db")
             
-            # Initialize Data Agent
+            # Initialize Data Agent. Exchange/symbols come from config, not kwargs —
+            # DataCollectionAgent(__init__) only accepts (message_bus, state_manager).
             plog.info("  ├─ Initializing Data Agent", agent="system")
             self.data_agent = DataCollectionAgent(
                 message_bus=self.message_bus,
-                state_manager=self.state_manager,
-                exchange_id="binance",
-                api_key=os.getenv("BINANCE_API_KEY"),
-                api_secret=os.getenv("BINANCE_API_SECRET")
+                state_manager=self.state_manager
             )
             await self.data_agent.start()
             
@@ -150,7 +154,53 @@ class TradingSystem:
                 initial_capital=float(os.getenv("INITIAL_BALANCE", "10000"))
             )
             await self.memory_agent.start()
-            
+
+            # Initialize Execution Agent. Without this the orchestrator's
+            # execute_trade node publishes to execution_agent_inbox with no
+            # subscriber, so every approved trade times out into the void.
+            #
+            # Mode selection:
+            #   ENABLE_EXECUTION=false            -> paper trading (default, safe)
+            #   ENABLE_EXECUTION=true             -> live path (BingX). The live path
+            #     is still hard-gated inside ExecutionAgent._init_components, which
+            #     refuses mainnet unless LIVE_TRADING_CONFIRMED=true, so enabling
+            #     execution against USE_TESTNET=true is the only path that trades.
+            plog.info("  ├─ Initializing Execution Agent", agent="system")
+            self.paper_engine = PaperTradingEngine(
+                initial_balance=float(os.getenv("INITIAL_BALANCE", "10000")),
+                message_bus=self.message_bus,
+                state_manager=self.state_manager
+            )
+            try:
+                await self.paper_engine.restore_from_historical_trades(
+                    self.config.database.postgres_url
+                )
+                await self.paper_engine.publish_initial_state()
+            except Exception as e:
+                plog.warning(f"Paper engine state restore skipped: {e}", agent="system")
+
+            realtime_trading = os.getenv("ENABLE_EXECUTION", "false").lower() == "true"
+            execution_config = {
+                "EXCHANGE_NAME": os.getenv("EXCHANGE_NAME", "bingx"),
+                "API_KEY": os.getenv("BINGX_API_KEY", ""),
+                "API_SECRET": os.getenv("BINGX_SECRET_KEY", ""),
+                "USE_TESTNET": os.getenv("USE_TESTNET", "true").lower() == "true",
+                "LIVE_TRADING_CONFIRMED": os.getenv("LIVE_TRADING_CONFIRMED", "false"),
+            }
+            self.execution_agent = ExecutionAgent(
+                message_bus=self.message_bus,
+                state_manager=self.state_manager,
+                config=execution_config,
+                paper_trading_engine=self.paper_engine,
+                realtime_trading=realtime_trading
+            )
+            # Wire the shared portfolio tracker so start() can reconcile persisted
+            # risk state against the exchange before monitoring begins.
+            portfolio_tracker = getattr(self.risk_agent, "portfolio_tracker", None)
+            if portfolio_tracker is not None:
+                self.execution_agent.set_portfolio_tracker(portfolio_tracker)
+            await self.execution_agent.start()
+
             plog.info("  └─ ✅ All agents ready", agent="system")
             
         except Exception as e:
@@ -243,9 +293,11 @@ class TradingSystem:
                 plog.info("  ├─ Stopping orchestrator", agent="system")
                 await self.orchestrator.stop()
             
-            # Stop agents
+            # Stop agents (execution first so in-flight orders are handled before
+            # its dependencies — data/state — are torn down).
             plog.info("  ├─ Stopping agents", agent="system")
             agents = [
+                self.execution_agent,
                 self.memory_agent,
                 self.risk_agent,
                 self.strategy_agent,

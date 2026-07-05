@@ -134,26 +134,45 @@ class TradingOrchestrator:
         
         # Set entry point
         workflow.set_entry_point("collect_data")
-        
-        # Add edges (transitions)
-        workflow.add_edge("collect_data", "analyze_market")
-        workflow.add_edge("analyze_market", "detect_regime")
-        
+
+        # Add edges (transitions). Every node that can populate state['errors']
+        # short-circuits to handle_error instead of feeding garbage (e.g. a failed
+        # data fetch) into the expensive downstream LLM nodes. This also makes
+        # handle_error reachable, which is required for the graph to compile.
+        workflow.add_conditional_edges(
+            "collect_data",
+            self._error_gate,
+            {
+                "error": "handle_error",
+                "ok": "analyze_market"
+            }
+        )
+        workflow.add_conditional_edges(
+            "analyze_market",
+            self._error_gate,
+            {
+                "error": "handle_error",
+                "ok": "detect_regime"
+            }
+        )
+
         # Conditional edge after regime detection
         workflow.add_conditional_edges(
             "detect_regime",
             self._should_generate_strategies,
             {
+                "error": "handle_error",
                 "generate": "generate_strategies",
                 "skip": END
             }
         )
-        
+
         # Conditional edge after strategy generation
         workflow.add_conditional_edges(
             "generate_strategies",
             self._has_opportunities,
             {
+                "error": "handle_error",
                 "validate": "validate_risk",
                 "skip": END
             }
@@ -654,23 +673,30 @@ class TradingOrchestrator:
         )
         
         state['retry_count'] += 1
-        
+
         if state['retry_count'] < self.max_retries:
             plog.info(f"🔄 Retrying cycle (attempt {state['retry_count']})", agent="orchestrator")
             state['should_continue'] = True
+            # Clear the recorded errors so the retried run starts clean; otherwise
+            # the error gate would immediately route back here and burn every retry.
+            state['errors'] = []
         else:
             plog.error("❌ Max retries reached, aborting cycle", agent="orchestrator")
             state['should_continue'] = False
-        
+
         return state
     
     # Conditional edge functions
-    
+
+    def _error_gate(self, state: TradingState) -> str:
+        """Route to the error handler when a node has recorded an error."""
+        return "error" if state.get('errors') else "ok"
+
     def _should_generate_strategies(self, state: TradingState) -> str:
         """Decide if we should generate strategies based on regime"""
         if state.get('errors'):
-            return "skip"
-        
+            return "error"
+
         regime = state.get('regime', {}) or {}
         # Regime dicts come from two sources with different key names:
         #   - Memory Agent (MarketRegimeDetector): {'regime': 'volatile', ...}
@@ -688,8 +714,8 @@ class TradingOrchestrator:
     def _has_opportunities(self, state: TradingState) -> str:
         """Check if any opportunities were found"""
         if state.get('errors'):
-            return "skip"
-        
+            return "error"
+
         if state.get('opportunities') and len(state['opportunities']) > 0:
             return "validate"
         
