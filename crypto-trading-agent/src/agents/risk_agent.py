@@ -276,7 +276,12 @@ class RiskManagementAgent(BaseAgent):
                     # Apply suggested adjustments
                     if 'position_size_multiplier' in llm_advice.suggested_adjustments:
                         multiplier = llm_advice.suggested_adjustments['position_size_multiplier']
-                        result.adjusted_position_size = recommended_position_size * multiplier
+                        # Compound the LLM multiplier onto the size already adjusted by
+                        # the deterministic calculator (absolute units), falling back to
+                        # the recommended size when no prior adjustment was made.
+                        base = result.adjusted_position_size or recommended_position_size
+                        result.adjusted_position_size = base * multiplier
+                        result.position_size_multiplier *= multiplier
                         result.add_recommendation(
                             f"LLM recommends {multiplier:.0%} position size"
                         )

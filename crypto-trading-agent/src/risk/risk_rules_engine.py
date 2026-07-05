@@ -175,8 +175,11 @@ class RiskRulesEngine:
             # Step 4: Check if circuit breaker should be triggered
             if self.circuit_breaker:
                 snapshot = await self.portfolio_tracker.get_current_snapshot()
+                # Use to_risk_dict() (raw fractions + daily_start_equity), NOT to_dict()
+                # which returns heat/drawdown as display percentages and would trip the
+                # breaker on ~0.08% heat.
                 should_trigger, conditions = self.circuit_breaker.check_conditions(
-                    snapshot.to_dict()
+                    snapshot.to_risk_dict()
                 )
                 
                 if should_trigger:

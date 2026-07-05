@@ -53,7 +53,13 @@ class RiskParameters:
 class RiskValidationResult:
     """Result of risk validation"""
     approved: bool
+    # ABSOLUTE adjusted size (in base-asset units), or None if unchanged from the
+    # recommended size. Consumers send this directly to execution.
     adjusted_position_size: Optional[float] = None
+    # Accumulated sizing MULTIPLIER (1.0 == no change). Correlation/regime adjustments
+    # multiply into this; the absolute adjusted_position_size is derived from it against
+    # the recommended size. Kept separate so the two units are never confused.
+    position_size_multiplier: float = 1.0
     rejection_reasons: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     risk_score: float = 0.0  # 0-1 (1 = max risk)
@@ -190,6 +196,14 @@ class DeterministicRiskCalculator:
             # NEW: Apply market regime adjustments
             if market_regime:
                 await self._apply_market_regime_adjustments(market_regime, result)
+
+            # Derive the ABSOLUTE adjusted position size from the accumulated
+            # sizing multiplier. Only set it when the multiplier actually reduced
+            # size (< 1.0); otherwise leave it None to mean "use the recommended size".
+            if result.position_size_multiplier < 1.0:
+                result.adjusted_position_size = (
+                    recommended_position_size * result.position_size_multiplier
+                )
 
             # Calculate overall risk score
             result.risk_score = await self._calculate_risk_score(
@@ -596,8 +610,7 @@ class DeterministicRiskCalculator:
                         result.add_recommendation(
                             f"Consider reducing position size to {size_adj:.0%} due to correlation"
                         )
-                        result.adjusted_position_size = result.adjusted_position_size or 1.0
-                        result.adjusted_position_size *= size_adj
+                        result.position_size_multiplier *= size_adj
             else:
                 result.checks['correlation_risk'] = True
         except asyncio.TimeoutError:
@@ -641,8 +654,7 @@ class DeterministicRiskCalculator:
                 result.add_recommendation(
                     f"Reduce position size to {multiplier:.0%} due to market conditions"
                 )
-                result.adjusted_position_size = result.adjusted_position_size or 1.0
-                result.adjusted_position_size *= multiplier
+                result.position_size_multiplier *= multiplier
             
             plog.debug(
                 f"Applied market regime adjustment: {market_regime} -> {multiplier:.0%}",

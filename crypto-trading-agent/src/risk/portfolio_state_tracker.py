@@ -93,6 +93,7 @@ class PortfolioSnapshot:
     daily_trades: int = 0
     daily_wins: int = 0
     daily_losses: int = 0
+    daily_start_equity: float = 0.0  # equity at the start of the trading day
 
     # Drawdown tracking
     peak_equity: float = 0.0
@@ -123,6 +124,25 @@ class PortfolioSnapshot:
             'current_drawdown_dollars': round(self.current_drawdown_dollars, 2),
             'win_streak': self.win_streak,
             'loss_streak': self.loss_streak
+        }
+
+    def to_risk_dict(self) -> Dict[str, Any]:
+        """Return risk metrics in RAW FRACTION units for the circuit breaker.
+
+        to_dict() multiplies heat/drawdown by 100 for human display; feeding that to
+        the circuit breaker (which compares against fractions like 0.08 / 0.20) made it
+        trip on ~0.08% heat and halt all trading. This method keeps fractions and also
+        exposes daily_start_equity so the daily-loss check uses real equity instead of
+        the hardcoded $10k fallback.
+        """
+        return {
+            'portfolio_heat': self.portfolio_heat,          # fraction (0.06 == 6%)
+            'current_drawdown': self.current_drawdown,      # fraction (0.20 == 20%)
+            'daily_pnl': self.daily_pnl,
+            'daily_start_equity': self.daily_start_equity,
+            'total_equity': self.total_equity,
+            'loss_streak': self.loss_streak,
+            'win_streak': self.win_streak,
         }
 
 
@@ -386,7 +406,8 @@ class PortfolioStateTracker:
                 current_drawdown=current_drawdown,
                 current_drawdown_dollars=current_drawdown_dollars,
                 win_streak=self.win_streak,
-                loss_streak=self.loss_streak
+                loss_streak=self.loss_streak,
+                daily_start_equity=self.daily_start_equity
             )
 
             return snapshot
