@@ -127,7 +127,7 @@ export function HeroSection() {
                     <Link href="/dashboard">
                         <Button
                             size="lg"
-                            className="h-12 px-8 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium text-base brand-glow transition-transform hover:scale-[1.03]"
+                            className="h-12 px-8 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium text-base brand-glow transition-transform hover:scale-[1.03]"
                         >
                             Start Trading <ArrowRight className="ml-2 w-4 h-4" />
                         </Button>

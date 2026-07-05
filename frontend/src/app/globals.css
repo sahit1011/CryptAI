@@ -44,6 +44,8 @@
 
   /* ---- Brand / semantic primary (crimson = accent = primary) ----------- */
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-active: var(--primary-active);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -185,8 +187,12 @@
   --accent-foreground: oklch(0.98 0.005 20);  /* white text on crimson */
   --accent-muted: color-mix(in oklch, var(--accent-500) 14%, transparent);
 
-  /* primary == accent so bg-primary reads crimson */
-  --primary: var(--accent-500);
+  /* Button fills: deep maroon-grey, NOT the bright crimson accent. The vivid
+     accent stays for text/rings/lines; filled CTAs read as dark maroon with a
+     soft shadow (user feedback: full-bright red buttons were too loud). */
+  --primary: oklch(0.34 0.1 26);              /* deep maroon */
+  --primary-hover: oklch(0.4 0.12 26);        /* slightly lifted on hover */
+  --primary-active: oklch(0.3 0.09 26);       /* pressed */
   --primary-foreground: oklch(0.98 0.005 20);
 
   --secondary: var(--elevated);
@@ -432,20 +438,23 @@
     border-color: color-mix(in oklch, var(--accent-500) 45%, transparent);
     box-shadow:
       var(--shadow-elevation-high),
-      0 0 34px color-mix(in oklch, var(--accent-500) 22%, transparent);
+      0 0 26px color-mix(in oklch, var(--accent-600) 14%, transparent);
   }
 
   /*
-   * .brand-glow — reusable soft crimson halo for CTAs / focal elements.
-   * Use on the primary button and hero accents. Utility, not per-section hex.
+   * .brand-glow — soft maroon-grey drop shadow for CTAs / focal elements.
+   * Deliberately a grounded dark shadow (maroon mixed toward black), NOT a
+   * neon halo — user feedback: full-bright red glows read too loud.
    */
   .brand-glow {
-    box-shadow: 0 0 30px color-mix(in oklch, var(--accent-500) 35%, transparent);
+    box-shadow:
+      0 6px 22px -6px color-mix(in oklch, var(--accent-700) 55%, black),
+      0 0 14px color-mix(in oklch, var(--accent-600) 12%, transparent);
   }
   .brand-glow-strong {
     box-shadow:
-      0 0 20px color-mix(in oklch, var(--accent-500) 40%, transparent),
-      0 0 60px color-mix(in oklch, var(--accent-500) 22%, transparent);
+      0 8px 28px -6px color-mix(in oklch, var(--accent-700) 65%, black),
+      0 0 22px color-mix(in oklch, var(--accent-600) 18%, transparent);
   }
 
   /*

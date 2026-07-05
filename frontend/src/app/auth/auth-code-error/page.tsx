@@ -65,7 +65,7 @@ export default function AuthCodeErrorPage() {
                     <div className="space-y-3 relative z-10">
                         <Link href="/auth/login" className="block">
                             <Button
-                                className="w-full h-11 bg-primary text-primary-foreground hover:bg-accent-400 font-medium transition-all hover:scale-[1.02] brand-glow relative z-10 group overflow-hidden"
+                                className="w-full h-11 bg-primary text-primary-foreground hover:bg-primary-hover font-medium transition-all hover:scale-[1.02] brand-glow relative z-10 group overflow-hidden"
                             >
                                 <span className="relative z-10 flex items-center justify-center">
                                     Try Again <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />

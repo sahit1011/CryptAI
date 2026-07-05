@@ -204,7 +204,7 @@ export default function SignupPage() {
                         <Button
                             type="submit"
                             disabled={loading}
-                            className="w-full h-11 bg-primary text-primary-foreground hover:bg-accent-400 font-medium transition-all hover:scale-[1.02] brand-glow relative z-10 group overflow-hidden"
+                            className="w-full h-11 bg-primary text-primary-foreground hover:bg-primary-hover font-medium transition-all hover:scale-[1.02] brand-glow relative z-10 group overflow-hidden"
                         >
                             <span className="relative z-10 flex items-center justify-center">
                                 {loading ? (

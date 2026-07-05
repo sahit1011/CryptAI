@@ -147,7 +147,7 @@ export function Navbar() {
 
                                     <Link href="/auth/signup">
                                         <Button
-                                            className="h-10 px-6 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium brand-glow transition-transform hover:scale-[1.03]"
+                                            className="h-10 px-6 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium brand-glow transition-transform hover:scale-[1.03]"
                                         >
                                             Sign up
                                         </Button>
@@ -216,7 +216,7 @@ export function Navbar() {
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button
-                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium brand-glow"
+                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium brand-glow"
                                     >
                                         Go to Dashboard
                                     </Button>
@@ -256,7 +256,7 @@ export function Navbar() {
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button
-                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-accent-400 font-medium brand-glow"
+                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium brand-glow"
                                     >
                                         Sign up
                                     </Button>
