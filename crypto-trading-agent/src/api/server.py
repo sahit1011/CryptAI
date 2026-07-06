@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from collections import deque
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Query
@@ -59,6 +60,10 @@ class ConnectionManager:
             "portfolio": None,
             "positions": []
         }
+        # Ring buffer of recent agent-activity broadcasts, replayed to each new
+        # client on connect so a freshly-opened dashboard shows the recent feed
+        # instead of starting empty until the next event arrives.
+        self.recent_activity: deque = deque(maxlen=50)
 
     def set_state_manager(self, state_manager: StateManager):
         self.state_manager = state_manager
@@ -71,8 +76,12 @@ class ConnectionManager:
         # CRITICAL FIX: Fetch latest state from StateManager with fallbacks
         if self.state_manager:
             try:
-                # Fetch portfolio using get_portfolio_state() which reads from hash
+                # Prefer persisted state; fall back to the most recent broadcast we
+                # cached (e.g. from a live agent/paper engine that hasn't written the
+                # Redis hash yet) so a new client sees real numbers immediately.
                 portfolio = await self.state_manager.get_portfolio_state()
+                if not portfolio and self.initial_state.get("portfolio"):
+                    portfolio = self.initial_state["portfolio"]
                 if portfolio:
                     await websocket.send_text(json.dumps({
                         "type": "execution_status",
@@ -105,11 +114,11 @@ class ConnectionManager:
                     }, default=str))
                     logger.info(f"✅ Sent default portfolio state to client: $10,000.00")
                 
-                # Fetch positions with fallback to empty array
+                # Fetch positions with fallback to the cached broadcast, then empty.
                 positions = await self.state_manager.get_positions()
-                if positions is None:
-                    positions = []
-                    
+                if not positions:
+                    positions = self.initial_state.get("positions") or []
+
                 await websocket.send_text(json.dumps({
                     "type": "execution_status",
                     "data": {
@@ -118,7 +127,14 @@ class ConnectionManager:
                     }
                 }, default=str))
                 logger.info(f"✅ Sent {len(positions)} positions to client")
-                
+
+                # Replay the recent agent-activity feed so it isn't empty on open.
+                for msg in list(self.recent_activity):
+                    try:
+                        await websocket.send_text(json.dumps(msg, default=str))
+                    except Exception:
+                        break
+
             except Exception as e:
                 logger.error(f"Error hydrating client state: {e}")
                 # Send default state on error
@@ -169,6 +185,10 @@ class ConnectionManager:
                     self.update_initial_state(portfolio=data.get("payload"))
                 elif data.get("type") == "position_update":
                     self.update_initial_state(positions=data.get("payload"))
+
+            # Buffer activity so newly-connected clients can replay the recent feed.
+            if msg_type in ("agent_activity", "agent_update"):
+                self.recent_activity.append(message)
             
             # CRITICAL FIX: Track dead connections for removal
             dead_connections = []
