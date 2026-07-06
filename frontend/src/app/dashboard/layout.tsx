@@ -7,6 +7,7 @@ import { LoadingState } from "@/components/ui/states"
 import { Suspense, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/utils/supabase/client"
+import { cn } from "@/lib/utils"
 
 export default function DashboardLayout({
     children,
@@ -14,6 +15,7 @@ export default function DashboardLayout({
     children: React.ReactNode
 }) {
     const [isLoading, setIsLoading] = useState(true);
+    const [mobileNavOpen, setMobileNavOpen] = useState(false);
     const router = useRouter();
     const supabase = createClient();
 
@@ -50,14 +52,43 @@ export default function DashboardLayout({
 
     return (
         <div className="relative h-full bg-background">
+            {/* Persistent sidebar (md and up) */}
             <div className="z-[80] hidden h-full md:fixed md:inset-y-0 md:flex md:w-72 md:flex-col">
                 <Suspense fallback={<div className="h-full w-full border-r border-border bg-sidebar" />}>
                     <Sidebar />
                 </Suspense>
             </div>
+
+            {/* Mobile nav drawer (below md) — same Sidebar in a slide-in sheet */}
+            <div
+                className={cn(
+                    "fixed inset-0 z-[90] md:hidden",
+                    mobileNavOpen ? "pointer-events-auto" : "pointer-events-none",
+                )}
+                aria-hidden={!mobileNavOpen}
+            >
+                <div
+                    className={cn(
+                        "absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300",
+                        mobileNavOpen ? "opacity-100" : "opacity-0",
+                    )}
+                    onClick={() => setMobileNavOpen(false)}
+                />
+                <div
+                    className={cn(
+                        "absolute inset-y-0 left-0 flex w-72 max-w-[82vw] flex-col shadow-[var(--shadow-elevation-high)] transition-transform duration-300 ease-out",
+                        mobileNavOpen ? "translate-x-0" : "-translate-x-full",
+                    )}
+                >
+                    <Suspense fallback={<div className="h-full w-full border-r border-border bg-sidebar" />}>
+                        <Sidebar onNavigate={() => setMobileNavOpen(false)} />
+                    </Suspense>
+                </div>
+            </div>
+
             <main className="h-full md:pl-72">
-                <Header />
-                <div className="h-full p-8">
+                <Header onMenuClick={() => setMobileNavOpen(true)} />
+                <div className="h-full p-4 sm:p-6 lg:p-8">
                     <ErrorBoundary>
                         {children}
                     </ErrorBoundary>

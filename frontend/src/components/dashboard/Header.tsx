@@ -1,6 +1,6 @@
 "use client"
 
-import { Bell, Search, LogOut } from "lucide-react"
+import { Bell, Search, LogOut, Menu } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Input } from "@/components/ui/input"
@@ -25,7 +25,7 @@ import {
     PopoverTrigger,
 } from "@/components/ui/popover"
 
-export function Header() {
+export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
     const [userEmail, setUserEmail] = useState<string | null>(null)
     const [isLoggingOut, setIsLoggingOut] = useState(false)
     const supabase = createClient()
@@ -66,8 +66,22 @@ export function Header() {
 
     return (
         <div className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-border bg-background/80 px-6 backdrop-blur-xl">
-            {/* Command search */}
-            <div className="flex flex-1 items-center gap-4">
+            {/* Mobile menu button — opens the sidebar drawer (hidden once the
+                persistent sidebar shows at md). */}
+            {onMenuClick ? (
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="-ml-2 mr-1 md:hidden"
+                    onClick={onMenuClick}
+                    aria-label="Open navigation menu"
+                >
+                    <Menu className="h-5 w-5" />
+                </Button>
+            ) : null}
+
+            {/* Command search (decorative for now; collapse on phones to save space) */}
+            <div className="hidden flex-1 items-center gap-4 sm:flex">
                 <div className="group relative w-full max-w-md">
                     <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground transition-colors group-focus-within:text-foreground" />
                     <Input

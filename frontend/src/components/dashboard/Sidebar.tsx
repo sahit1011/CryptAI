@@ -21,7 +21,7 @@ const routes = [
     { label: "AI Agents", icon: Bot, href: "/dashboard?section=agents", section: "agents" },
 ]
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     const pathname = usePathname()
     const searchParams = useSearchParams()
     const currentSection = searchParams.get("section") || "overview"
@@ -64,6 +64,7 @@ export function Sidebar() {
                         <Link
                             key={route.href}
                             href={route.href}
+                            onClick={onNavigate}
                             className={cn(
                                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200",
                                 isActive
