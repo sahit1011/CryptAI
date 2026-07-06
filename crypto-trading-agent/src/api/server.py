@@ -267,19 +267,18 @@ async def handle_agent_message(data: Dict[str, Any]):
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting up Antigravity API...")
-    
-    # 1. Start Binance Client
-    await binance_client.connect()
-    
-    # Subscribe to BTCUSDT ticker and depth
-    # Ticker for live price
-    await binance_client.subscribe_ticker("btcusdt", handle_binance_update)
-    
-    # Depth for order book (level 5 for speed)
-    await binance_client.subscribe_depth("btcusdt", levels=5, update_speed="100ms", callback=handle_binance_update)
-    
-    # Kline for chart (1m for now)
-    await binance_client.subscribe_kline("btcusdt", ["1m"], handle_binance_update)
+
+    # 1. Start Binance Client. Guarded + bounded: if the exchange is unreachable
+    # (region block, outage, restricted network), the API must STILL start so the
+    # Redis WS bridge, REST endpoints, and agent feed keep working — the market feed
+    # simply stays offline until connectivity returns.
+    try:
+        await asyncio.wait_for(binance_client.connect(), timeout=10)
+        await binance_client.subscribe_ticker("btcusdt", handle_binance_update)
+        await binance_client.subscribe_depth("btcusdt", levels=5, update_speed="100ms", callback=handle_binance_update)
+        await binance_client.subscribe_kline("btcusdt", ["1m"], handle_binance_update)
+    except Exception as e:
+        logger.error(f"Binance market feed unavailable at startup (continuing without it): {e}")
 
     # 2. Start MessageBus and StateManager
     global message_bus, state_manager

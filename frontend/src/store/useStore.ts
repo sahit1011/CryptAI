@@ -16,6 +16,8 @@ export interface Trade {
     side: 'LONG' | 'SHORT'
     entry: number
     current: number
+    /** Position size in base-asset units (abs). Used for notional/allocation. */
+    qty?: number
     pnl: number
     pnlPercent: number
     status: 'OPEN' | 'CLOSED'

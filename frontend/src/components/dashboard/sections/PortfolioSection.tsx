@@ -31,6 +31,14 @@ export function PortfolioSection() {
 
     const usdtAllocationPct = safeDiv(portfolio.balance, portfolio.totalValue) * 100;
 
+    // Real allocation by notional exposure: |qty| * mark, as a share of total equity.
+    // (Futures exposure can exceed equity under leverage, so bars are clamped and this
+    // reads as "exposure vs equity", not parts-of-a-whole.)
+    const positionAllocations = activeTrades.map((trade) => {
+        const notional = Math.abs((trade.qty ?? 0) * (trade.current || trade.entry));
+        return { trade, notional, pct: safeDiv(notional, portfolio.totalValue) * 100 };
+    });
+
     return (
         <div className="space-y-8">
             <SectionHeader
@@ -130,19 +138,27 @@ export function PortfolioSection() {
                                     </div>
                                 </div>
 
-                                {activeTrades.length === 0 ? (
+                                {positionAllocations.length === 0 ? (
                                     <p className="body-xs text-subtle-foreground">
                                         No open positions — capital is fully in USDT.
                                     </p>
                                 ) : (
-                                    activeTrades.map((trade) => (
+                                    positionAllocations.map(({ trade, pct }) => (
                                         <div key={trade.id} className="space-y-1.5">
                                             <div className="flex items-center justify-between">
                                                 <span className="body-sm text-foreground">{trade.symbol}</span>
-                                                <PnL value={trade.pnl} prefix="$" className="text-xs" />
+                                                <Value
+                                                    value={Number.isFinite(pct) ? pct : 0}
+                                                    decimals={1}
+                                                    suffix="%"
+                                                    className="body-sm text-muted-foreground"
+                                                />
                                             </div>
                                             <div className="h-1.5 overflow-hidden rounded-full bg-elevated">
-                                                <div className="h-full rounded-full bg-info" style={{ width: "100%" }} />
+                                                <div
+                                                    className="h-full rounded-full bg-accent-600"
+                                                    style={{ width: `${Math.min(Math.max(pct, 0), 100)}%` }}
+                                                />
                                             </div>
                                         </div>
                                     ))

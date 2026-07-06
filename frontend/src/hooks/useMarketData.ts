@@ -215,6 +215,7 @@ export function useMarketData() {
                 side: (pos.positionSide as Trade['side']) ?? 'LONG',
                 entry: safeNum(pos.entryPrice),
                 current: safeNum(pos.markPrice),
+                qty: Math.abs(safeNum(pos.positionAmt)),
                 pnl: safeNum(pos.unRealizedProfit),
                 pnlPercent:
                     safeDiv(
@@ -237,6 +238,7 @@ export function useMarketData() {
                 side: (t.side as Trade['side']) ?? (t.positionSide as Trade['side']) ?? 'LONG',
                 entry: safeNum(t.entry ?? t.entryPrice),
                 current: safeNum(t.current ?? t.markPrice),
+                qty: t.qty != null || t.positionAmt != null ? Math.abs(safeNum(t.qty ?? t.positionAmt)) : undefined,
                 pnl: safeNum(t.pnl ?? t.unRealizedProfit),
                 pnlPercent: safeNum(t.pnlPercent),
                 status: (t.status as Trade['status']) ?? 'OPEN',
