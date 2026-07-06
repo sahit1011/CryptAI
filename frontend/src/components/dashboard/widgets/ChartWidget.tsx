@@ -62,14 +62,35 @@ interface CurrentCandle {
 type Kline = [number, string, string, string, string, string, ...unknown[]]
 
 /**
- * Read a design token from the document root as a concrete color string so
- * lightweight-charts (a canvas lib that can't consume CSS vars) renders in the
- * terminal palette. Falls back to a neutral value if the var is unset.
+ * Resolve a design token to a concrete rgb()/rgba() string for lightweight-charts.
+ *
+ * The tokens are authored in oklch (and some use color-mix); lightweight-charts is a
+ * canvas lib whose color parser only understands rgb/hex/named colors and THROWS on
+ * lab()/oklch()/color-mix() — which previously crashed the whole Markets tab. We let
+ * the browser do the conversion: apply `var(--x)` to a throwaway element and read back
+ * getComputedStyle().color, which the browser always normalizes to rgb/rgba.
  */
 function token(name: string, fallback: string): string {
     if (typeof window === "undefined") return fallback
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-    return v || fallback
+    try {
+        const el = document.createElement("div")
+        el.style.color = `var(${name})`
+        el.style.display = "none"
+        document.body.appendChild(el)
+        const rgb = getComputedStyle(el).color
+        document.body.removeChild(el)
+        return rgb && rgb.startsWith("rgb") ? rgb : fallback
+    } catch {
+        return fallback
+    }
+}
+
+/** Turn an rgb()/rgba() string into rgba() with the given alpha (for fills). */
+function withAlpha(rgb: string, alpha: number): string {
+    const m = rgb.match(/rgba?\(([^)]+)\)/)
+    if (!m) return rgb
+    const [r, g, b] = m[1].split(",").map((s) => s.trim())
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
 function getCandleStartTime(tf: Timeframe): number {
@@ -107,7 +128,9 @@ export function ChartWidget() {
         setIsLoading(true)
         setError(null)
         try {
-            const url = `https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=${interval}&limit=500`
+            // Same-origin proxy (src/app/api/klines) — the browser can't hit Binance
+            // directly (no CORS headers); the server route fetches + falls back.
+            const url = `/api/klines?symbol=BTCUSDT&interval=${interval}&limit=500`
             const res = await fetch(url)
             if (!res.ok) throw new Error(`Market data request failed (${res.status})`)
             const raw: unknown = await res.json()
@@ -122,15 +145,17 @@ export function ChartWidget() {
                 close: safeNum(k[4]),
             }))
 
-            const upColor = token("--color-chart-1", "#3ecf8e")
-            const downColor = token("--color-chart-5", "#e5484d")
+            // Candles/volume follow P&L semantics: up = profit green, down = loss red
+            // (NOT the brand chart palette, which is crimson-led after the rebrand).
+            const upVol = withAlpha(token("--color-profit", "rgb(62,207,142)"), 0.28)
+            const downVol = withAlpha(token("--color-loss", "rgb(229,72,77)"), 0.28)
             const volumeData: HistogramData<Time>[] = rows.map((k) => {
                 const open = safeNum(k[1])
                 const close = safeNum(k[4])
                 return {
                     time: Math.floor(safeNum(k[0]) / 1000) as Time,
                     value: safeNum(k[5]),
-                    color: `color-mix(in oklch, ${close >= open ? upColor : downColor} 28%, transparent)`,
+                    color: close >= open ? upVol : downVol,
                 }
             })
 
@@ -162,8 +187,9 @@ export function ChartWidget() {
         const gridColor = token("--color-border", "rgba(255,255,255,0.08)")
         const axisText = token("--color-subtle-foreground", "#7d818c")
         const crosshair = token("--color-border-strong", "rgba(255,255,255,0.14)")
-        const upColor = token("--color-chart-1", "#3ecf8e")
-        const downColor = token("--color-chart-5", "#e5484d")
+        // Candles follow P&L semantics: up = profit green, down = loss red.
+        const upColor = token("--color-profit", "rgb(62,207,142)")
+        const downColor = token("--color-loss", "rgb(229,72,77)")
 
         const chart = createChart(chartContainerRef.current, {
             layout: {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { DashboardTabs, DashboardSection } from "@/components/dashboard/DashboardTabs";
 import { OverviewSection } from "@/components/dashboard/sections/OverviewSection";
 import { PortfolioSection } from "@/components/dashboard/sections/PortfolioSection";
@@ -11,38 +12,38 @@ import { Badge } from "@/components/ui/badge";
 import { Wrench } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-export default function DashboardPage() {
+const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "trading", "agents"];
+
+const sectionVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
+    exit: { opacity: 0, y: -20, transition: { duration: 0.2 } },
+};
+
+function DashboardContent() {
     // Initialize WebSocket connection
     useMarketData();
 
-    const [activeSection, setActiveSection] = useState<DashboardSection>("overview");
+    const router = useRouter();
+    const searchParams = useSearchParams();
 
-    // Animation variants for section transitions
-    const sectionVariants = {
-        hidden: { opacity: 0, y: 20 },
-        visible: {
-            opacity: 1,
-            y: 0,
-            transition: {
-                duration: 0.3,
-            },
-        },
-        exit: {
-            opacity: 0,
-            y: -20,
-            transition: {
-                duration: 0.2,
-            },
-        },
+    // Section is driven by the URL (?section=), so the sidebar links and the top tabs
+    // stay in sync and each section is directly shareable/bookmarkable.
+    const param = searchParams.get("section") as DashboardSection | null;
+    const activeSection: DashboardSection =
+        param && SECTIONS.includes(param) ? param : "overview";
+
+    const setActiveSection = (section: DashboardSection) => {
+        router.replace(section === "overview" ? "/dashboard" : `/dashboard?section=${section}`, {
+            scroll: false,
+        });
     };
 
     return (
         <div className="min-h-screen">
-            {/* Tab Navigation */}
             <DashboardTabs activeSection={activeSection} onSectionChange={setActiveSection} />
 
-            {/* Section Content */}
-            <div className="max-w-7xl mx-auto px-6 py-8">
+            <div className="mx-auto max-w-7xl px-6 py-8">
                 <AnimatePresence mode="wait">
                     <motion.div
                         key={activeSection}
@@ -73,5 +74,13 @@ export default function DashboardPage() {
                 </AnimatePresence>
             </div>
         </div>
+    );
+}
+
+export default function DashboardPage() {
+    return (
+        <Suspense fallback={<div className="min-h-screen" />}>
+            <DashboardContent />
+        </Suspense>
     );
 }

@@ -4,9 +4,7 @@ import dynamic from "next/dynamic";
 import { SectionHeader } from "../ui/SectionHeader";
 import { TickerWidget } from "../widgets/TickerWidget";
 import { OrderBookWidget } from "../widgets/OrderBookWidget";
-import { ConnectionStatus } from "@/components/ui/connection-status";
 import { LoadingState } from "@/components/ui/states";
-import { useMarketStore } from "@/hooks/useMarketData";
 import { LineChart } from "lucide-react";
 
 // Dynamically import ChartWidget
@@ -23,8 +21,6 @@ const ChartWidget = dynamic(
 );
 
 export function MarketsSection() {
-    const status = useMarketStore((s) => s.status);
-
     return (
         <div className="space-y-8">
             {/* Header */}
@@ -33,7 +29,6 @@ export function MarketsSection() {
                 description="Real-time price charts, order books, and market data"
                 icon={LineChart}
                 iconColor="bg-accent-muted text-accent-300"
-                actions={<ConnectionStatus status={status} />}
             />
 
             {/* Main Chart + Order Book Layout */}

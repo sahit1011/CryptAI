@@ -16,10 +16,12 @@ export function TickerWidget() {
     const status = useMarketStore((s) => s.status)
 
     if (!ticker) {
-        // No data yet: distinguish "still connecting" from "feed down".
+        // No data yet: distinguish "still connecting" from "feed down". Compact
+        // fixed height so the empty state matches the populated card instead of
+        // stretching to fill the column.
         const down = status === "error" || status === "closed"
         return (
-            <Card className="h-full justify-center">
+            <Card className="min-h-[168px] justify-center">
                 {down ? (
                     <ErrorState
                         icon={<WifiOff />}

@@ -1,8 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { LayoutDashboard, Activity, Bot, Settings, FileText, LogOut, TrendingUp, TrendingDown, Home } from "lucide-react"
+import { usePathname, useSearchParams } from "next/navigation"
+import { LayoutDashboard, Activity, Bot, Wallet, LineChart, LogOut, TrendingUp, TrendingDown, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { PnL } from "@/components/ui/value"
@@ -11,17 +11,20 @@ import { useState } from "react"
 import { useStore } from "@/store/useStore"
 import { useMarketStore } from "@/hooks/useMarketData"
 
+// Nav maps to the real dashboard sections (URL-driven via ?section=), so nothing
+// points at a route that doesn't exist. `section` is matched against ?section=.
 const routes = [
-    { label: "Home", icon: Home, href: "/" },
-    { label: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
-    { label: "Analytics", icon: Activity, href: "/dashboard/analytics" },
-    { label: "Agents", icon: Bot, href: "/dashboard/agents" },
-    { label: "Logs", icon: FileText, href: "/dashboard/logs" },
-    { label: "Settings", icon: Settings, href: "/dashboard/settings" },
+    { label: "Home", icon: Home, href: "/", section: null },
+    { label: "Overview", icon: LayoutDashboard, href: "/dashboard", section: "overview" },
+    { label: "Portfolio", icon: Wallet, href: "/dashboard?section=portfolio", section: "portfolio" },
+    { label: "Markets", icon: LineChart, href: "/dashboard?section=markets", section: "markets" },
+    { label: "AI Agents", icon: Bot, href: "/dashboard?section=agents", section: "agents" },
 ]
 
 export function Sidebar() {
     const pathname = usePathname()
+    const searchParams = useSearchParams()
+    const currentSection = searchParams.get("section") || "overview"
     const supabase = createClient()
     const [isLoggingOut, setIsLoggingOut] = useState(false)
     const { portfolio } = useStore()
@@ -53,7 +56,10 @@ export function Sidebar() {
             {/* Navigation */}
             <nav className="flex-1 space-y-1 px-4">
                 {routes.map((route) => {
-                    const isActive = pathname === route.href
+                    const isActive =
+                        route.section === null
+                            ? pathname === "/"
+                            : pathname === "/dashboard" && currentSection === route.section
                     return (
                         <Link
                             key={route.href}

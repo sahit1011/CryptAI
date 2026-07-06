@@ -4,7 +4,7 @@ import { Sidebar } from "@/components/dashboard/Sidebar"
 import { Header } from "@/components/dashboard/Header"
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary"
 import { LoadingState } from "@/components/ui/states"
-import { useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/utils/supabase/client"
 
@@ -51,7 +51,9 @@ export default function DashboardLayout({
     return (
         <div className="relative h-full bg-background">
             <div className="z-[80] hidden h-full md:fixed md:inset-y-0 md:flex md:w-72 md:flex-col">
-                <Sidebar />
+                <Suspense fallback={<div className="h-full w-full border-r border-border bg-sidebar" />}>
+                    <Sidebar />
+                </Suspense>
             </div>
             <main className="h-full md:pl-72">
                 <Header />

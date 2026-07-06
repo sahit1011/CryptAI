@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { SectionHeader } from "../ui/SectionHeader";
 import { Card } from "@/components/ui/card";
 import { Value, PnL } from "@/components/ui/value";
-import { ConnectionStatus } from "@/components/ui/connection-status";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
 import {
     LayoutDashboard,
@@ -22,7 +21,7 @@ import { cn } from "@/lib/utils";
 
 export function OverviewSection() {
     const { portfolio, activeTrades } = useStore();
-    const { isConnected, status } = useMarketStore();
+    const { isConnected } = useMarketStore();
     const [recentTrades, setRecentTrades] = useState<Trade[]>([]);
     const [loadingTrades, setLoadingTrades] = useState(false);
 
@@ -84,13 +83,12 @@ export function OverviewSection() {
 
     return (
         <div className="space-y-8">
-            {/* Header with Connection Status */}
+            {/* Header (connection status lives in the global top bar) */}
             <SectionHeader
                 title="Overview"
                 description="Monitor live trading performance and multi-agent system health"
                 icon={LayoutDashboard}
                 iconColor="bg-accent-muted text-accent-300"
-                actions={<ConnectionStatus status={status} />}
             />
 
             {/* Stats Grid — token surfaces, mono numbers, semantic P&L only */}
@@ -357,7 +355,9 @@ function StatCard({
                         {icon}
                     </span>
                 </div>
-                <div className="space-y-1">{children}</div>
+                {/* flex-col so the value and its hint stack (they render as inline
+                    spans, on which vertical space-y margins have no effect). */}
+                <div className="flex flex-col items-start gap-1">{children}</div>
             </div>
         </Card>
     );

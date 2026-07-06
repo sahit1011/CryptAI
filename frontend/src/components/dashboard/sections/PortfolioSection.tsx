@@ -6,7 +6,6 @@ import { SectionHeader } from "../ui/SectionHeader";
 import { Card } from "@/components/ui/card";
 import { StatTile } from "@/components/ui/stat-tile";
 import { Value, PnL } from "@/components/ui/value";
-import { ConnectionStatus } from "@/components/ui/connection-status";
 import { EmptyState } from "@/components/ui/states";
 import { useStore } from "@/store/useStore";
 import { useMarketStore } from "@/hooks/useMarketData";
@@ -39,7 +38,6 @@ export function PortfolioSection() {
                 description="Account equity, allocation, and lifetime performance"
                 icon={Wallet}
                 iconColor="bg-accent-muted text-accent-300"
-                actions={<ConnectionStatus status={status} />}
             />
 
             {!hasData ? (
