@@ -54,7 +54,8 @@ def main():
             exit_time = entry_time + timedelta(minutes=dur)
             rr = round(abs(exit_p - entry) / max(abs(entry - sl), 1e-9), 2)
             session.add(TradeRecord(
-                trade_id=tid, symbol=sym, direction=direction, strategy_type=strat,
+                trade_id=tid, user_id=os.getenv("SEED_USER_ID"),
+                symbol=sym, direction=direction, strategy_type=strat,
                 entry_price=entry, entry_time=entry_time, position_size=size,
                 exit_price=exit_p, exit_time=exit_time, exit_reason=reason,
                 stop_loss=sl, take_profit_levels=[round(exit_p, 4)], risk_amount=round(abs(entry - sl) * size, 2),

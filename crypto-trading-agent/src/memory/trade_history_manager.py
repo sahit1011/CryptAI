@@ -15,6 +15,12 @@ from sqlalchemy.orm import sessionmaker
 # one authoritative table definition instead of two colliding ones.
 from src.data.data_models import Base, Trade
 
+
+def _redact_db_url(url: str) -> str:
+    """Mask the password in a DB URL before logging (never log credentials)."""
+    import re
+    return re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:****@", url or "")
+
 # TradeRecord is an ALIAS for the canonical Trade model (src.data.data_models.Trade),
 # which already holds the union of every column the runtime reads/writes. Previously
 # this module re-declared all columns with index=True under extend_existing, which
@@ -76,7 +82,7 @@ class TradeHistoryManager:
         # Ensure schema is up to date
         self._ensure_schema()
 
-        logger.info(f"Trade history manager initialized with DB: {database_url}")
+        logger.info(f"Trade history manager initialized with DB: {_redact_db_url(database_url)}")
 
     def _create_schema(self):
         """Create the trades table if absent — resiliently.
@@ -356,16 +362,24 @@ class TradeHistoryManager:
     def get_recent_trades(
         self,
         limit: int = 100,
-        symbol: Optional[str] = None
+        symbol: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[TradeRecord]:
-        """Get recent trades"""
+        """Get recent trades, optionally scoped to a single tenant.
+
+        When `user_id` is provided, only that user's trades are returned — the
+        multi-tenancy scoping primitive. When None (single-tenant / legacy), all
+        trades are returned, preserving existing behaviour.
+        """
         session = self.SessionLocal()
         try:
             query = session.query(TradeRecord).order_by(desc(TradeRecord.entry_time))
-            
+
             if symbol:
                 query = query.filter_by(symbol=symbol)
-            
+            if user_id:
+                query = query.filter_by(user_id=user_id)
+
             return query.limit(limit).all()
         finally:
             session.close()

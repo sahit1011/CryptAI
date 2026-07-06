@@ -29,6 +29,12 @@ class Trade(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     trade_id = Column(String(50), unique=True, nullable=False, index=True)
 
+    # Multi-tenancy: the Supabase auth user (auth.users.id UUID) that owns this trade.
+    # Nullable for backward compatibility with single-tenant/legacy rows; queries scope
+    # by this when a user context is supplied. Enforcement (RLS / per-user isolation) is
+    # layered on top — see docs/MULTI_TENANCY.md.
+    user_id = Column(String(64), index=True, nullable=True)
+
     # Trade details
     symbol = Column(String(20), nullable=False, index=True)
     direction = Column(String(10), nullable=False)  # LONG/SHORT
