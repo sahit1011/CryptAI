@@ -31,6 +31,9 @@ interface MarketStore {
     isConnected: boolean
     /** Number of reconnect attempts since last clean open (for backoff/UI). */
     reconnectAttempts: number
+    /** epoch ms of the last ticker update (WS or REST fallback) — used to decide
+     *  whether the polling fallback should fill in for a silent WS. */
+    lastTickerAt: number
     setTicker: (data: TickerData) => void
     setOrderBook: (data: OrderBookData) => void
     setStatus: (status: ConnState) => void
@@ -45,7 +48,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
     status: 'closed',
     isConnected: false,
     reconnectAttempts: 0,
-    setTicker: (data) => set({ ticker: data }),
+    lastTickerAt: 0,
+    setTicker: (data) => set({ ticker: data, lastTickerAt: Date.now() }),
     setOrderBook: (data) => set({ orderBook: data }),
     setStatus: (status) => set({ status, isConnected: status === 'open' }),
     setConnected: (isConnected) =>
@@ -316,6 +320,53 @@ export function useMarketData() {
                 wsRef.current.close()
                 wsRef.current = null
             }
+        }
+    }, [])
+
+    // Ticker fallback: the backend's live ticker comes from Binance's WebSocket, which
+    // is region-blocked in some markets (e.g. India) and unreachable on restricted
+    // networks — leaving the dashboard price/chart empty. Poll the same-origin
+    // /api/ticker proxy (Binance -> CoinGecko fallback) and fill the store ONLY when the
+    // WS ticker is absent or stale, so a healthy WS always wins.
+    useEffect(() => {
+        let stopped = false
+        const STALE_MS = 15000
+
+        const poll = async () => {
+            if (stopped) return
+            const s = useMarketStore.getState()
+            if (s.ticker && Date.now() - s.lastTickerAt < STALE_MS) return // WS is fresh
+            try {
+                const res = await fetch('/api/ticker', { cache: 'no-store' })
+                if (!res.ok) return
+                const { ticks } = (await res.json()) as {
+                    ticks?: { symbol: string; lastPrice: string; priceChangePercent: string }[]
+                }
+                const btc = ticks?.find((t) => t.symbol === 'BTCUSDT')
+                if (!btc) return
+                // Don't clobber a WS ticker that arrived while we were fetching.
+                const cur = useMarketStore.getState()
+                if (cur.ticker && Date.now() - cur.lastTickerAt < STALE_MS) return
+                const c = Number(btc.lastPrice)
+                const P = Number(btc.priceChangePercent)
+                useMarketStore.getState().setTicker({
+                    s: 'BTCUSDT',
+                    c: String(c),
+                    p: String((c * P) / 100),
+                    P: String(P),
+                    v: '',
+                    q: '',
+                })
+            } catch {
+                /* proxy unavailable — leave the honest offline state */
+            }
+        }
+
+        poll()
+        const id = setInterval(poll, STALE_MS)
+        return () => {
+            stopped = true
+            clearInterval(id)
         }
     }, [])
 }
