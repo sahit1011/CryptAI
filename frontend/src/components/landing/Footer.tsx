@@ -4,8 +4,8 @@ import { Activity, Github, Twitter, MessageCircle } from "lucide-react";
 import { LiveTicker } from "./LiveTicker";
 
 /*
- * Footer — on-brand, tidy. Tokened surface (no hardcoded canvas hex), emerald
- * wordmark/accents, mono wordmark, and a subtle emerald status dot. The stats
+ * Footer — on-brand, tidy. Tokened surface (no hardcoded canvas hex), crimson
+ * wordmark/accents, mono wordmark, and a subtle crimson status dot. The stats
  * band lives in page.tsx (not duplicated here). LiveTicker renders only when
  * real prices are available.
  */

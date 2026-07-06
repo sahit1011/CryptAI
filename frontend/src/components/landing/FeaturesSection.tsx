@@ -4,9 +4,9 @@ import { motion } from "framer-motion";
 import { Bot, LineChart, ShieldCheck, Zap } from "lucide-react";
 
 /*
- * FeaturesSection — concise "why CryptAI" band. Emerald icon chips + glass
+ * FeaturesSection — concise "why CryptAI" band. Crimson icon chips + glass
  * panels on bg-background. Copy is product-forward and honest (no fake social
- * proof). A section agent may expand this; keep the emerald token conventions.
+ * proof). A section agent may expand this; keep the crimson token conventions.
  */
 
 const features = [

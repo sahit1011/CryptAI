@@ -54,7 +54,7 @@ export function HeroSection() {
             <BackgroundGrid />
 
             <div className="container relative z-10 px-4 md:px-6 text-center mt-8">
-                {/* Version badge — emerald */}
+                {/* Version badge — crimson */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -65,7 +65,7 @@ export function HeroSection() {
                     v2.0 Now Available
                 </motion.div>
 
-                {/* Headline — emerald wordmark + neutral sheen rotating line */}
+                {/* Headline — crimson wordmark + neutral sheen rotating line */}
                 <motion.h1
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -179,7 +179,7 @@ export function HeroSection() {
                 </motion.div>
             </div>
 
-            {/* 3D Dashboard Preview Panel — Linear-inspired, fully emerald */}
+            {/* 3D Dashboard Preview Panel — Linear-inspired, fully crimson */}
             <motion.div
                 initial={{ opacity: 0, y: 90 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -429,7 +429,7 @@ export function HeroSection() {
                     </div>
                 </motion.div>
 
-                {/* Emerald glow beneath the panel */}
+                {/* Crimson glow beneath the panel */}
                 <div className="absolute -inset-8 bg-accent/15 blur-[120px] -z-10 rounded-full opacity-60" />
             </motion.div>
         </section>

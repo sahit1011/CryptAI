@@ -7,14 +7,14 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /*
- * CTASection — the closing invitation. One emerald atmosphere layer, a glass
- * panel for depth, an emerald filled primary CTA (no white buttons), and honest,
+ * CTASection — the closing invitation. One crimson atmosphere layer, a glass
+ * panel for depth, an crimson filled primary CTA (no white buttons), and honest,
  * confident copy (no fabricated "thousands of traders" social proof).
  */
 export function CTASection() {
     return (
         <section className="relative overflow-hidden py-28 md:py-36">
-            {/* Continuous emerald atmosphere — reuses the shared aurora/grid utilities. */}
+            {/* Continuous crimson atmosphere — reuses the shared aurora/grid utilities. */}
             <div className="aurora z-0" aria-hidden>
                 <div className="grid-perspective" />
             </div>

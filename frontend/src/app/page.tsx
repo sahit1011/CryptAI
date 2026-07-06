@@ -7,9 +7,9 @@ import { CTASection } from "@/components/landing/CTASection";
 import { Footer } from "@/components/landing/Footer";
 
 /*
- * Landing composition — one continuous emerald atmosphere on bg-background.
+ * Landing composition — one continuous crimson atmosphere on bg-background.
  * Order: Hero (with its own aurora) → Features → Stats → Architecture → CTA.
- * Selection is emerald to match the brand. No hardcoded canvas hex.
+ * Selection is crimson to match the brand. No hardcoded canvas hex.
  */
 export default function LandingPage() {
     return (

@@ -6,11 +6,11 @@ import type { CSSProperties, ComponentType } from "react";
 
 /*
  * ArchitectureSection — the multi-agent "swarm" band. Glass panels on
- * bg-background with an emerald aurora/grid atmosphere. The 4 agent cards keep
- * distinct identities, but strictly via the chart tokens (var(--chart-1..4) =
- * emerald / blue / amber / violet) so each agent is legible on the system
- * palette — no raw off-brand tailwind hues. Status pills are illustrative
- * descriptors, not live data.
+ * bg-background with a crimson aurora/grid atmosphere. To honor the strict
+ * red/black identity, the 4 agent cards stay within the crimson accent ramp
+ * (accent-300 -> accent-600, a subtle pipeline "deepening" from data to
+ * execution) rather than using multiple hues; agents remain distinguishable by
+ * icon, title, and status word. Status pills are illustrative descriptors.
  */
 
 type Agent = {
@@ -19,7 +19,7 @@ type Agent = {
     icon: ComponentType<{ className?: string }>;
     description: string;
     status: string;
-    /** Chart token that gives this agent its identity. */
+    /** Crimson-ramp token that gives this agent its identity. */
     hue: string;
 };
 
@@ -31,7 +31,7 @@ const agents: Agent[] = [
         description:
             "Streams real-time market data from multiple exchanges over resilient WebSocket connections.",
         status: "Ingesting",
-        hue: "var(--chart-1)", // emerald
+        hue: "var(--accent-300)",
     },
     {
         id: "analysis",
@@ -40,7 +40,7 @@ const agents: Agent[] = [
         description:
             "Runs technical indicators, sentiment models, and LLM-powered reasoning over incoming signals.",
         status: "Analyzing",
-        hue: "var(--chart-2)", // blue
+        hue: "var(--accent-400)",
     },
     {
         id: "strategy",
@@ -49,7 +49,7 @@ const agents: Agent[] = [
         description:
             "Formulates high-probability signals from multi-factor analysis and calibrated risk metrics.",
         status: "Deciding",
-        hue: "var(--chart-3)", // amber
+        hue: "var(--accent-500)",
     },
     {
         id: "execution",
@@ -58,7 +58,7 @@ const agents: Agent[] = [
         description:
             "Routes orders with optimal execution, slippage protection, and gas-aware settlement.",
         status: "Executing",
-        hue: "var(--chart-4)", // violet
+        hue: "var(--accent-600)",
     },
 ];
 
@@ -68,7 +68,7 @@ type AgentStyle = CSSProperties & Record<"--hue", string>;
 export function ArchitectureSection() {
     return (
         <section className="relative py-24 md:py-32 overflow-hidden">
-            {/* Emerald atmosphere — reuse foundation utilities, no per-section hex. */}
+            {/* Crimson atmosphere — reuse foundation utilities, no per-section hex. */}
             <div className="aurora -z-10" aria-hidden>
                 <div className="grid-perspective" />
             </div>

@@ -6,11 +6,11 @@ import { useEffect, useState } from "react";
  * BackgroundGrid — the shared landing atmosphere.
  *
  * Layers (back to front):
- *   1. .aurora            — two drifting blurred emerald radial glows over canvas
- *   2. .grid-perspective  — hairline emerald grid, masked to fade at the edges
- *   3. emerald motes      — very subtle drifting particles (client-only)
+ *   1. .aurora            — two drifting blurred crimson radial glows over canvas
+ *   2. .grid-perspective  — hairline crimson grid, masked to fade at the edges
+ *   3. crimson motes      — very subtle drifting particles (client-only)
  *
- * It should feel like one continuous emerald atmosphere down the page. All
+ * It should feel like one continuous crimson atmosphere down the page. All
  * colors come from the --accent-* tokens; no off-brand hues, no hardcoded hex.
  * Particle positions are generated client-side (Math.random never runs during
  * render — the initial render has an empty particle list) to avoid hydration
@@ -54,12 +54,12 @@ export const BackgroundGrid = () => {
 
     return (
         <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-            {/* Emerald aurora + masked perspective grid (pure CSS utilities). */}
+            {/* Crimson aurora + masked perspective grid (pure CSS utilities). */}
             <div className="aurora">
                 <div className="grid-perspective" />
             </div>
 
-            {/* Subtle emerald motes drifting upward. */}
+            {/* Subtle crimson motes drifting upward. */}
             <div className="absolute inset-0">
                 {motes.map((mote, i) => (
                     <span

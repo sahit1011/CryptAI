@@ -9,7 +9,7 @@ import { Value } from "@/components/ui/value";
  * StatsSection — an illustrative marketing band. Numbers are clearly labelled
  * "Illustrative" so they never read as live/reported metrics, render in Geist
  * Mono via <Value>, and animate with a deterministic count-up (no Math.random
- * during render). Emerald accents only; sits on bg-background with a shared
+ * during render). Crimson accents only; sits on bg-background with a shared
  * aurora atmosphere layer for a continuous feel.
  */
 
@@ -75,7 +75,7 @@ function CountUp({ stat }: { stat: Stat }) {
 export function StatsSection() {
     return (
         <section className="relative overflow-hidden border-y border-border py-20 md:py-24">
-            {/* Shared emerald atmosphere — keeps the page one continuous feel. */}
+            {/* Shared crimson atmosphere — keeps the page one continuous feel. */}
             <div className="aurora z-0 opacity-70" aria-hidden />
 
             <div className="container relative z-10 mx-auto px-4 md:px-6">

@@ -73,7 +73,7 @@ export function Navbar() {
                                 className={`relative transition-all duration-300 ${isScrolled ? "w-9 h-9" : "w-10 h-10"
                                     }`}
                             >
-                                {/* Emerald brand mark */}
+                                {/* Crimson brand mark */}
                                 <div className="chip-brand w-full h-full group-hover:brand-glow group-hover:scale-105 transition-all duration-300">
                                     <Activity className="w-5 h-5 text-accent-300" />
                                 </div>
@@ -94,10 +94,10 @@ export function Navbar() {
                                 >
                                     <span className="relative z-10">{link.label}</span>
 
-                                    {/* Hover background — emerald tint */}
+                                    {/* Hover background — crimson tint */}
                                     <div className="absolute inset-0 rounded-lg bg-accent/0 group-hover:bg-accent/10 transition-all duration-300" />
 
-                                    {/* Bottom border animation — emerald */}
+                                    {/* Bottom border animation — crimson */}
                                     <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0 h-[2px] bg-accent group-hover:w-3/4 transition-all duration-300" />
                                 </Link>
                             ))}
