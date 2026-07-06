@@ -125,14 +125,46 @@ class TradeHistoryManager:
     
     def __init__(self, database_url: str):
         self.engine = create_engine(database_url)
-        Base.metadata.create_all(self.engine)
-        
+        self._create_schema()
+
         self.SessionLocal = sessionmaker(bind=self.engine)
-        
+
         # Ensure schema is up to date
         self._ensure_schema()
-        
+
         logger.info(f"Trade history manager initialized with DB: {database_url}")
+
+    def _create_schema(self):
+        """Create the trades table if absent — resiliently.
+
+        The 'trades' table is mapped by two models (this module + src/data/data_models)
+        with extend_existing, so the shared metadata carries DUPLICATE index definitions
+        and Base.metadata.create_all() raises DuplicateTable on the second identical
+        CREATE INDEX. That previously crashed __init__, leaving trade history permanently
+        unavailable. We instead: (1) skip entirely when the table already exists, and
+        (2) on a fresh DB create just the table (CreateTable), then add each index
+        idempotently, tolerating "already exists". (Root cause to fix later: collapse the
+        two TradeRecord definitions into one.)
+        """
+        from sqlalchemy import inspect
+        from sqlalchemy.schema import CreateTable, CreateIndex
+
+        try:
+            if inspect(self.engine).has_table('trades'):
+                return
+            with self.engine.begin() as conn:
+                conn.execute(CreateTable(TradeRecord.__table__))
+                created = set()
+                for index in TradeRecord.__table__.indexes:
+                    if index.name in created:
+                        continue
+                    created.add(index.name)
+                    try:
+                        conn.execute(CreateIndex(index))
+                    except Exception:
+                        pass  # duplicate/optional index — safe to skip
+        except Exception as e:
+            logger.warning(f"trades schema create skipped: {e}")
     
     def _ensure_schema(self):
         """
