@@ -1195,19 +1195,22 @@ class MarketAnalysisAgent(BaseAgent):
 
             while retry_count < max_retries:
                 try:
-                    # Try OpenRouter DeepSeek first
-                    if self.openrouter_client:
-                        plog.info("Using OpenRouter DeepSeek for LLM analysis", agent="analysis_agent", phase="llm_analysis")
-                        return await self._call_openrouter_analysis(ctx)
-
-                    # Fallback to Claude
-                    elif self.config.llm.anthropic_api_key:
-                        plog.warning("OpenRouter not available, using Claude Sonnet 4.5 fallback", agent="analysis_agent")
+                    # Policy: best PREMIUM model first (Claude), then the OpenRouter
+                    # open-source fallback (DeepSeek, free), then Groq. Runs on an
+                    # OpenRouter key alone; upgrades to Claude when its key is added.
+                    # Single source of truth: src/utils/llm_router.py.
+                    if self.config.llm.anthropic_api_key:
+                        plog.info("Using Claude for LLM analysis (premium)", agent="analysis_agent", phase="llm_analysis")
                         return await self._call_claude_analysis(ctx)
+
+                    # Fallback to OpenRouter open-source model
+                    elif self.openrouter_client:
+                        plog.info("Using OpenRouter open-source model for LLM analysis (fallback)", agent="analysis_agent", phase="llm_analysis")
+                        return await self._call_openrouter_analysis(ctx)
 
                     # Final fallback to Groq
                     elif self.groq_client:
-                        plog.warning("Claude not available, using Groq Llama fallback", agent="analysis_agent")
+                        plog.warning("Using Groq Llama for LLM analysis (fallback)", agent="analysis_agent")
                         return await self._call_groq_analysis(ctx)
 
                     else:

@@ -137,25 +137,32 @@ class UserRegistry:
         state_manager: Optional[Any] = None,
         vault: Optional[Any] = None,
         config_for: Optional[Callable[[str], UserRiskConfig]] = None,
+        seed_user_ids: Optional[List[str]] = None,
     ):
         self.message_bus = message_bus
         self.state_manager = state_manager
         self.vault = vault
         self._config_for = config_for or (lambda uid: UserRiskConfig())
         self._sessions: Dict[str, UserSession] = {}
+        # Always-on tenants that don't need vault credentials — e.g. a demo/owner paper
+        # account. Unioned with connected-key users below.
+        self._seed_user_ids = list(seed_user_ids or [])
 
     def active_user_ids(self) -> List[str]:
         """Tenants eligible to trade this cycle.
 
-        A user is active once they've connected exchange credentials (present in the
-        vault). Falls back to whatever sessions already exist when no vault is wired.
+        The union of: users who have connected exchange credentials (present in the
+        vault), any explicit seed users (paper/demo accounts), and any sessions already
+        materialized this run. A user connecting keys via the onboarding flow shows up
+        here automatically on the next cycle.
         """
+        ids = set(self._seed_user_ids) | set(self._sessions.keys())
         if self.vault is not None:
             try:
-                return self.vault.active_user_ids()  # optional convenience on the vault
+                ids |= set(self.vault.active_user_ids())  # optional convenience on the vault
             except AttributeError:
                 pass
-        return list(self._sessions.keys())
+        return sorted(ids)
 
     def session(self, user_id: str, exchange: Optional[Any] = None) -> UserSession:
         s = self._sessions.get(user_id)

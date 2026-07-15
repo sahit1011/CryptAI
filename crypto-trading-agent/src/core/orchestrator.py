@@ -931,6 +931,82 @@ class TradingOrchestrator:
             )
             raise e
 
+    async def run_analysis_cycle(self) -> List[Dict[str, Any]]:
+        """Run ONLY the shared, user-independent analysis phases; return candidate setups.
+
+        This is the integration seam for the multi-user daemon (see
+        src/core/multi_user.py). Market analysis — collect_data -> analyze_market ->
+        detect_regime -> generate_strategies — is identical for every tenant, so the
+        daemon runs it ONCE per cycle here and fans the resulting setups out to each
+        user's own portfolio. The single-bot risk / execute / log nodes are intentionally
+        skipped: per-user risk validation + booking is MultiUserCoordinator's job.
+
+        Faithful to the graph's own gates (error short-circuit after each node, and the
+        volatile-regime skip). Never raises — returns [] on any error or unfavorable
+        regime so one bad cycle can't take the daemon down.
+        """
+        self.current_cycle += 1
+        initial_state: TradingState = {
+            "cycle_id": f"analysis_{self.current_cycle}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            "cycle_start": datetime.now(),
+            "cycle_number": self.current_cycle,
+            "phase": WorkflowPhase.IDLE.value,
+            "symbol": self.symbol,
+            "market_data": None,
+            "candles": None,
+            "analysis_result": None,
+            "regime": None,
+            "opportunities": [],
+            "selected_setup": None,
+            "risk_validation": None,
+            "approved_for_execution": False,
+            "execution_result": None,
+            "trade_id": None,
+            "errors": [],
+            "retry_count": 0,
+            "should_continue": True,
+            "next_phase": None,
+        }
+        try:
+            state = await self._collect_data_node(initial_state)
+            if self._error_gate(state) == "error":
+                plog.warning(
+                    f"[multi-user] analysis aborted at collect_data: {state.get('errors')}",
+                    agent="orchestrator",
+                )
+                return []
+
+            state = await self._analyze_market_node(state)
+            if self._error_gate(state) == "error":
+                plog.warning(
+                    f"[multi-user] analysis aborted at analyze_market: {state.get('errors')}",
+                    agent="orchestrator",
+                )
+                return []
+
+            state = await self._detect_regime_node(state)
+            gate = self._should_generate_strategies(state)
+            if gate == "error":
+                plog.warning(
+                    f"[multi-user] analysis aborted at detect_regime: {state.get('errors')}",
+                    agent="orchestrator",
+                )
+                return []
+            if gate == "skip":
+                # Unfavorable regime (e.g. volatile) — no setups this cycle, same as the graph.
+                return []
+
+            state = await self._generate_strategies_node(state)
+            setups = state.get("opportunities") or []
+            plog.info(
+                f"🧮 [multi-user] shared analysis produced {len(setups)} candidate setup(s)",
+                agent="orchestrator",
+            )
+            return setups
+        except Exception as e:
+            plog.error(f"[multi-user] analysis cycle failed: {e}", agent="orchestrator")
+            return []
+
     async def _cycle_loop(self):
         """Main cycle execution loop"""
         while self.running:

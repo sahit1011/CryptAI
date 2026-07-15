@@ -88,6 +88,21 @@ class CredentialVault:
         finally:
             session.close()
 
+    def active_user_ids(self, exchange: Optional[str] = None) -> list:
+        """Distinct user_ids that have connected exchange credentials.
+
+        This is how the multi-user daemon discovers who to trade for each cycle
+        (UserRegistry.active_user_ids -> here). Optionally filter to one exchange.
+        """
+        session = self.Session()
+        try:
+            q = session.query(ExchangeCredential.user_id)
+            if exchange:
+                q = q.filter_by(exchange=exchange)
+            return [row[0] for row in q.distinct().all()]
+        finally:
+            session.close()
+
     def get(self, user_id: str, exchange: str = "bingx") -> Optional[Tuple[str, str]]:
         """Return decrypted (api_key, api_secret) for a user, or None if not stored."""
         f = _fernet()

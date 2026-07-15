@@ -88,12 +88,18 @@ class VectorMemoryStore:
             }
         )
         
-        # OpenAI client for embeddings
+        # OpenAI client for embeddings. Without a key we run in a DEGRADED mode:
+        # the client is None and similarity search is disabled, but construction must
+        # NOT raise — otherwise the whole MemoryAgent (and the daemon that builds it)
+        # goes down over a single unconfigured dependency. Embedding call sites are
+        # best-effort and already handle failure, so this degrades cleanly.
         api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            logger.warning("No OpenAI API key provided. Vector memory will fail on embedding generation.")
-        
-        self.openai_client = OpenAI(api_key=api_key)
+            logger.warning(
+                "No OpenAI API key — vector memory runs WITHOUT embeddings "
+                "(similarity search disabled until OPENAI_API_KEY is set)."
+            )
+        self.openai_client = OpenAI(api_key=api_key) if api_key else None
         
         logger.info(f"Vector memory store initialized: {persist_directory}")
     
@@ -138,6 +144,10 @@ class VectorMemoryStore:
         exponential backoff. After exhausting retries the final exception is
         re-raised so callers can degrade gracefully.
         """
+        # Degraded mode (no API key): embeddings are unavailable. Raise so the
+        # best-effort callers (store_trade/search) log and skip, rather than NPE.
+        if self.openai_client is None:
+            raise RuntimeError("embeddings disabled: OPENAI_API_KEY is not set")
         # `with_options(timeout=...)` bounds each individual request so a hung
         # connection can't stall trade persistence; retry handles transients.
         client = self.openai_client.with_options(timeout=EMBEDDING_TIMEOUT_SECONDS)

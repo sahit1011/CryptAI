@@ -15,11 +15,18 @@ class LLMConfig(BaseModel):
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
+    # Best-in-class model per premium provider (used when that provider's key is set).
     claude_model: str = "claude-sonnet-4-20250514"
     gpt_model: str = "gpt-4o"
     gpt4o_model: str = "gpt-4o"
-    deepseek_model: str = "tngtech/deepseek-r1t-chimera:free"
+    gemini_model: str = "gemini-2.0-flash"
     groq_model: str = "llama-3.1-8b-instant"
+    # OpenRouter is the universal fallback. `deepseek_model` is a free open-source
+    # reasoning model reached via OpenRouter — used whenever no premium key is set, so
+    # the whole system runs on an OpenRouter key alone (see src/utils/llm_router.py).
+    deepseek_model: str = "tngtech/deepseek-r1t-chimera:free"
+    openrouter_fallback_model: str = "tngtech/deepseek-r1t-chimera:free"
     max_retries: int = 3
     timeout: int = 60
 
@@ -79,6 +86,7 @@ def load_config(env: str = None) -> Config:
             "openai_api_key": os.getenv("OPENAI_API_KEY"),
             "openrouter_api_key": os.getenv("OPENROUTER_API_KEY"),
             "groq_api_key": os.getenv("GROQ_API_KEY"),
+            "google_api_key": os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
             **yaml_config.get("llm", {})
         },
         "exchange": {
