@@ -19,7 +19,7 @@ import { ConnectionStatus } from "@/components/ui/connection-status"
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states"
 import { useStore, type Trade } from "@/store/useStore"
 import { useMarketStore } from "@/hooks/useMarketData"
-import { closePositions, API_URL, apiHeaders } from "@/lib/api"
+import { closePositions, API_URL, authHeaders } from "@/lib/api"
 
 /**
  * ActiveTrades — the live open-positions terminal.
@@ -77,7 +77,7 @@ export function ActiveTrades() {
         try {
             const res = await fetch(`${API_URL}/api/trades?limit=50`, {
                 cache: "no-store",
-                headers: apiHeaders(),
+                headers: await authHeaders(),
             })
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
             const data = await res.json()

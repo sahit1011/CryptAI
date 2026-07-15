@@ -12,6 +12,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The Python `lib/` rule above unintentionally matches the Next.js frontend source
+# directory frontend/src/lib/ (API client + utils). Re-include it — it's app source,
+# not a Python build artifact, and was silently untracked before this negation.
+!frontend/src/lib/
+!frontend/src/lib/**
 parts/
 sdist/
 var/

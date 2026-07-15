@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { useStore, Trade } from "@/store/useStore";
 import { useMarketStore } from "@/hooks/useMarketData";
-import { API_URL, apiHeaders } from "@/lib/api";
+import { API_URL, authHeaders } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export function OverviewSection() {
@@ -37,7 +37,7 @@ export function OverviewSection() {
                 // localhost for dev). Send the bearer token when one is configured.
                 const response = await fetch(`${API_URL}/api/trades?limit=50`, {
                     cache: "no-store",
-                    headers: apiHeaders(),
+                    headers: await authHeaders(),
                 });
 
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);

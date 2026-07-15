@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import jwt
 from collections import deque
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
@@ -51,6 +52,72 @@ def require_auth(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer
             detail="Invalid or missing API token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+# --- Multi-tenancy: Supabase JWT identity at the API edge ----------------------
+# Requests from a logged-in user carry their Supabase access token (a signed JWT).
+# We verify it against the project's JWKS (asymmetric ES256/RS256 — no shared secret)
+# and resolve the tenant's user_id (the `sub` claim). This is what lets reads be
+# scoped per user instead of exposing one global account.
+SUPABASE_URL = (os.getenv("NEXT_PUBLIC_SUPABASE_URL") or os.getenv("SUPABASE_URL") or "").rstrip("/")
+_jwks_client: Optional["jwt.PyJWKClient"] = None
+
+
+def _get_jwks_client():
+    global _jwks_client
+    if _jwks_client is None and SUPABASE_URL:
+        # PyJWKClient fetches + caches the project's public keys.
+        _jwks_client = jwt.PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json")
+    return _jwks_client
+
+
+def verify_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
+    """Return {user_id, email} for a valid Supabase user token, else None."""
+    client = _get_jwks_client()
+    if not client or not token:
+        return None
+    try:
+        signing_key = client.get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256", "RS256"],
+            audience="authenticated",
+            issuer=f"{SUPABASE_URL}/auth/v1",
+            # Tolerate small client/server clock skew — otherwise a just-issued token
+            # is briefly rejected as "not yet valid (iat)".
+            leeway=60,
+        )
+        return {"user_id": claims.get("sub"), "email": claims.get("email"), "kind": "user"}
+    except Exception as e:
+        logger.debug(f"Supabase JWT verify failed: {e}")
+        return None
+
+
+def current_principal(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> Dict[str, Any]:
+    """Resolve the caller: a per-user tenant, an internal service, or (dev) anonymous.
+
+    - Valid Supabase user JWT -> {'kind':'user','user_id': <uuid>} (scope to this tenant)
+    - Static API_AUTH_TOKEN    -> {'kind':'service','user_id': None} (internal/admin, unscoped)
+    - Nothing configured       -> {'kind':'anonymous','user_id': None} (local dev, open)
+    - Otherwise                -> 401
+    """
+    token = creds.credentials if (creds and creds.scheme.lower() == "bearer") else ""
+    if token:
+        user = verify_supabase_jwt(token)
+        if user and user.get("user_id"):
+            return user
+        if API_AUTH_TOKEN and token == API_AUTH_TOKEN:
+            return {"kind": "service", "user_id": None}
+    if not API_AUTH_TOKEN and not SUPABASE_URL:
+        return {"kind": "anonymous", "user_id": None}
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 class ConnectionManager:
     def __init__(self):
@@ -381,7 +448,7 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/api/trades")
 async def get_trades(
     limit: int = Query(50, ge=1, le=500, description="Number of recent trades to return (1-500)"),
-    _auth: None = Depends(require_auth),
+    principal: Dict[str, Any] = Depends(current_principal),
 ):
     """Get recent trade history from PostgreSQL.
 
@@ -395,10 +462,11 @@ async def get_trades(
             logger.error("TradeHistoryManager not initialized")
             return {"error": "trade history unavailable", "trades": []}
 
-        # get_recent_trades is a blocking sync DB call — run it off the event loop
-        # on the shared manager (no per-request engine / DDL).
+        # Scope to the authenticated tenant. A user principal only ever sees their own
+        # trades; a service/anonymous principal (user_id=None) sees all (unscoped).
+        user_id = principal.get("user_id")
         trades = await asyncio.to_thread(
-            trade_history_manager.get_recent_trades, limit
+            trade_history_manager.get_recent_trades, limit, None, user_id
         )
 
         # Format trades for frontend
