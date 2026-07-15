@@ -1,10 +1,10 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { LayoutDashboard, Wallet, LineChart, TrendingUp, Bot } from "lucide-react";
+import { LayoutDashboard, Wallet, LineChart, Plug, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type DashboardSection = "overview" | "portfolio" | "markets" | "trading" | "agents";
+export type DashboardSection = "overview" | "portfolio" | "markets" | "connect" | "agents";
 
 interface DashboardTabsProps {
     activeSection: DashboardSection;
@@ -28,9 +28,9 @@ const tabs = [
         icon: LineChart,
     },
     {
-        id: "trading" as DashboardSection,
-        label: "Trading",
-        icon: TrendingUp,
+        id: "connect" as DashboardSection,
+        label: "Connect",
+        icon: Plug,
     },
     {
         id: "agents" as DashboardSection,

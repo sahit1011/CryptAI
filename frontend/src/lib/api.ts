@@ -111,3 +111,71 @@ export async function closePositions(): Promise<unknown> {
     }
     return res.json().catch(() => ({}));
 }
+
+// ---------------------------------------------------------------------------
+// Exchange-key vault (per-user onboarding). These are AUTHENTICATED, user-scoped
+// calls — they carry the signed-in user's Supabase JWT (authHeaders), so the
+// backend stores/reads keys against that tenant only. Secrets go straight to the
+// backend vault over the POST body; they are never persisted client-side.
+// ---------------------------------------------------------------------------
+
+/** Non-secret status of the caller's stored exchange keys (from GET /api/exchange-keys). */
+export interface ExchangeKeyStatus {
+    connected: boolean;
+    exchange?: string;
+    label?: string | null;
+    is_testnet?: boolean;
+    api_key_masked?: string;
+    error?: string;
+}
+
+export interface SaveExchangeKeysBody {
+    api_key: string;
+    api_secret: string;
+    exchange?: string;
+    label?: string | null;
+    is_testnet?: boolean;
+}
+
+/** Pull the backend's error `detail` (FastAPI shape) out of a failed response. */
+async function backendError(res: Response): Promise<string> {
+    try {
+        const body = await res.json();
+        if (typeof body?.detail === "string") return body.detail;
+        if (typeof body?.error === "string") return body.error;
+        return JSON.stringify(body);
+    } catch {
+        return (await res.text().catch(() => "")) || `HTTP ${res.status}`;
+    }
+}
+
+/** Current user's stored-key status (masked). Requires a signed-in user. */
+export async function getExchangeKeys(): Promise<ExchangeKeyStatus> {
+    const res = await fetch(`${API_URL}/api/exchange-keys`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Store (encrypted, server-side) the user's own exchange keys. Testnet-only for now. */
+export async function saveExchangeKeys(body: SaveExchangeKeysBody): Promise<ExchangeKeyStatus> {
+    const res = await fetch(`${API_URL}/api/exchange-keys`, {
+        method: "POST",
+        headers: await authHeaders(true),
+        body: JSON.stringify({ exchange: "bingx", is_testnet: true, ...body }),
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Remove the user's stored keys for an exchange. */
+export async function deleteExchangeKeys(exchange = "bingx"): Promise<ExchangeKeyStatus> {
+    const res = await fetch(
+        `${API_URL}/api/exchange-keys?exchange=${encodeURIComponent(exchange)}`,
+        { method: "DELETE", headers: await authHeaders() },
+    );
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}

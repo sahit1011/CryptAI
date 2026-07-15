@@ -7,12 +7,11 @@ import { OverviewSection } from "@/components/dashboard/sections/OverviewSection
 import { PortfolioSection } from "@/components/dashboard/sections/PortfolioSection";
 import { MarketsSection } from "@/components/dashboard/sections/MarketsSection";
 import { AgentsSection } from "@/components/dashboard/sections/AgentsSection";
+import { ConnectExchangeSection } from "@/components/dashboard/sections/ConnectExchangeSection";
 import { useMarketData } from "@/hooks/useMarketData";
-import { Badge } from "@/components/ui/badge";
-import { Wrench } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "trading", "agents"];
+const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "connect", "agents"];
 
 const sectionVariants = {
     hidden: { opacity: 0, y: 20 },
@@ -56,20 +55,7 @@ function DashboardContent() {
                         {activeSection === "portfolio" && <PortfolioSection />}
                         {activeSection === "markets" && <MarketsSection />}
                         {activeSection === "agents" && <AgentsSection />}
-                        {activeSection === "trading" && (
-                            <div className="flex flex-col items-center py-20 text-center">
-                                <Badge variant="secondary" className="mb-6 gap-1.5">
-                                    <Wrench className="size-3" />
-                                    Coming soon
-                                </Badge>
-                                <h2 className="heading-2 mb-4 text-foreground">Manual Trading</h2>
-                                <p className="body-md mx-auto max-w-md text-muted-foreground">
-                                    A manual order-entry interface is not available yet. Trading is
-                                    currently handled by the autonomous agents — monitor activity in
-                                    the Overview and Agents tabs.
-                                </p>
-                            </div>
-                        )}
+                        {activeSection === "connect" && <ConnectExchangeSection />}
                     </motion.div>
                 </AnimatePresence>
             </div>
