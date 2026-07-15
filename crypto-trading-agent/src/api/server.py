@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from src.data.binance_client import BinanceWebSocketClient
@@ -260,6 +261,8 @@ state_manager: Optional[StateManager] = None
 # and opens a sync engine, so constructing it per request (as /api/trades used to)
 # blocked the event loop and leaked engines.
 trade_history_manager = None
+# Per-user encrypted exchange-key vault (created once at startup, reuses the DB engine).
+credential_vault = None
 
 
 async def handle_binance_update(data: Dict[str, Any]):
@@ -348,7 +351,7 @@ async def startup_event():
         manager.set_state_manager(state_manager)
 
         # Build the shared trade-history manager once (sync engine + create_all).
-        global trade_history_manager
+        global trade_history_manager, credential_vault
         try:
             from src.memory.trade_history_manager import TradeHistoryManager
             trade_history_manager = await asyncio.to_thread(
@@ -356,6 +359,15 @@ async def startup_event():
             )
         except Exception as e:
             logger.error(f"Failed to initialize TradeHistoryManager: {e}")
+
+        # Per-user exchange-key vault (needs VAULT_ENC_KEY; created lazily-safe).
+        try:
+            from src.security.credential_vault import CredentialVault
+            credential_vault = await asyncio.to_thread(
+                CredentialVault, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize CredentialVault: {e}")
 
         
         # Subscribe to all relevant agent channels
@@ -480,6 +492,70 @@ async def get_trades(
         import traceback
         traceback.print_exc()
         return {"error": str(e), "trades": []}
+
+
+# --- Per-user exchange-key vault endpoints -------------------------------------
+def require_user(principal: Dict[str, Any] = Depends(current_principal)) -> str:
+    """Require an authenticated end-user (not the service token). Returns user_id."""
+    user_id = principal.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A logged-in user is required for this action",
+        )
+    return user_id
+
+
+class ExchangeKeysBody(BaseModel):
+    api_key: str
+    api_secret: str
+    exchange: str = "bingx"
+    label: Optional[str] = None
+    is_testnet: bool = True
+
+
+@app.get("/api/exchange-keys")
+async def get_exchange_keys(user_id: str = Depends(require_user)):
+    """Non-secret status of the caller's stored exchange keys (masked)."""
+    if credential_vault is None:
+        return {"connected": False, "error": "vault unavailable"}
+    st = await asyncio.to_thread(credential_vault.status, user_id)
+    return st or {"connected": False}
+
+
+@app.post("/api/exchange-keys")
+async def save_exchange_keys(body: ExchangeKeysBody, user_id: str = Depends(require_user)):
+    """Store (encrypted) the caller's own exchange API keys. Testnet-only for now."""
+    if credential_vault is None:
+        raise HTTPException(status_code=503, detail="Credential vault is not configured")
+    # Hard safety gate: only testnet keys may be stored until live trading is unlocked.
+    if not body.is_testnet:
+        raise HTTPException(
+            status_code=400,
+            detail="Only testnet credentials may be stored while live trading is gated",
+        )
+    if not body.api_key.strip() or not body.api_secret.strip():
+        raise HTTPException(status_code=400, detail="api_key and api_secret are required")
+    try:
+        await asyncio.to_thread(
+            credential_vault.save, user_id, body.api_key.strip(), body.api_secret.strip(),
+            body.exchange, body.label, body.is_testnet,
+        )
+    except Exception as e:
+        logger.error(f"Failed to store exchange keys: {e}")
+        raise HTTPException(status_code=500, detail="Could not store credentials")
+    st = await asyncio.to_thread(credential_vault.status, user_id, body.exchange)
+    return st or {"connected": True}
+
+
+@app.delete("/api/exchange-keys")
+async def delete_exchange_keys(exchange: str = "bingx", user_id: str = Depends(require_user)):
+    """Remove the caller's stored keys for an exchange."""
+    if credential_vault is None:
+        raise HTTPException(status_code=503, detail="Credential vault is not configured")
+    removed = await asyncio.to_thread(credential_vault.delete, user_id, exchange)
+    return {"connected": False, "deleted": removed}
+
 
 @app.post("/api/close-positions")
 async def close_all_positions(_auth: None = Depends(require_auth)):

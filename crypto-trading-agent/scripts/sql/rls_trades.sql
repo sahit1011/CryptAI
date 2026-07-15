@@ -31,3 +31,16 @@ create policy trades_tenant_isolation
 -- Rows with a NULL user_id (legacy/global/single-bot data) are visible to NO
 -- authenticated user — they belong to the service/global context only, reachable via the
 -- privileged backend. This prevents legacy unowned rows from leaking to any tenant.
+
+-- ---------------------------------------------------------------------------------
+-- Exchange credentials: same per-tenant isolation (defense-in-depth). Ciphertext only,
+-- but still restrict visibility so no authenticated user can read another's rows.
+alter table public.exchange_credentials enable row level security;
+grant select, insert, update, delete on public.exchange_credentials to authenticated;
+drop policy if exists exchange_credentials_tenant_isolation on public.exchange_credentials;
+create policy exchange_credentials_tenant_isolation
+    on public.exchange_credentials
+    for all
+    to authenticated
+    using (user_id = auth.uid()::text)
+    with check (user_id = auth.uid()::text);

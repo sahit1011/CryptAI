@@ -126,6 +126,29 @@ class TradeExecution(Base):
 
     trade = relationship("Trade", back_populates="executions")
 
+class ExchangeCredential(Base):
+    """Per-user exchange API credentials — encrypted at rest.
+
+    Multi-tenancy: each user brings their own exchange (e.g. BingX testnet) keys. The
+    key and secret are stored ONLY as Fernet ciphertext (see src.security.credential_vault);
+    plaintext never touches the database. One active credential per (user_id, exchange).
+    """
+    __tablename__ = 'exchange_credentials'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True)     # Supabase auth user UUID
+    exchange = Column(String(20), nullable=False, default='bingx')
+    label = Column(String(80))                                   # user-facing nickname
+    api_key_enc = Column(String(512), nullable=False)            # Fernet ciphertext
+    api_secret_enc = Column(String(1024), nullable=False)        # Fernet ciphertext
+    is_testnet = Column(Boolean, default=True, nullable=False)   # testnet-only until live-gated
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_exchange_cred_user', 'user_id', 'exchange', unique=True),
+    )
+
 class MarketData(Base):
     """Historical market data cache"""
     __tablename__ = 'market_data'
