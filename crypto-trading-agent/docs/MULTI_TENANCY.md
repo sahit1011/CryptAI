@@ -26,36 +26,48 @@ it. Nullable + optional filter keeps single-tenant/legacy rows working unchanged
 
 ## Still to build (ordered)
 
-1. **Identity at the API edge** — verify the Supabase JWT on backend requests (the anon
-   JWT is signed by the project's JWT secret) and resolve `request.state.user_id`.
-   Today the API uses a single static `API_AUTH_TOKEN`; that becomes an
-   internal/service token while user requests carry the Supabase JWT.
-2. **Stamp on write** — set `user_id` when persisting trades/positions/portfolio so every
-   row is owned. Extend `StateManager` Redis keys to be per-user
-   (`state:{user_id}:portfolio`, `positions:{user_id}`, …) instead of global.
-3. **Scope on read** — thread `user_id` through `/api/trades`, the WS hydration, and the
-   agent feed so a user only ever sees their own data.
-4. **RLS defense-in-depth** — enable Postgres Row-Level Security on `trades` (and future
-   per-user tables) keyed on `auth.uid()`, so isolation is enforced at the DB even if an
-   app-layer scope is missed.
-5. **Per-user config & limits** — per-user exchange API-key vault (encrypted), risk
-   limits, and enabled symbols.
-6. **Billing / usage metering** — subscription tier gating (e.g. number of live symbols,
-   agent frequency).
+1. **Identity at the API edge — DONE.** The API verifies each request's Supabase JWT
+   against the project JWKS (ES256) and resolves the tenant's `user_id`; the static
+   `API_AUTH_TOKEN` is now the internal/service credential. (`src/api/server.py`
+   `verify_supabase_jwt` / `current_principal`.)
+2. **Stamp on write — DONE.** Published state + persisted portfolio/positions carry the
+   owning `user_id`, and `StateManager` Redis keys are per-user
+   (`state:{user_id}:portfolio` hash, `state:{user_id}:positions` list). The paper engine
+   stamps `self.user_id`.
+3. **Scope on read — DONE.** `/api/trades` scopes by the principal's `user_id`; the WS
+   handshake authenticates the JWT and the `ConnectionManager` delivers each tenant only
+   their own messages (per-user hydration cache + activity replay).
+4. **RLS defense-in-depth — DONE.** `scripts/sql/rls_trades.sql` enables Postgres RLS on
+   `trades` and `exchange_credentials`, restricting the `authenticated` role to
+   `user_id = auth.uid()`; the privileged backend bypasses and app-scopes.
+5. **Per-user config & keys — DONE (keys).** Encrypted per-user exchange-key vault
+   (`src/security/credential_vault.py`, Fernet) + `/api/exchange-keys` (testnet-gated).
+   Per-user risk config flows through `UserRiskConfig` (see engine below). Per-user
+   symbol selection is a thin follow-on.
+6. **Billing / usage metering — TODO.** Subscription tiers, usage limits.
 
-## Engine architecture decision (open)
+## Engine architecture — DECIDED & IMPLEMENTED: shared engine, per-user portfolios
 
-Two ways to run the trading engine for many users:
+Implemented in `src/core/multi_user.py`. Market analysis (data → indicators → regime →
+candidate setups) is **user-independent and computed once per cycle**; only risk
+validation + execution are per-user:
 
-- **Shared engine, per-user portfolios (recommended):** one orchestrator/agent process
-  computes market analysis once (it's user-independent), then applies per-user risk
-  config and books trades against per-user portfolios keyed by `user_id`. Efficient —
-  analysis/LLM cost is shared, not multiplied per user.
-- **Per-user bot instances:** one process/container per user. Simple isolation but cost
-  and ops scale linearly with users; only justified for large/bespoke accounts.
+- **UserSession** — a tenant's isolated resources: their own `PaperTradingEngine`
+  (stamped with `user_id`), `OrderManager`, `PortfolioStateTracker`, and
+  `DeterministicRiskCalculator`. A live exchange client built from the vault keys can be
+  injected in place of the paper engine.
+- **UserRegistry** — discovers/caches active tenants (those with vault credentials).
+- **MultiUserExecutor.book_for_all(setup)** — validates one shared setup against each
+  tenant's portfolio and books it into their engine independently; fault-tolerant (one
+  tenant's failure doesn't abort the rest).
+- **MultiUserCoordinator.run_cycle(analysis_provider)** — the daemon loop primitive:
+  runs the shared analysis ONCE, then fans every setup out to all active tenants.
 
-Recommendation: shared engine + per-user portfolio/risk state, with the `user_id`
-scoping above. Revisit per-user instances only for enterprise tiers.
+**Integration seam for the daemon:** provide `analysis_provider` as an async callable
+that runs the existing analysis pipeline (the orchestrator's data/analysis/regime/strategy
+phases) once and returns setup dicts; the coordinator handles per-user risk + booking.
+Verified by `tests/test_multi_user.py` (shared-once, per-tenant isolation, fault
+tolerance). Per-user bot instances remain an option only for bespoke/enterprise tiers.
 
 ## Hard constraint (unchanged)
 

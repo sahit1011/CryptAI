@@ -165,8 +165,13 @@ class PaperTradingEngine:
         enable_realistic_fills: bool = True,
         message_bus: Optional[Any] = None,
         state_manager: Optional[Any] = None,  # CRITICAL FIX: Add StateManager
-        leverage: int = 10  # Default leverage
+        leverage: int = 10,  # Default leverage
+        user_id: Optional[str] = None,  # owning tenant (multi-user); falls back to env
     ):
+        # Owning tenant: published updates + persisted state are namespaced to this user
+        # so multiple per-user engines never share state. Falls back to BOT_USER_ID for
+        # the single-bot deployment.
+        self.user_id = user_id or os.getenv("BOT_USER_ID")
         self.initial_balance = initial_balance
         self.balance = initial_balance
         self.maker_fee = maker_fee
@@ -209,7 +214,7 @@ class PaperTradingEngine:
                     "payload": payload,
                     "timestamp": datetime.now().isoformat(),
                 }
-                bot_user_id = os.getenv("BOT_USER_ID")
+                bot_user_id = self.user_id
                 if bot_user_id:
                     message["user_id"] = bot_user_id
                 await self.message_bus.publish(channel, message)
@@ -804,7 +809,7 @@ class PaperTradingEngine:
         
         # Persist to StateManager per-tenant (namespaced by BOT_USER_ID).
         if self.state_manager:
-            await self.state_manager.update_portfolio(perf, user_id=os.getenv("BOT_USER_ID"))
+            await self.state_manager.update_portfolio(perf, user_id=self.user_id)
             logger.info(f"💾 Persisted initial portfolio state to Redis")
         
         # Publish initial balance
@@ -829,7 +834,7 @@ class PaperTradingEngine:
             for pos in positions:
                 if 'unRealizedProfit' not in pos:
                     pos['unRealizedProfit'] = "0.00"
-            await self.state_manager.replace_positions(positions, user_id=os.getenv("BOT_USER_ID"))
+            await self.state_manager.replace_positions(positions, user_id=self.user_id)
             logger.info(f"💾 Persisted {len(positions)} restored positions to Redis")
         
         logger.info(f"📊 Published initial portfolio state: ${perf['total_equity']:,.2f}")
@@ -844,7 +849,7 @@ class PaperTradingEngine:
         
         # Persist to StateManager per-tenant (namespaced by BOT_USER_ID).
         if self.state_manager:
-            uid = os.getenv("BOT_USER_ID")
+            uid = self.user_id
             await self.state_manager.update_portfolio(perf, user_id=uid)
             for pos in positions:
                 if 'unRealizedProfit' not in pos:
@@ -1165,7 +1170,7 @@ class PaperTradingEngine:
         # CRITICAL FIX: Clear Redis positions after all closes
         if self.state_manager:
             try:
-                await self.state_manager.replace_positions([], user_id=os.getenv("BOT_USER_ID"))
+                await self.state_manager.replace_positions([], user_id=self.user_id)
                 logger.info("💾 Cleared positions from Redis StateManager")
             except Exception as e:
                 logger.error(f"Failed to clear Redis positions: {e}")
