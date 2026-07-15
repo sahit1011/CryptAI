@@ -49,13 +49,16 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # One-shot migration runner. Applies Alembic migrations against Postgres and
-  # exits 0; the app services wait for it to complete successfully.
+  # One-shot schema bootstrap. Creates the schema from the live SQLAlchemy models
+  # (create_all, idempotent) and exits 0; the app services wait for it to complete.
+  # NOTE: this replaces `alembic upgrade head` — the single alembic migration had
+  # drifted from the models (no trades.user_id, no exchange_credentials). create_all
+  # is the codebase's real source of truth. See scripts/bootstrap_schema.py.
   migrate:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "scripts/bootstrap_schema.py"]
     env_file: .env
     depends_on:
       postgres:

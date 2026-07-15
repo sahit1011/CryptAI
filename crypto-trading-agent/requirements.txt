@@ -44,7 +44,16 @@ alembic==1.13.1
 
 # Vector Database
 pinecone-client==3.2.2
-chromadb==0.5.0
+# chromadb 0.5.0 uses np.float_ (removed in NumPy 2.0) and crashes on import against the
+# numpy>=2 this project installs. 1.5.x is NumPy-2 compatible (verified with the code).
+chromadb>=1.5.9,<2
+
+# Auth & Security
+# PyJWT[crypto] pulls `cryptography` for ES256/RS256 JWKS verification of Supabase
+# access tokens (src/api/server.py). `cryptography` also backs the Fernet exchange-key
+# vault (src/security/credential_vault.py). Both were used but previously unpinned.
+PyJWT[crypto]>=2.8,<3
+cryptography>=42,<50
 
 # Async & Concurrency
 aiohttp==3.9.5

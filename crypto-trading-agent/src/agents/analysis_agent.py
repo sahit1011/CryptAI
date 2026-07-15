@@ -96,10 +96,12 @@ class MarketAnalysisAgent(BaseAgent):
             self.regime_detector = None
             self.timeframe_selector = None
 
-        # Initialize LLM clients
-        self.llm_client = AsyncAnthropic(
-            api_key=self.config.llm.anthropic_api_key
-        )
+        # Initialize LLM clients. Anthropic client ONLY when a key is set — constructing
+        # AsyncAnthropic(api_key=None) raises, which would crash the whole agent even
+        # when OpenRouter alone is configured (the selection falls back to OpenRouter).
+        self.llm_client = None
+        if self.config.llm.anthropic_api_key:
+            self.llm_client = AsyncAnthropic(api_key=self.config.llm.anthropic_api_key)
 
         # OpenRouter client for fallback (DeepSeek) - only initialize if key is available
         self.openrouter_client = None

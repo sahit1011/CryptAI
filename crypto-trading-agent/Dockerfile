@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
 #
-# Backend image for the crypto-trading-agent (API + worker share this image).
+# Backend image for the crypto-trading-agent (API + daemon share this image).
 #
-# Build deps (gcc, build-essential) and the TA-Lib C library are required to
-# compile the `ta-lib` Python wheel; we keep them in a single layer.
+# gcc/build-essential + libpq-dev cover native wheels (psycopg2, etc.). NOTE: the
+# TA-Lib C library is intentionally NOT built — `ta-lib` was dropped from
+# requirements (nothing imports `talib`; analysis uses pure-Python `pandas_ta`).
 #
-# Default CMD runs the FastAPI API via uvicorn. The worker (src/main.py) runs
-# from the SAME image by overriding the command, e.g. in docker-compose:
-#     command: python -m src.main
+# Default CMD runs the FastAPI API via uvicorn. The multi-user daemon runs from the
+# SAME image by overriding the command, e.g. in docker-compose:
+#     command: python -m src.multi_user_daemon
 FROM python:3.12-slim AS base
 
 # Don't write .pyc files, flush stdout/stderr immediately (good for container logs).
@@ -17,30 +18,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # --- System + build dependencies -------------------------------------------------
-# build-essential / gcc:   compile native wheels (ta-lib, psycopg2 fallbacks)
-# wget:                     fetch the TA-Lib C sources
+# build-essential / gcc:   compile native wheels (psycopg2 fallbacks, etc.)
 # libpq-dev:                Postgres client headers
 # curl:                     used by the container healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         gcc \
-        wget \
         curl \
         ca-certificates \
         libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# --- TA-Lib C library ------------------------------------------------------------
-# The `ta-lib==0.4.28` Python package is just bindings; it needs the C lib present.
-RUN wget -q https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0/ta-lib-0.4.0-src.tar.gz \
-    && tar -xzf ta-lib-0.4.0-src.tar.gz \
-    && cd ta-lib \
-    && ./configure --prefix=/usr \
-    && make \
-    && make install \
-    && cd .. \
-    && rm -rf ta-lib ta-lib-0.4.0-src.tar.gz \
-    && ldconfig
 
 WORKDIR /app
 
