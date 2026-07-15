@@ -120,168 +120,133 @@ def current_principal(
     )
 
 class ConnectionManager:
+    """Per-tenant WebSocket fan-out.
+
+    Each connection is tagged with the tenant's user_id (from the verified Supabase
+    JWT on the handshake) or None for a service/anonymous connection. Broadcasts that
+    carry a target user_id are delivered ONLY to that tenant's sockets; untenanted
+    messages (no user_id — e.g. dev/global) go to everyone. Cached hydration state and
+    the recent-activity replay buffer are kept per tenant so a new client only ever
+    sees its own data. The empty-string key is the untenanted/global bucket.
+    """
+
+    GLOBAL = ""  # cache key for untenanted messages
+
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.connections: Dict[WebSocket, Optional[str]] = {}
         self.state_manager: Optional[StateManager] = None
-        self.initial_state: Dict[str, Any] = {
-            "portfolio": None,
-            "positions": []
-        }
-        # Ring buffer of recent agent-activity broadcasts, replayed to each new
-        # client on connect so a freshly-opened dashboard shows the recent feed
-        # instead of starting empty until the next event arrives.
-        self.recent_activity: deque = deque(maxlen=50)
+        # Per-tenant latest {portfolio, positions} for connect-time hydration.
+        self.initial_state: Dict[str, Dict[str, Any]] = {}
+        # Per-tenant ring buffers of recent activity, replayed on connect.
+        self.recent_activity: Dict[str, deque] = {}
+
+    @property
+    def active_connections(self) -> List[WebSocket]:
+        return list(self.connections.keys())
 
     def set_state_manager(self, state_manager: StateManager):
         self.state_manager = state_manager
 
-    async def connect(self, websocket: WebSocket):
+    @staticmethod
+    def _message_user(message: Dict[str, Any]) -> Optional[str]:
+        """Extract the target tenant from a broadcast message, if any."""
+        uid = message.get("user_id")
+        if not uid and isinstance(message.get("data"), dict):
+            uid = message["data"].get("user_id")
+        return uid or None
+
+    async def connect(self, websocket: WebSocket, user_id: Optional[str] = None):
         await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"Client connected. Total: {len(self.active_connections)}")
-        
-        # CRITICAL FIX: Fetch latest state from StateManager with fallbacks
-        if self.state_manager:
-            try:
-                # Prefer persisted state; fall back to the most recent broadcast we
-                # cached (e.g. from a live agent/paper engine that hasn't written the
-                # Redis hash yet) so a new client sees real numbers immediately.
+        self.connections[websocket] = user_id
+        logger.info(f"Client connected (user={user_id or 'anon'}). Total: {len(self.connections)}")
+
+        key = user_id or self.GLOBAL
+        cached = self.initial_state.get(key, {})
+        try:
+            # Portfolio: cached tenant state -> (global bot only) persisted state -> for
+            # the global/dev bucket, a $10k default; a fresh tenant with no data gets
+            # nothing (the UI shows an honest "waiting" state rather than a fake $10k).
+            portfolio = cached.get("portfolio")
+            if not portfolio and key == self.GLOBAL and self.state_manager:
                 portfolio = await self.state_manager.get_portfolio_state()
-                if not portfolio and self.initial_state.get("portfolio"):
-                    portfolio = self.initial_state["portfolio"]
-                if portfolio:
-                    await websocket.send_text(json.dumps({
-                        "type": "execution_status",
-                        "data": {
-                            "type": "balance_update",
-                            "payload": portfolio
-                        }
-                    }, default=str))
-                    logger.info(f"✅ Sent portfolio state to client: ${portfolio.get('total_equity', 0):,.2f}")
-                else:
-                    # Send default initial state
-                    default_portfolio = {
-                        "initial_balance": 10000.0,
-                        "current_balance": 10000.0,
-                        "total_equity": 10000.0,
-                        "unrealized_pnl": 0.0,
-                        "realized_pnl": 0.0,
-                        "win_rate": 0.0,
-                        "total_trades": 0,
-                        "total_commission": 0.0,
-                        "max_drawdown": 0.0,
-                        "open_positions": 0
-                    }
-                    await websocket.send_text(json.dumps({
-                        "type": "execution_status",
-                        "data": {
-                            "type": "balance_update",
-                            "payload": default_portfolio
-                        }
-                    }, default=str))
-                    logger.info(f"✅ Sent default portfolio state to client: $10,000.00")
-                
-                # Fetch positions with fallback to the cached broadcast, then empty.
+            if not portfolio and key == self.GLOBAL:
+                portfolio = {
+                    "initial_balance": 10000.0, "current_balance": 10000.0,
+                    "total_equity": 10000.0, "unrealized_pnl": 0.0, "realized_pnl": 0.0,
+                    "win_rate": 0.0, "total_trades": 0, "open_positions": 0,
+                }
+            if portfolio:
+                await websocket.send_text(json.dumps({
+                    "type": "execution_status",
+                    "data": {"type": "balance_update", "payload": portfolio},
+                }, default=str))
+
+            positions = cached.get("positions")
+            if positions is None and key == self.GLOBAL and self.state_manager:
                 positions = await self.state_manager.get_positions()
-                if not positions:
-                    positions = self.initial_state.get("positions") or []
+            positions = positions or []
+            await websocket.send_text(json.dumps({
+                "type": "execution_status",
+                "data": {"type": "position_update", "payload": positions},
+            }, default=str))
 
-                await websocket.send_text(json.dumps({
-                    "type": "execution_status",
-                    "data": {
-                        "type": "position_update",
-                        "payload": positions
-                    }
-                }, default=str))
-                logger.info(f"✅ Sent {len(positions)} positions to client")
-
-                # Replay the recent agent-activity feed so it isn't empty on open.
-                for msg in list(self.recent_activity):
-                    try:
-                        await websocket.send_text(json.dumps(msg, default=str))
-                    except Exception:
-                        break
-
-            except Exception as e:
-                logger.error(f"Error hydrating client state: {e}")
-                # Send default state on error
-                await websocket.send_text(json.dumps({
-                    "type": "execution_status",
-                    "data": {
-                        "type": "balance_update",
-                        "payload": {
-                            "initial_balance": 10000.0,
-                            "current_balance": 10000.0,
-                            "total_equity": 10000.0,
-                            "unrealized_pnl": 0.0,
-                            "realized_pnl": 0.0
-                        }
-                    }
-                }, default=str))
-
+            # Replay this tenant's recent activity so the feed isn't empty on open.
+            for msg in list(self.recent_activity.get(key, ())):
+                try:
+                    await websocket.send_text(json.dumps(msg, default=str))
+                except Exception:
+                    break
+        except Exception as e:
+            logger.error(f"Error hydrating client state: {e}")
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logger.info(f"Client disconnected. Total: {len(self.active_connections)}")
-    
-    def update_initial_state(self, portfolio: Optional[Dict] = None, positions: Optional[List] = None):
-        """Update the initial state cache"""
+        if self.connections.pop(websocket, "missing") != "missing":
+            logger.info(f"Client disconnected. Total: {len(self.connections)}")
+
+    def _cache_state(self, key: str, portfolio: Optional[Dict] = None, positions: Optional[List] = None):
+        bucket = self.initial_state.setdefault(key, {})
         if portfolio:
-            self.initial_state["portfolio"] = portfolio
+            bucket["portfolio"] = portfolio
         if positions is not None:
-            self.initial_state["positions"] = positions
+            bucket["positions"] = positions
 
     async def broadcast(self, message: Dict[str, Any]):
-        # Broadcast to all connected clients
-        # We'll send JSON string
         try:
             json_msg = json.dumps(message, default=str)
-            
-            # Update initial state cache for new clients
+            target = self._message_user(message)     # None => untenanted/global
+            key = target or self.GLOBAL
             msg_type = message.get("type")
-            data = message.get("data", {})
-            
-            if msg_type == "execution_status":
-                if data.get("type") == "balance_update":
-                    self.update_initial_state(portfolio=data.get("payload"))
-                elif data.get("type") == "position_update":
-                    self.update_initial_state(positions=data.get("payload"))
-            elif msg_type == "agent_update":
-                if data.get("type") == "balance_update":
-                    self.update_initial_state(portfolio=data.get("payload"))
-                elif data.get("type") == "position_update":
-                    self.update_initial_state(positions=data.get("payload"))
+            data = message.get("data", {}) if isinstance(message.get("data"), dict) else {}
 
-            # Buffer activity so newly-connected clients can replay the recent feed.
+            # Cache latest portfolio/positions per tenant for connect-time hydration.
+            if msg_type in ("execution_status", "agent_update"):
+                if data.get("type") == "balance_update":
+                    self._cache_state(key, portfolio=data.get("payload"))
+                elif data.get("type") == "position_update":
+                    self._cache_state(key, positions=data.get("payload"))
+
+            # Buffer activity per tenant for replay to new clients.
             if msg_type in ("agent_activity", "agent_update"):
-                self.recent_activity.append(message)
-            
-            # CRITICAL FIX: Track dead connections for removal
-            dead_connections = []
-            
-            for connection in self.active_connections:
+                self.recent_activity.setdefault(key, deque(maxlen=50)).append(message)
+
+            dead: List[WebSocket] = []
+            for connection, uid in list(self.connections.items()):
+                # Tenanted message -> only its owner's sockets. Untenanted -> everyone.
+                if target is not None and uid != target:
+                    continue
                 try:
-                    # CRITICAL FIX: Check if connection is still open before sending
-                    # WebSocketState: CONNECTING=0, CONNECTED=1, DISCONNECTED=2
-                    if connection.client_state.value == 1:  # CONNECTED state
+                    if connection.client_state.value == 1:  # CONNECTED
                         await connection.send_text(json_msg)
                     else:
-                        # Connection is not in CONNECTED state, mark for removal
-                        dead_connections.append(connection)
-                        logger.debug(f"Skipping broadcast to connection in state: {connection.client_state.name}")
+                        dead.append(connection)
                 except Exception as e:
                     logger.error(f"Error broadcasting to client: {e}")
-                    # Mark connection as dead if send fails
-                    dead_connections.append(connection)
-            
-            # CRITICAL FIX: Remove dead connections from active list
-            if dead_connections:
-                for conn in dead_connections:
-                    if conn in self.active_connections:
-                        self.active_connections.remove(conn)
-                logger.info(f"Removed {len(dead_connections)} dead connection(s). Active connections: {len(self.active_connections)}")
-                    
+                    dead.append(connection)
+
+            for conn in dead:
+                self.connections.pop(conn, None)
+            if dead:
+                logger.info(f"Removed {len(dead)} dead connection(s). Active: {len(self.connections)}")
         except Exception as e:
             logger.error(f"Error serializing message: {e}")
 
@@ -424,16 +389,31 @@ async def shutdown_event():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # Auth on the WS handshake when a token is configured. Browsers can't set
-    # Authorization headers on WebSocket, so accept either the header or a
-    # ?token= query param.
-    if API_AUTH_TOKEN:
-        header = websocket.headers.get("authorization", "")
-        token = header[7:] if header.lower().startswith("bearer ") else websocket.query_params.get("token", "")
-        if token != API_AUTH_TOKEN:
+    # Handshake auth + tenant resolution. Browsers can't set an Authorization header on
+    # a WS upgrade, so the token comes via ?token= (or the header for non-browser
+    # clients). A valid Supabase JWT scopes the socket to that user; the static service
+    # token connects unscoped; when neither SUPABASE_URL nor API_AUTH_TOKEN is set the
+    # socket is open (local dev). An invalid/absent token when auth IS configured is
+    # rejected before accept.
+    header = websocket.headers.get("authorization", "")
+    token = header[7:] if header.lower().startswith("bearer ") else websocket.query_params.get("token", "")
+
+    user_id: Optional[str] = None
+    if token:
+        user = verify_supabase_jwt(token)
+        if user and user.get("user_id"):
+            user_id = user["user_id"]
+        elif API_AUTH_TOKEN and token == API_AUTH_TOKEN:
+            user_id = None  # service/admin — unscoped
+        elif SUPABASE_URL or API_AUTH_TOKEN:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
-    await manager.connect(websocket)
+    elif SUPABASE_URL or API_AUTH_TOKEN:
+        # Auth is configured but no token presented — reject.
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await manager.connect(websocket, user_id)
     try:
         while True:
             # Keep connection alive, maybe listen for client commands later

@@ -70,21 +70,22 @@ export function apiHeaders(json = false): HeadersInit {
 }
 
 /**
- * Build the WebSocket URL, appending `?token=` when a read-only token is set.
- * The backend accepts `?token=` on the /ws handshake because browsers cannot
- * attach an Authorization header to a WS upgrade. Without this, enabling the
- * backend's API_AUTH_TOKEN silently rejects the browser's WS connection.
+ * Build the WebSocket URL, appending `?token=<jwt>` so the backend can authenticate
+ * the handshake and scope the socket to this user (browsers can't set an Authorization
+ * header on a WS upgrade). Uses the user's Supabase access token when signed in, else
+ * the static read-only token. Async because the session is read from the Supabase client.
  */
-export function buildWsUrl(base: string = WS_URL): string {
-    if (!API_TOKEN) return base;
+export async function buildWsUrl(base: string = WS_URL): Promise<string> {
+    const token = await getAccessToken();
+    if (!token) return base;
     try {
         const url = new URL(base);
-        url.searchParams.set("token", API_TOKEN);
+        url.searchParams.set("token", token);
         return url.toString();
     } catch {
         // Fallback for non-absolute/edge inputs: manual append.
         const sep = base.includes("?") ? "&" : "?";
-        return `${base}${sep}token=${encodeURIComponent(API_TOKEN)}`;
+        return `${base}${sep}token=${encodeURIComponent(token)}`;
     }
 }
 

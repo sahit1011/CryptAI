@@ -86,7 +86,7 @@ export function useMarketData() {
             reconnectTimer = setTimeout(connect, delay)
         }
 
-        const connect = () => {
+        const connect = async () => {
             if (isUnmounting) return
             if (
                 wsRef.current?.readyState === WebSocket.OPEN ||
@@ -95,9 +95,10 @@ export function useMarketData() {
                 return
             }
 
-            // Append ?token= when a read-only token is configured — browsers can't
-            // send Authorization on a WS upgrade, so the backend accepts ?token=.
-            const url = buildWsUrl()
+            // Append ?token=<jwt> so the backend authenticates the handshake and scopes
+            // the socket to this user (browsers can't send Authorization on a WS upgrade).
+            const url = await buildWsUrl()
+            if (isUnmounting) return
             setStatus(attempt === 0 ? 'connecting' : 'reconnecting')
 
             let ws: WebSocket

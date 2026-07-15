@@ -51,11 +51,22 @@ def unrealized(p):
     return round(diff * p["positionAmt"], 2)
 
 
+# Owning tenant for the published state (multi-tenancy). Unset => untenanted/global.
+USER_ID = os.getenv("BOT_USER_ID")
+
+
+def _own(msg: dict) -> dict:
+    """Stamp the owning tenant so the API routes this only to that user's sockets."""
+    if USER_ID:
+        msg["user_id"] = USER_ID
+    return msg
+
+
 async def balance_payload():
     unreal = round(sum(unrealized(p) for p in positions), 2)
     realized = 842.15
     equity = round(INITIAL + realized + unreal, 2)
-    return {
+    return _own({
         "type": "balance_update",
         "payload": {
             "total_equity": equity,
@@ -66,16 +77,16 @@ async def balance_payload():
             "total_trades": 24,
             "initial_balance": INITIAL,
         },
-    }
+    })
 
 
 def position_payload():
-    return {
+    return _own({
         "type": "position_update",
         "payload": [
             {**p, "unRealizedProfit": unrealized(p)} for p in positions
         ],
-    }
+    })
 
 
 async def main():
@@ -89,8 +100,7 @@ async def main():
     await bus.publish("execution_status", position_payload(), persist=False)
     for i, (sender, msg, sev) in enumerate(FEED):
         await bus.publish("agent_activity",
-                          {"action": "activity", "sender": sender, "message": msg,
-                           "severity": sev, "id": f"seed-{i}"}, persist=False)
+                          _own({"action": "activity", "sender": sender, "message": msg, "severity": sev, "id": f"seed-{i}"}), persist=False)
         await asyncio.sleep(0.15)
 
     # Live loop: drift marks, refresh portfolio, occasional agent chatter.
@@ -112,8 +122,7 @@ async def main():
         if tick % 3 == 0:
             s, m, sev = heartbeat[tick // 3 % len(heartbeat)]
             await bus.publish("agent_activity",
-                              {"action": "activity", "sender": s, "message": m,
-                               "severity": sev, "id": f"hb-{tick}"}, persist=False)
+                              _own({"action": "activity", "sender": s, "message": m, "severity": sev, "id": f"hb-{tick}"}), persist=False)
         await asyncio.sleep(2)
 
     await bus.disconnect()

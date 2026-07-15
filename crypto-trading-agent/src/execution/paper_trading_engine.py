@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 import asyncio
+import os
 import random
 import json
 from loguru import logger
@@ -195,14 +196,23 @@ class PaperTradingEngine:
         logger.info(f"Paper Trading Engine initialized with ${initial_balance:,.2f}")
     
     async def _publish_update(self, channel: str, update_type: str, payload: dict):
-        """Publish update to message bus if available"""
+        """Publish update to message bus if available.
+
+        Stamps the owning tenant (BOT_USER_ID) so the API can route this update only to
+        that user's WebSocket connections. In single-bot mode BOT_USER_ID identifies the
+        operator's account; unset means an untenanted broadcast (dev / global).
+        """
         if self.message_bus:
             try:
-                await self.message_bus.publish(channel, {
+                message = {
                     "type": update_type,
                     "payload": payload,
-                    "timestamp": datetime.now().isoformat()
-                })
+                    "timestamp": datetime.now().isoformat(),
+                }
+                bot_user_id = os.getenv("BOT_USER_ID")
+                if bot_user_id:
+                    message["user_id"] = bot_user_id
+                await self.message_bus.publish(channel, message)
             except Exception as e:
                 logger.error(f"Failed to publish update: {e}")
     
