@@ -1,0 +1,87 @@
+# Render Blueprint — CryptAI backend (API + multi-user daemon + Redis).
+#
+# Deploys the trading backend to a public URL. Postgres and Auth live on Supabase
+# (already provisioned), so this blueprint provisions only:
+#   • cryptai-redis    — managed Redis (message bus + per-user state)
+#   • cryptai-backend  — FastAPI API (public HTTPS URL + WebSocket)
+#   • cryptai-daemon   — the multi-user trading daemon (background worker)
+#
+# The frontend deploys separately (Vercel or a Render web service) — see DEPLOY.md.
+#
+# SETUP: In the Render dashboard, connect this repo and create resources from this
+# Blueprint. Then fill the secret env vars marked `sync: false` (values are NOT stored
+# in git): POSTGRES_URL (Supabase session pooler), SUPABASE_URL, VAULT_ENC_KEY,
+# API_AUTH_TOKEN, an LLM key, and API_CORS_ORIGINS (your frontend URL).
+
+services:
+  # --- Redis (message bus + per-user state) --------------------------------------
+  - type: redis
+    name: cryptai-redis
+    plan: starter            # free tier evicts; starter keeps appendonly durability
+    maxmemoryPolicy: noeviction
+    ipAllowList: []          # internal-only (reachable by the services below)
+
+  # --- FastAPI backend (public API + WebSocket) ----------------------------------
+  - type: web
+    name: cryptai-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: REDIS_URL
+        fromService: { name: cryptai-redis, type: redis, property: connectionString }
+      - key: API_HOST
+        value: "0.0.0.0"
+      - key: ENVIRONMENT
+        value: production
+      - key: USE_TESTNET
+        value: "true"
+      - key: LIVE_TRADING_CONFIRMED   # SAFETY GATE — never flip without validation
+        value: "false"
+      # ---- secrets: set these in the Render dashboard (sync:false = not in git) ----
+      - key: POSTGRES_URL             # Supabase session pooler URI
+        sync: false
+      - key: SUPABASE_URL             # https://<ref>.supabase.co (verifies user JWTs)
+        sync: false
+      - key: VAULT_ENC_KEY            # Fernet master key for the exchange-key vault
+        sync: false
+      - key: API_AUTH_TOKEN           # service/admin token (close-positions, etc.)
+        sync: false
+      - key: API_CORS_ORIGINS         # your frontend origin, e.g. https://cryptai.vercel.app
+        sync: false
+      - key: OPENROUTER_API_KEY       # LLM key powering analysis/strategy/insights
+        sync: false
+
+  # --- Multi-user trading daemon (background worker) -----------------------------
+  - type: worker
+    name: cryptai-daemon
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python -m src.multi_user_daemon
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: REDIS_URL
+        fromService: { name: cryptai-redis, type: redis, property: connectionString }
+      - key: ENVIRONMENT
+        value: production
+      - key: USE_TESTNET
+        value: "true"
+      - key: LIVE_TRADING_CONFIRMED
+        value: "false"
+      - key: CYCLE_INTERVAL
+        value: "180"
+      - key: MULTI_USER_SEED_IDS      # optional owner/demo paper account(s)
+        sync: false
+      - key: POSTGRES_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: VAULT_ENC_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

@@ -89,13 +89,43 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # Trading worker / orchestrator (main.py). Same image, different command.
+  # Multi-user trading daemon — the SaaS engine. Runs the shared analysis ONCE per
+  # cycle and books each setup into every active tenant's own portfolio (see
+  # src/multi_user_daemon.py + docs/MULTI_TENANCY.md). This is the DEFAULT trading
+  # process for the multi-tenant product. Same image, different command.
+  daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "src.multi_user_daemon"]
+    env_file: .env
+    environment:
+      # Optional: comma-separated Supabase user IDs to always trade (paper/demo),
+      # e.g. the owner's account. Real users are picked up from the vault on connect.
+      MULTI_USER_SEED_IDS: ${MULTI_USER_SEED_IDS:-}
+    # The daemon runs no HTTP server, so the image's :8000/health check never applies.
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Legacy single-global-bot worker (main.py). NOT started by default — the
+  # multi-user `daemon` above supersedes it for the SaaS. Run explicitly with
+  # `docker compose --profile legacy up worker` only for single-tenant debugging.
+  # Running BOTH would double-trade, so keep this off in production.
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     command: ["python", "-m", "src.main"]
     env_file: .env
+    profiles: ["legacy"]
     depends_on:
       postgres:
         condition: service_healthy
