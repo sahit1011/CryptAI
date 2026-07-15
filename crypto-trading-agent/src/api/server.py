@@ -167,8 +167,10 @@ class ConnectionManager:
             # the global/dev bucket, a $10k default; a fresh tenant with no data gets
             # nothing (the UI shows an honest "waiting" state rather than a fake $10k).
             portfolio = cached.get("portfolio")
-            if not portfolio and key == self.GLOBAL and self.state_manager:
-                portfolio = await self.state_manager.get_portfolio_state()
+            if not portfolio and self.state_manager:
+                # Read this tenant's persisted state (namespaced by user_id); the global
+                # bucket reads the legacy keys.
+                portfolio = await self.state_manager.get_portfolio_state(user_id)
             if not portfolio and key == self.GLOBAL:
                 portfolio = {
                     "initial_balance": 10000.0, "current_balance": 10000.0,
@@ -182,8 +184,8 @@ class ConnectionManager:
                 }, default=str))
 
             positions = cached.get("positions")
-            if positions is None and key == self.GLOBAL and self.state_manager:
-                positions = await self.state_manager.get_positions()
+            if positions is None and self.state_manager:
+                positions = await self.state_manager.get_positions(user_id)
             positions = positions or []
             await websocket.send_text(json.dumps({
                 "type": "execution_status",

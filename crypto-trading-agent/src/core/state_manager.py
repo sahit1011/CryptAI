@@ -200,16 +200,31 @@ class StateManager:
             )
             raise
 
-    # === Portfolio State ===
+    # === Portfolio State (per-tenant) ===
+    #
+    # Multi-tenancy: portfolio/positions are namespaced by the owning user so tenants
+    # never share state. user_id=None keeps the legacy GLOBAL keys (state:portfolio /
+    # state:positions) for single-tenant/dev and backward compatibility.
 
-    async def get_portfolio_state(self) -> Dict[str, Any]:
-        """Get current portfolio state"""
-        return await self.get_all_hash("portfolio")
+    @staticmethod
+    def _hash_name(user_id: Optional[str], name: str) -> str:
+        """Logical hash name for get_all_hash/set_hash (they prefix 'state:')."""
+        return f"{user_id}:{name}" if user_id else name
 
-    async def update_portfolio(self, updates: Dict[str, Any]):
-        """Update portfolio state"""
+    @staticmethod
+    def _list_key(user_id: Optional[str], name: str) -> str:
+        """Full Redis key for a per-tenant list."""
+        return f"state:{user_id}:{name}" if user_id else f"state:{name}"
+
+    async def get_portfolio_state(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get current portfolio state for a tenant (or global when user_id is None)."""
+        return await self.get_all_hash(self._hash_name(user_id, "portfolio"))
+
+    async def update_portfolio(self, updates: Dict[str, Any], user_id: Optional[str] = None):
+        """Update a tenant's portfolio state."""
+        name = self._hash_name(user_id, "portfolio")
         for key, value in updates.items():
-            await self.set_hash("portfolio", key, value)
+            await self.set_hash(name, key, value)
 
     # Lua script for atomically removing a single position by its 'id' field
     # from the "state:positions" list. Runs entirely server-side under Redis's
@@ -240,20 +255,33 @@ class StateManager:
     return removed
     """
 
-    async def get_positions(self) -> List[Dict[str, Any]]:
-        """Get open positions"""
-        positions_json = await self.redis.lrange("state:positions", 0, -1)
+    async def get_positions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get a tenant's open positions (global when user_id is None)."""
+        positions_json = await self.redis.lrange(self._list_key(user_id, "positions"), 0, -1)
         return [json.loads(p) for p in positions_json]
 
-    async def add_position(self, position: Dict[str, Any]):
-        """Add new position
+    async def add_position(self, position: Dict[str, Any], user_id: Optional[str] = None):
+        """Add new position for a tenant.
 
         LPUSH is itself atomic, so a concurrent add and a concurrent
         remove_position (Lua, also atomic) can no longer clobber each other.
         """
-        await self.redis.lpush("state:positions", json.dumps(position, default=str))
+        await self.redis.lpush(self._list_key(user_id, "positions"), json.dumps(position, default=str))
 
-    async def remove_position(self, position_id: str) -> int:
+    async def replace_positions(self, positions: List[Dict[str, Any]], user_id: Optional[str] = None):
+        """Atomically replace a tenant's position list (DEL + RPUSH in one MULTI).
+
+        Used by the engine when it publishes a full snapshot, so a concurrent reader
+        never sees an empty list mid-rewrite (the previous delete-then-loop-lpush did).
+        """
+        key = self._list_key(user_id, "positions")
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.delete(key)
+        for pos in positions:
+            pipe.rpush(key, json.dumps(pos, default=str))
+        await pipe.execute()
+
+    async def remove_position(self, position_id: str, user_id: Optional[str] = None) -> int:
         """Remove a single position by id, atomically.
 
         Previously this read the whole list, filtered in Python, DEL'd the key,
@@ -268,7 +296,7 @@ class StateManager:
         unaffected (signature is otherwise unchanged).
         """
         removed = await self.redis.eval(
-            self._REMOVE_POSITION_LUA, 1, "state:positions", position_id
+            self._REMOVE_POSITION_LUA, 1, self._list_key(user_id, "positions"), position_id
         )
         return int(removed)
 
