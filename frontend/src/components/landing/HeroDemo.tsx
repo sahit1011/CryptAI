@@ -524,7 +524,7 @@ export function HeroDemo({ ghost = false }: { ghost?: boolean }) {
         <div
             className={`grid grid-cols-2 grid-rows-2 ${
                 ghost
-                    ? "h-[620px] gap-5 bg-transparent"
+                    ? "h-[712px] gap-6 bg-transparent"
                     : "h-[440px] gap-px bg-border md:h-[460px]"
             }`}
         >
