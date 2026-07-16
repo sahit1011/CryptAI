@@ -160,7 +160,7 @@ export function HeroSection() {
         <section className="relative overflow-hidden pt-36 pb-24 md:pt-44 md:pb-32">
             <BackgroundGrid />
 
-            <div className="container relative z-10 mx-auto grid max-w-6xl items-center gap-14 px-4 md:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
+            <div className="container relative z-10 mx-auto grid max-w-6xl items-center gap-14 px-4 md:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:gap-12">
                 {/* ---- Claim ---------------------------------------------------- */}
                 <motion.div variants={container} initial="hidden" animate="visible">
                     <motion.p variants={item} className="eyebrow mb-5 text-foreground">
