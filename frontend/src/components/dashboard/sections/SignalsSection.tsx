@@ -29,6 +29,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/currency";
+import { payloadToSignal } from "@/lib/signals";
 
 const MODES: { id: TradingMode; label: string; icon: typeof Bot; hint: string }[] = [
     { id: "off", label: "Off", icon: Power, hint: "Ignore setups — no trading." },
@@ -56,7 +57,7 @@ export function SignalsSection() {
         (async () => {
             try {
                 const { setups } = await getSetups();
-                const mapped = setups.map(toSignal).filter(Boolean) as Signal[];
+                const mapped = setups.map(payloadToSignal).filter(Boolean) as Signal[];
                 if (mapped.length) setSignals(mapped);
             } catch {
                 /* WS will still deliver live setups */
@@ -277,30 +278,4 @@ function Level({
             </p>
         </div>
     );
-}
-
-/** Map a backend /api/setups payload to a Signal. */
-function toSignal(raw: Record<string, unknown>): Signal | null {
-    const p = ((raw as { payload?: Record<string, unknown> }).payload ?? raw) as Record<string, unknown>;
-    if (!p.symbol) return null;
-    const tps = (Array.isArray(p.take_profit_levels) ? p.take_profit_levels : [])
-        .map((tp) => (typeof tp === "object" && tp !== null ? Number((tp as Record<string, unknown>).price) : Number(tp)))
-        .filter((n) => Number.isFinite(n));
-    const entry = Number(p.entry_price) || 0;
-    const stopLoss = Number(p.stop_loss) || 0;
-    return {
-        id: `${p.symbol}-${p.direction}-${entry}-${stopLoss}`,
-        symbol: String(p.symbol),
-        direction: String(p.direction) === "SHORT" ? "SHORT" : "LONG",
-        entry,
-        stopLoss,
-        takeProfits: tps,
-        confidence: p.confidence_score != null ? Number(p.confidence_score) : undefined,
-        riskReward: p.risk_reward != null ? Number(p.risk_reward) : undefined,
-        regime: p.market_regime ? String(p.market_regime) : undefined,
-        strategy: p.strategy_type ? String(p.strategy_type) : undefined,
-        reasoning: typeof p.reasoning === "string" ? p.reasoning : undefined,
-        positionSize: p.recommended_position_size != null ? Number(p.recommended_position_size) : undefined,
-        ts: new Date().toISOString(),
-    };
 }
