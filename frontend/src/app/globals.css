@@ -515,6 +515,18 @@
     color: transparent;
   }
 
+  /*
+   * .type-cursor — terminal block cursor for the typed hero headline.
+   * Hard on/off blink (steps, not fade) like a real terminal.
+   */
+  .type-cursor {
+    animation: cursor-blink 1.06s steps(1, end) infinite;
+  }
+  @keyframes cursor-blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+  }
+
   /* Brand icon chip — small rounded crimson-tinted square for feature icons. */
   .chip-brand {
     display: inline-flex;
