@@ -511,11 +511,12 @@ function PortfolioQuad({ reduced }: { reduced: boolean }) {
 export function HeroDemo({ ghost = false }: { ghost?: boolean }) {
     const reduced = useReducedMotion() ?? false;
 
-    const cell = ghost ? "overflow-hidden bg-surface/45" : "overflow-hidden bg-surface";
+    // Ghost hairlines are nearly invisible — quads separate by spacing, not lines.
+    const cell = ghost ? "overflow-hidden bg-surface/25" : "overflow-hidden bg-surface";
     return (
         <div
-            className={`grid h-[440px] grid-cols-2 grid-rows-2 gap-px md:h-[460px] ${
-                ghost ? "bg-border/50" : "bg-border"
+            className={`grid h-[440px] grid-cols-2 grid-rows-2 md:h-[460px] ${
+                ghost ? "gap-3 bg-transparent" : "gap-px bg-border"
             }`}
         >
             <div className={cell}><ChartQuad reduced={reduced} /></div>

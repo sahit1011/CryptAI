@@ -141,12 +141,13 @@ export function HeroSection() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 1.6, delay: 0.5 }}
-                className="pointer-events-none absolute inset-y-0 right-0 z-0 hidden w-[60%] select-none lg:block"
+                className="pointer-events-none absolute inset-y-0 right-0 z-0 hidden w-[68%] select-none lg:block"
                 style={{
                     perspective: "1800px",
                     // Dissolve toward the claim — the demo has no edge of its own.
-                    maskImage: "linear-gradient(to left, black 45%, transparent 97%)",
-                    WebkitMaskImage: "linear-gradient(to left, black 45%, transparent 97%)",
+                    // A longer solid zone keeps the right side confidently present.
+                    maskImage: "linear-gradient(to left, black 52%, transparent 88%)",
+                    WebkitMaskImage: "linear-gradient(to left, black 52%, transparent 88%)",
                 }}
             >
                 {/* Second mask feathers top/bottom so no card silhouette survives. */}
@@ -160,10 +161,10 @@ export function HeroSection() {
                     }}
                 >
                     <div
-                        className="absolute right-[3%] top-1/2 w-[720px] max-w-none opacity-70"
+                        className="absolute right-[2%] top-1/2 w-[860px] max-w-none opacity-[0.88]"
                         style={{
                             transform:
-                                "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg)",
+                                "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg) scale(1.04)",
                             transformStyle: "preserve-3d",
                         }}
                     >
