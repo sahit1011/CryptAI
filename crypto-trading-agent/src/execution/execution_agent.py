@@ -442,7 +442,7 @@ class ExecutionAgent(BaseAgent):
                         severity="error",
                         metadata={"error": str(e)}
                     )
-                except:
+                except Exception:
                     pass
                 await asyncio.sleep(5)  # Continue even on error
 
@@ -1343,7 +1343,7 @@ class ExecutionAgent(BaseAgent):
                         severity="error",
                         metadata={"error": str(e)}
                     )
-                except:
+                except Exception:
                     pass
                 await asyncio.sleep(5)  # Continue even on error
 

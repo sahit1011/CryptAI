@@ -38,6 +38,28 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def _rate_limit(request, call_next):
+    """Per-caller rate limiting (sliding 60s window; user token if present, else IP).
+
+    Writes (POST/DELETE) have a tighter budget than reads. /health is exempt so
+    orchestrator probes never get throttled.
+    """
+    if request.url.path != "/health":
+        from fastapi.responses import JSONResponse
+        from src.utils.api_rate_limit import client_key, read_limiter, write_limiter
+        key = client_key(request.headers, request.client.host if request.client else "")
+        limiter = write_limiter if request.method in ("POST", "DELETE") else read_limiter
+        allowed, retry_after = limiter.allow(key)
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded — slow down."},
+                headers={"Retry-After": str(retry_after)},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _security_headers(request, call_next):
     """Baseline security headers on every response (clickjacking, MIME-sniffing, etc.)."""
     response = await call_next(request)
@@ -363,6 +385,10 @@ async def handle_agent_message(data: Dict[str, Any]):
 async def startup_event():
     logger.info("Starting up Antigravity API...")
 
+    # Error tracking (Sentry) — no-op unless SENTRY_DSN is set.
+    from src.utils.monitoring import init_monitoring
+    init_monitoring("api")
+
     # 1. Start Binance Client. Guarded + bounded: if the exchange is unreachable
     # (region block, outage, restricted network), the API must STILL start so the
     # Redis WS bridge, REST endpoints, and agent feed keep working — the market feed
@@ -399,6 +425,15 @@ async def startup_event():
             logger.error(f"Failed to initialize TradeHistoryManager: {e}")
 
         # Per-user exchange-key vault (needs VAULT_ENC_KEY; created lazily-safe).
+        # Fail LOUDLY at startup when the master key is missing: without it every
+        # connect-exchange attempt 500s at request time, which looks like a random
+        # outage instead of a config error.
+        if not os.getenv("VAULT_ENC_KEY", "").strip():
+            logger.critical(
+                "VAULT_ENC_KEY is NOT set — the exchange-key vault cannot encrypt/decrypt. "
+                "Users cannot connect exchanges until it is configured. Generate once: "
+                "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            )
         try:
             from src.security.credential_vault import CredentialVault
             credential_vault = await asyncio.to_thread(
@@ -472,6 +507,18 @@ async def websocket_endpoint(websocket: WebSocket):
             return
     elif SUPABASE_URL or API_AUTH_TOKEN:
         # Auth is configured but no token presented — reject.
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    # Cap concurrent sockets per caller (tenant, or client IP when unscoped) so one
+    # misbehaving client can't exhaust server connections.
+    from src.utils.api_rate_limit import WS_CONNECTIONS_PER_CLIENT
+    ws_key = user_id or (websocket.client.host if websocket.client else "unknown")
+    open_count = sum(
+        1 for ws, uid in manager.connections.items()
+        if (uid or (ws.client.host if ws.client else "unknown")) == ws_key
+    )
+    if open_count >= WS_CONNECTIONS_PER_CLIENT:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 

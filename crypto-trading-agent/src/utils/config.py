@@ -101,8 +101,9 @@ def load_config(env: str = None) -> Config:
         },
         "database": {
             "redis_url": os.getenv("REDIS_URL", "redis://localhost:6379"),
-            "postgres_url": os.getenv("POSTGRES_URL",
-                                      "postgresql://trader:secure_password_here@localhost:5432/trading_agent"),
+            # No credentialed default: POSTGRES_URL must be set explicitly. A hardcoded
+            # user:password fallback silently "worked" in dev and leaked into configs.
+            "postgres_url": os.getenv("POSTGRES_URL", "postgresql://localhost:5432/trading_agent"),
             "pinecone_api_key": os.getenv("PINECONE_API_KEY"),
             "pinecone_env": os.getenv("PINECONE_ENV"),
             **yaml_config.get("database", {})

@@ -503,7 +503,7 @@ class TechnicalIndicators:
                 return 'bearish'
             else:
                 return 'neutral'
-        except:
+        except Exception:
             return 'neutral'
 
     @staticmethod

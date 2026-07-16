@@ -247,6 +247,9 @@ class MultiUserTradingDaemon:
         if self.running:
             return
         plog.info("🚀 Starting Multi-User Trading Daemon", agent="daemon", phase="startup")
+        # Error tracking (Sentry) — no-op unless SENTRY_DSN is set.
+        from src.utils.monitoring import init_monitoring
+        init_monitoring("daemon")
         await self.initialize_infrastructure()
         await self.initialize_agents()
         self.initialize_multi_user()

@@ -258,28 +258,28 @@ Remember: Quality over quantity. It's better to skip a trade than force a low-qu
         sections.append("## Market Structure")
         try:
             sections.append(f"```json\n{json.dumps(analysis.get('market_structure', {}), indent=2, default=str)}\n```\n")
-        except:
+        except Exception:
             sections.append(f"```json\n{str(analysis.get('market_structure', {}))}\n```\n")
 
         # Key Levels
         sections.append("## Key Levels")
         try:
             sections.append(f"```json\n{json.dumps(analysis.get('key_levels', {}), indent=2, default=str)}\n```\n")
-        except:
+        except Exception:
             sections.append(f"```json\n{str(analysis.get('key_levels', {}))}\n```\n")
 
         # SMC Analysis
         sections.append("## Smart Money Concepts (SMC)")
         try:
             sections.append(f"```json\n{json.dumps(analysis.get('smc_summary', {}), indent=2, default=str)}\n```\n")
-        except:
+        except Exception:
             sections.append(f"```json\n{str(analysis.get('smc_summary', {}))}\n```\n")
 
         # ICT Analysis
         sections.append("## ICT Methodology")
         try:
             sections.append(f"```json\n{json.dumps(analysis.get('ict_summary', {}), indent=2, default=str)}\n```\n")
-        except:
+        except Exception:
             sections.append(f"```json\n{str(analysis.get('ict_summary', {}))}\n```\n")
 
         # Patterns
@@ -287,7 +287,7 @@ Remember: Quality over quantity. It's better to skip a trade than force a low-qu
             sections.append("## Chart Patterns")
             try:
                 sections.append(f"```json\n{json.dumps(analysis.get('patterns', {}), indent=2, default=str)}\n```\n")
-            except:
+            except Exception:
                 sections.append(f"```json\n{str(analysis.get('patterns', {}))}\n```\n")
 
         # Entry Confirmation Analysis

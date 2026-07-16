@@ -333,7 +333,7 @@ MARKET REGIME: VOLATILE
             elif ema_9 < ema_21 < ema_50 < ema_200:
                 return 'bearish'
             return 'neutral'
-        except:
+        except Exception:
             return 'neutral'
 
     def _classify_volatility(self, atr_series: pd.Series) -> str:
@@ -650,7 +650,7 @@ CRITICAL REQUIREMENTS:
                 price_change = ((new_price - prev_price) / prev_price) * 100
                 if abs(price_change) > 1:
                     changes.append(f"Price moved {price_change:.2f}%")
-        except:
+        except Exception:
             pass
 
         # New SMC structures

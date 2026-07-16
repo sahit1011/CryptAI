@@ -48,6 +48,9 @@ pinecone-client==3.2.2
 # numpy>=2 this project installs. 1.5.x is NumPy-2 compatible (verified with the code).
 chromadb>=1.5.9,<2
 
+# Monitoring (activated by SENTRY_DSN; harmless otherwise)
+sentry-sdk>=2.0,<3
+
 # Auth & Security
 # PyJWT[crypto] pulls `cryptography` for ES256/RS256 JWKS verification of Supabase
 # access tokens (src/api/server.py). `cryptography` also backs the Fernet exchange-key

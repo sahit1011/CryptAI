@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 import hmac
 import hashlib
 import json
+import os
 import time
 from datetime import datetime
 from loguru import logger
@@ -130,9 +131,18 @@ class ExchangeClient(ABC):
         logger.info(f"{self.__class__.__name__} initialized (testnet={testnet})")
     
     async def _ensure_session(self):
-        """Ensure aiohttp session exists"""
+        """Ensure aiohttp session exists.
+
+        Bounded timeouts on EVERY exchange call: a hung order/balance request must fail
+        fast and surface as a retryable error instead of blocking the execution pipeline
+        indefinitely (orders were previously unbounded).
+        """
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(
+                total=float(os.getenv("EXCHANGE_HTTP_TIMEOUT", "15")),
+                connect=float(os.getenv("EXCHANGE_CONNECT_TIMEOUT", "5")),
+            )
+            self.session = aiohttp.ClientSession(timeout=timeout)
     
     async def close(self):
         """Close the client session"""

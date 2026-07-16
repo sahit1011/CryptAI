@@ -58,10 +58,10 @@ class MemoryAgent(BaseAgent):
             state_manager=state_manager
         )
         
-        # Initialize database URL (use PostgreSQL from Docker)
-        db_url = database_url or os.getenv(
-            "DATABASE_URL", 
-            "postgresql://trader:secure_password_here@localhost:5432/trading_agent"
+        # Database URL: explicit arg -> DATABASE_URL -> app-wide POSTGRES_URL.
+        # (No credentialed hardcoded fallback — see config.py.)
+        db_url = database_url or os.getenv("DATABASE_URL") or os.getenv(
+            "POSTGRES_URL", "postgresql://localhost:5432/trading_agent"
         )
         
         # Initialize Trade History Manager

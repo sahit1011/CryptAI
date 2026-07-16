@@ -99,16 +99,22 @@ class MarketAnalysisAgent(BaseAgent):
         # Initialize LLM clients. Anthropic client ONLY when a key is set — constructing
         # AsyncAnthropic(api_key=None) raises, which would crash the whole agent even
         # when OpenRouter alone is configured (the selection falls back to OpenRouter).
+        # All clients get a bounded timeout (config.llm.timeout, default 60s) — SDK
+        # defaults run to several minutes, and a hung LLM call stalls the whole cycle.
+        _llm_timeout = float(self.config.llm.timeout or 60)
         self.llm_client = None
         if self.config.llm.anthropic_api_key:
-            self.llm_client = AsyncAnthropic(api_key=self.config.llm.anthropic_api_key)
+            self.llm_client = AsyncAnthropic(
+                api_key=self.config.llm.anthropic_api_key, timeout=_llm_timeout
+            )
 
         # OpenRouter client for fallback (DeepSeek) - only initialize if key is available
         self.openrouter_client = None
         if self.config.llm.openrouter_api_key:
             self.openrouter_client = openai.OpenAI(
                 api_key=self.config.llm.openrouter_api_key,
-                base_url="https://openrouter.ai/api/v1"
+                base_url="https://openrouter.ai/api/v1",
+                timeout=_llm_timeout,
             )
 
         # Groq client for final fallback
@@ -116,7 +122,9 @@ class MarketAnalysisAgent(BaseAgent):
         if self.config.llm.groq_api_key:
             try:
                 from groq import Groq
-                self.groq_client = Groq(api_key=self.config.llm.groq_api_key)
+                self.groq_client = Groq(
+                    api_key=self.config.llm.groq_api_key, timeout=_llm_timeout
+                )
             except ImportError:
                 logger.warning("Groq package not installed, skipping Groq client initialization")
 
@@ -473,7 +481,7 @@ class MarketAnalysisAgent(BaseAgent):
                     def estimate_section_tokens(data):
                         try:
                             return int(len(json.dumps(data, cls=SafeEncoder)) * 0.25)
-                        except:
+                        except Exception:
                             return 0
                     
                     # Log each section size

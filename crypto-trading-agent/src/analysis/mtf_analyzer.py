@@ -145,7 +145,7 @@ class MultiTimeframeAnalyzer:
             elif ema_9 < ema_21 < ema_50 < ema_200:
                 return 'bearish'
             return 'neutral'
-        except:
+        except Exception:
             return 'neutral'
 
     def _get_price_trend(self, df: pd.DataFrame) -> str:
@@ -191,7 +191,7 @@ class MultiTimeframeAnalyzer:
             elif histogram < 0:
                 return 'bearish'
             return 'neutral'
-        except:
+        except Exception:
             return 'neutral'
 
     def _get_volume_trend(self, df: pd.DataFrame) -> str:
@@ -221,7 +221,7 @@ class MultiTimeframeAnalyzer:
             elif rsi < 50:
                 return 'bearish'
             return 'neutral'
-        except:
+        except Exception:
             return 'neutral'
 
     def _calculate_trend_score(

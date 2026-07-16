@@ -63,12 +63,16 @@ class StrategyGenerationAgent(BaseAgent):
 
         # Initialize LLM clients (OpenRouter primary, Groq fallback, OpenAI final fallback)
         # CRITICAL FIX: Use sync OpenAI client for OpenRouter (AsyncOpenAI doesn't work with OpenRouter)
+        # Bounded timeout on every LLM client (config.llm.timeout, default 60s) — SDK
+        # defaults run to several minutes and a hung call stalls the cycle.
+        _llm_timeout = float(self.config.llm.timeout or 60)
         self.openrouter_client = None
         if self.config.llm.openrouter_api_key:
             from openai import OpenAI  # Import sync client
             self.openrouter_client = OpenAI(
                 api_key=self.config.llm.openrouter_api_key,
-                base_url="https://openrouter.ai/api/v1"
+                base_url="https://openrouter.ai/api/v1",
+                timeout=_llm_timeout,
             )
 
         # Groq client for fallback
@@ -76,14 +80,14 @@ class StrategyGenerationAgent(BaseAgent):
         if self.config.llm.groq_api_key:
             try:
                 from groq import Groq
-                self.groq_client = Groq(api_key=self.config.llm.groq_api_key)
+                self.groq_client = Groq(api_key=self.config.llm.groq_api_key, timeout=_llm_timeout)
             except ImportError:
                 plog.warning("Groq package not installed, skipping Groq client initialization", agent="strategy_agent", phase="setup")
 
         # OpenAI client for final fallback
         self.llm_client = None
         if self.config.llm.openai_api_key:
-            self.llm_client = AsyncOpenAI(api_key=self.config.llm.openai_api_key)
+            self.llm_client = AsyncOpenAI(api_key=self.config.llm.openai_api_key, timeout=_llm_timeout)
 
         # Log LLM configuration.
         # This reflects the ACTUAL decision-path chain in _call_llm_strategy_creator:
@@ -573,7 +577,9 @@ class StrategyGenerationAgent(BaseAgent):
             if api_key and len(api_key) >= 20:
                 try:
                     from anthropic import AsyncAnthropic
-                    self.claude_client = AsyncAnthropic(api_key=api_key)
+                    self.claude_client = AsyncAnthropic(
+                        api_key=api_key, timeout=float(self.config.llm.timeout or 60)
+                    )
                     plog.debug(f"Claude client initialized successfully", agent="strategy_agent", phase="setup")
                 except Exception as e:
                     plog.warning(f"Failed to initialize Claude client: {e}", agent="strategy_agent", phase="setup")
