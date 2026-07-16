@@ -93,8 +93,9 @@ export function OverviewSection() {
                 iconColor="bg-accent-muted text-accent-300"
             />
 
-            {/* Stats Grid — token surfaces, mono numbers, semantic P&L only */}
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {/* KPI band — one bordered strip with hairline dividers (mirrors the
+                landing stats band), mono numbers, semantic P&L only */}
+            <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2 lg:grid-cols-4">
                 {/* Portfolio Value */}
                 <StatCard
                     label="Portfolio Value"
@@ -339,9 +340,10 @@ export function OverviewSection() {
 }
 
 /**
- * A single overview KPI tile — token-based glass surface with an emerald icon
- * chip, a faint icon watermark, and an emerald hover glow. Values are supplied
- * by the caller as mono <Value>/<PnL> so numbers stay honest + tabular.
+ * A single overview KPI cell inside the bordered band — quiet surface, small
+ * caps label, mono value. No icon chips, watermarks, or glow hovers: the
+ * numbers are the interface. (icon/watermark props are accepted for caller
+ * compatibility but intentionally unrendered.)
  */
 function StatCard({
     label,
@@ -350,26 +352,18 @@ function StatCard({
     children,
 }: {
     label: string;
-    icon: React.ReactNode;
-    watermark: React.ReactNode;
+    icon?: React.ReactNode;
+    watermark?: React.ReactNode;
     children: React.ReactNode;
 }) {
+    void icon;
+    void watermark;
     return (
-        <Card className="group relative overflow-hidden py-0 transition-all duration-300 hover:border-accent/40 hover:shadow-[0_0_30px_var(--accent-muted)]">
-            <div className="pointer-events-none absolute -right-2 -top-2 text-accent opacity-[0.04] transition-opacity duration-300 group-hover:opacity-[0.08]">
-                {watermark}
-            </div>
-            <div className="relative z-10 space-y-3 p-5">
-                <div className="flex items-center justify-between">
-                    <span className="label-md">{label}</span>
-                    <span className="flex size-8 items-center justify-center rounded-lg bg-accent-muted text-accent-300">
-                        {icon}
-                    </span>
-                </div>
-                {/* flex-col so the value and its hint stack (they render as inline
-                    spans, on which vertical space-y margins have no effect). */}
-                <div className="flex flex-col items-start gap-1">{children}</div>
-            </div>
-        </Card>
+        <div className="bg-surface p-5 transition-colors duration-150 hover:bg-elevated/60">
+            <span className="label-md">{label}</span>
+            {/* flex-col so the value and its hint stack (they render as inline
+                spans, on which vertical space-y margins have no effect). */}
+            <div className="mt-2.5 flex flex-col items-start gap-1">{children}</div>
+        </div>
     );
 }

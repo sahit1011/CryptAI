@@ -55,7 +55,7 @@ export function SignalsFeed({ limit }: { limit?: number }) {
         // so an empty feed is never mysterious.
         const paused = engineOn === false;
         return (
-            <Card className="py-10">
+            <Card className="py-4">
                 <EmptyState
                     icon={<Radar className="size-6" />}
                     title={paused ? "AI engine is paused" : "Waiting for AI setups"}

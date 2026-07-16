@@ -22,24 +22,17 @@ export function SectionHeader({
     className,
 }: SectionHeaderProps) {
     return (
-        <div className={cn("flex items-start justify-between gap-4 mb-8", className)}>
-            <div className="flex items-start gap-4">
-                {Icon && (
-                    <div
-                        className={cn(
-                            "flex size-11 shrink-0 items-center justify-center rounded-xl border border-border",
-                            iconColor,
-                        )}
-                    >
-                        <Icon className="size-5" />
-                    </div>
+        // Compact working header — an app section is a workspace, not a landing
+        // hero. No icon chip; icon/iconColor stay in the props for caller
+        // compatibility but are intentionally unrendered (void below).
+        <div className={cn("flex items-end justify-between gap-4 mb-6", className)}>
+            {void Icon}
+            {void iconColor}
+            <div>
+                <h1 className="heading-2 text-foreground">{title}</h1>
+                {description && (
+                    <p className="body-sm mt-1 max-w-2xl">{description}</p>
                 )}
-                <div>
-                    <h1 className="display-3 text-foreground mb-2">{title}</h1>
-                    {description && (
-                        <p className="body-md text-muted-foreground max-w-2xl">{description}</p>
-                    )}
-                </div>
             </div>
 
             {actions && <div className="flex shrink-0 items-center gap-3">{actions}</div>}

@@ -29,7 +29,7 @@ function StateShell({
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center gap-2 px-6 py-10 text-center",
+        "flex flex-col items-center justify-center gap-2 px-6 py-7 text-center",
         className,
       )}
       {...props}
@@ -117,7 +117,7 @@ function LoadingState({
     <div
       data-slot="loading-state"
       className={cn(
-        "flex flex-col items-center justify-center gap-2 px-6 py-10 text-center",
+        "flex flex-col items-center justify-center gap-2 px-6 py-7 text-center",
         className,
       )}
       {...props}

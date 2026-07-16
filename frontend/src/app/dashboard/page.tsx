@@ -1,8 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { DashboardTabs, DashboardSection } from "@/components/dashboard/DashboardTabs";
+import { useSearchParams } from "next/navigation";
 import { OverviewSection } from "@/components/dashboard/sections/OverviewSection";
 import { PortfolioSection } from "@/components/dashboard/sections/PortfolioSection";
 import { MarketsSection } from "@/components/dashboard/sections/MarketsSection";
@@ -10,6 +9,10 @@ import { AgentsSection } from "@/components/dashboard/sections/AgentsSection";
 import { SettingsSection } from "@/components/dashboard/sections/SettingsSection";
 import { useMarketData } from "@/hooks/useMarketData";
 import { motion, AnimatePresence } from "framer-motion";
+
+// Single source of nav truth is the Sidebar (desktop rail + mobile drawer);
+// the section itself is URL-driven so views stay shareable/bookmarkable.
+export type DashboardSection = "overview" | "portfolio" | "markets" | "agents" | "settings";
 
 const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "agents", "settings"];
 
@@ -23,25 +26,14 @@ function DashboardContent() {
     // Initialize WebSocket connection
     useMarketData();
 
-    const router = useRouter();
     const searchParams = useSearchParams();
 
-    // Section is driven by the URL (?section=), so the sidebar links and the top tabs
-    // stay in sync and each section is directly shareable/bookmarkable.
     const param = searchParams.get("section") as DashboardSection | null;
     const activeSection: DashboardSection =
         param && SECTIONS.includes(param) ? param : "overview";
 
-    const setActiveSection = (section: DashboardSection) => {
-        router.replace(section === "overview" ? "/dashboard" : `/dashboard?section=${section}`, {
-            scroll: false,
-        });
-    };
-
     return (
         <div className="min-h-screen">
-            <DashboardTabs activeSection={activeSection} onSectionChange={setActiveSection} />
-
             <div className="mx-auto max-w-7xl px-6 py-8">
                 <AnimatePresence mode="wait">
                     <motion.div
