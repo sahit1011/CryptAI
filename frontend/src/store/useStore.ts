@@ -82,7 +82,11 @@ interface AppState {
     addSignal: (signal: Signal) => void
     setSignals: (signals: Signal[]) => void
 
-    // USD -> INR display rate (values are stored in USD; shown in ₹). Live via /api/fx.
+    // Display currency preference (values are stored in USD; shown per this choice).
+    // Default USD; user toggles to INR in the dashboard. Persisted.
+    currency: "USD" | "INR"
+    setCurrency: (c: "USD" | "INR") => void
+    // USD -> INR rate, used only when currency === "INR". Live via /api/fx.
     inrRate: number
     setInrRate: (rate: number) => void
 
@@ -158,6 +162,8 @@ export const useStore = create<AppState>()(
             })),
             setSignals: (signals) => set({ signals }),
 
+            currency: "USD",
+            setCurrency: (c) => set({ currency: c }),
             inrRate: 87.5,
             setInrRate: (rate) => set({ inrRate: rate }),
 
@@ -170,6 +176,7 @@ export const useStore = create<AppState>()(
             partialize: (state) => ({
                 portfolio: state.portfolio,
                 tradeHistory: state.tradeHistory,
+                currency: state.currency,   // remember the user's $/₹ choice
                 // Don't persist activeTrades as they come from backend
                 // Don't persist logs as they're real-time only
             })

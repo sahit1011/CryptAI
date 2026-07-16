@@ -214,10 +214,14 @@ export function ChartWidget() {
                         hour12: false,
                         timeZone: "Asia/Kolkata",
                     }),
-                // Candle data is USD; show the axis + crosshair in ₹ (India-first).
+                // Candle data is USD; show the axis + crosshair in the user's currency.
                 priceFormatter: (price: number) => {
-                    const inr = price * (useStore.getState().inrRate || 87.5)
-                    return "₹" + inr.toLocaleString("en-IN", { maximumFractionDigits: inr >= 1000 ? 0 : 2 })
+                    const { currency, inrRate } = useStore.getState()
+                    if (currency === "INR") {
+                        const inr = price * (inrRate || 87.5)
+                        return "₹" + inr.toLocaleString("en-IN", { maximumFractionDigits: inr >= 1000 ? 0 : 2 })
+                    }
+                    return "$" + price.toLocaleString("en-US", { maximumFractionDigits: price >= 1000 ? 0 : 2 })
                 },
             },
             crosshair: {

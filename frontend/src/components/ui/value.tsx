@@ -4,7 +4,7 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 import { safeNum } from "@/lib/utils"
-import { formatInr } from "@/lib/currency"
+import { formatMoney } from "@/lib/currency"
 import { useStore } from "@/store/useStore"
 
 /*
@@ -60,6 +60,7 @@ function Value({
   ...props
 }: ValueProps) {
   const rate = useStore((s) => s.inrRate)
+  const currency = useStore((s) => s.currency)
   let body: React.ReactNode = children
   let effectivePrefix = prefix
   if (value !== undefined) {
@@ -67,7 +68,7 @@ function Value({
     if (!Number.isFinite(n)) {
       body = placeholder
     } else if (money) {
-      body = formatInr(n, rate, decimals ?? 2)   // ₹ from the formatter
+      body = formatMoney(n, currency, rate, decimals ?? 2)   // $ or ₹ per preference
       effectivePrefix = undefined
     } else {
       body = formatNumber(n, decimals)
@@ -110,6 +111,7 @@ function PnL({
   ...props
 }: PnLProps) {
   const rate = useStore((s) => s.inrRate)
+  const currency = useStore((s) => s.currency)
   const n = safeNum(value, NaN)
   const finite = Number.isFinite(n)
   const positive = finite && n > 0
@@ -133,9 +135,9 @@ function PnL({
         : "bg-profit-muted"
 
   // toLocaleString already carries the minus sign; we only prepend a "+".
-  // In money mode the value is USD -> rendered as ₹ (percent is mutually exclusive).
+  // In money mode the value is USD -> rendered in the chosen currency (percent excl.).
   const numberPart = money && !percent
-    ? formatInr(n, rate, decimals)
+    ? formatMoney(n, currency, rate, decimals)
     : `${prefix ?? ""}${n.toLocaleString("en-US", {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,

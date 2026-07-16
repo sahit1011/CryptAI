@@ -33,7 +33,7 @@ export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
     // Real recent trades from the store (closed history first, then open
     // positions). Never fabricated — if the store is empty we show an honest
     // "no activity" line in the notifications popover.
-    const { tradeHistory, activeTrades } = useStore()
+    const { tradeHistory, activeTrades, currency, setCurrency } = useStore()
     const { status } = useMarketStore()
 
     const recentTrades = [...tradeHistory, ...activeTrades].slice(0, 5).map((trade) => ({
@@ -95,6 +95,26 @@ export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
             </div>
 
             <div className="flex items-center gap-3">
+                {/* Currency toggle — values are USD internally; user picks display ($/₹) */}
+                <div className="flex items-center rounded-md border border-border bg-elevated/40 p-0.5" role="group" aria-label="Display currency">
+                    {(["USD", "INR"] as const).map((c) => (
+                        <button
+                            key={c}
+                            onClick={() => setCurrency(c)}
+                            aria-pressed={currency === c}
+                            className={
+                                "num size-6 rounded text-sm font-semibold leading-none transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 " +
+                                (currency === c
+                                    ? "bg-accent-muted text-accent"
+                                    : "text-subtle-foreground hover:text-foreground")
+                            }
+                            title={c === "USD" ? "Show values in US Dollars" : "Show values in Indian Rupees"}
+                        >
+                            {c === "USD" ? "$" : "₹"}
+                        </button>
+                    ))}
+                </div>
+
                 {/* Live feed status — driven by the real WS connection */}
                 <ConnectionStatus status={status} className="hidden md:inline-flex" />
 

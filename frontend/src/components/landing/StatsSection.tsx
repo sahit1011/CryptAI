@@ -24,7 +24,7 @@ interface Stat {
 }
 
 const stats: Stat[] = [
-    { target: 2000, decimals: 0, prefix: "₹", suffix: " Cr", label: "Simulated volume routed" },
+    { target: 2.4, decimals: 1, prefix: "$", suffix: "B", label: "Simulated volume routed" },
     { target: 12, decimals: 0, suffix: "+", label: "Specialized agent types" },
     { target: 99.99, decimals: 2, suffix: "%", label: "Target uptime" },
     { target: 50, decimals: 0, prefix: "<", suffix: "ms", label: "Signal-to-order latency" },
