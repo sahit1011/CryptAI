@@ -93,6 +93,8 @@
   /* ---- Typography ------------------------------------------------------ */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* Display serif (Instrument Serif italic) — hero-scale accent lines only. */
+  --font-serif: var(--font-instrument-serif), ui-serif, Georgia, serif;
 
   /* ---- Radius ----------------------------------------------------------
    * Strict two-step system (Vercel-style): 4px controls, 6px cards. xl/2xl

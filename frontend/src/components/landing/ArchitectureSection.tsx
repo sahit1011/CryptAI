@@ -87,14 +87,6 @@ export function ArchitectureSection() {
                             </div>
                         ))}
                     </div>
-
-                    {/* Footnote — the honest detail reviewers notice. */}
-                    <div className="border-t border-border bg-elevated/40 px-6 py-3">
-                        <p className="num text-xs text-subtle-foreground">
-                            analysis runs once per cycle and fans out to every user — only risk
-                            and execution are per-account
-                        </p>
-                    </div>
                 </motion.div>
             </div>
         </section>

@@ -1,6 +1,12 @@
 "use client";
 
-import { motion, useReducedMotion } from "framer-motion";
+import {
+    motion,
+    useMotionValue,
+    useReducedMotion,
+    useSpring,
+    useTransform,
+} from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -28,14 +34,16 @@ const LINE2 = "One disciplined trader.";
 const HEADLINE = `${LINE1}\n${LINE2}`;
 
 /*
- * TypedHeadline — the claim types itself once per page load, terminal-style.
- * Craft constraints that keep it from reading as a gimmick:
- *  - runs ONCE (no loop), fast enough not to hold the page hostage (~1.6s)
- *  - an invisible copy of the full text reserves the exact space → zero layout
- *    shift while typing
- *  - the block cursor blinks during typing and quietly disappears after
+ * TypedHeadline — the claim types itself once per page load, terminal-style:
+ * line one (serif italic), a 3s hold on the blinking cursor, then line two.
+ *  - runs ONCE (no loop); an invisible copy of the full text reserves the
+ *    exact space → zero layout shift while typing
+ *  - the block cursor blinks during typing/hold and quietly disappears after
  *  - reduced-motion users (and crawlers, via aria-label) get the text instantly
  */
+const TYPE_SPEED_MS = 75;
+const LINE_HOLD_MS = 3000;
+
 function TypedHeadline() {
     const reduced = useReducedMotion();
     const [count, setCount] = useState(0);
@@ -52,12 +60,33 @@ function TypedHeadline() {
             return () => clearTimeout(t);
         }
         let i = 0;
-        const id = setInterval(() => {
+        let interval: ReturnType<typeof setInterval> | null = null;
+        let hold: ReturnType<typeof setTimeout> | null = null;
+
+        const typeLine2 = () => {
+            i += 1; // consume the newline
+            setCount(i);
+            interval = setInterval(() => {
+                i += 1;
+                setCount(i);
+                if (i >= HEADLINE.length && interval) clearInterval(interval);
+            }, TYPE_SPEED_MS);
+        };
+
+        interval = setInterval(() => {
             i += 1;
             setCount(i);
-            if (i >= HEADLINE.length) clearInterval(id);
-        }, 40);
-        return () => clearInterval(id);
+            if (i === LINE1.length && interval) {
+                // Line one finished — hold on the blinking cursor, then continue.
+                clearInterval(interval);
+                hold = setTimeout(typeLine2, LINE_HOLD_MS);
+            }
+        }, TYPE_SPEED_MS);
+
+        return () => {
+            if (interval) clearInterval(interval);
+            if (hold) clearTimeout(hold);
+        };
     }, [reduced]);
 
     // Let the cursor blink twice after finishing, then remove it.
@@ -70,18 +99,21 @@ function TypedHeadline() {
     const typed = HEADLINE.slice(0, count);
     const [t1, t2 = ""] = typed.split("\n");
     const cursorOnLine2 = typed.includes("\n");
+    // Line one is the editorial accent: Instrument Serif italic, optically
+    // matched to the sans line with a slight size bump and relaxed tracking.
+    const line1Class = "font-serif italic tracking-[-0.01em] text-[1.05em]";
 
     return (
         <h1 className="display-1 mb-6 text-foreground" aria-label={`${LINE1} ${LINE2}`}>
             <span aria-hidden="true" className="relative block">
                 {/* Invisible full headline reserves the final box. */}
                 <span className="invisible block">
-                    {LINE1}
+                    <span className={line1Class}>{LINE1}</span>
                     <br />
                     {LINE2}
                 </span>
                 <span className="absolute inset-0">
-                    {t1}
+                    <span className={line1Class}>{t1}</span>
                     {!cursorOnLine2 && !cursorGone && <Cursor />}
                     <br />
                     {t2}
@@ -99,6 +131,29 @@ function Cursor() {
 }
 
 export function HeroSection() {
+    const reduced = useReducedMotion();
+
+    // Hover tilt physics for the chart panel — springs give it weight, and the
+    // angle stays modest (±6°) so it reads as depth, not a gimmick.
+    const mx = useMotionValue(0);
+    const my = useMotionValue(0);
+    const sx = useSpring(mx, { stiffness: 140, damping: 18 });
+    const sy = useSpring(my, { stiffness: 140, damping: 18 });
+    const rotateX = useTransform(sy, [-0.5, 0.5], [6, -6]);
+    const rotateY = useTransform(sx, [-0.5, 0.5], [-6, 6]);
+
+    function handleTilt({ currentTarget, clientX, clientY }: React.MouseEvent) {
+        if (reduced) return;
+        const { left, top, width, height } = currentTarget.getBoundingClientRect();
+        mx.set((clientX - left) / width - 0.5);
+        my.set((clientY - top) / height - 0.5);
+    }
+
+    function resetTilt() {
+        mx.set(0);
+        my.set(0);
+    }
+
     return (
         <section className="relative overflow-hidden pt-36 pb-24 md:pt-44 md:pb-32">
             <BackgroundGrid />
@@ -138,36 +193,24 @@ export function HeroSection() {
                         </Link>
                     </motion.div>
 
-                    {/* Facts, not badge clichés — set in mono like an order ticket. */}
-                    <motion.p variants={item} className="num mt-10 text-xs text-subtle-foreground">
-                        BTC · ETH · XAUT&ensp;/&ensp;analysis every cycle&ensp;/&ensp;testnet-gated
-                        execution&ensp;/&ensp;non-custodial keys
-                    </motion.p>
                 </motion.div>
 
-                {/* ---- Pipeline panel ------------------------------------------- */}
+                {/* ---- Chart panel (hover tilt) --------------------------------- */}
                 <motion.div
                     initial={{ opacity: 0, y: 14 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.6, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
                     className="relative"
+                    style={{ perspective: 1000 }}
+                    onMouseMove={handleTilt}
+                    onMouseLeave={resetTilt}
                 >
-                    <div className="overflow-hidden rounded-xl border border-border bg-surface">
-                        {/* Panel header */}
-                        <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-                            <div className="flex items-center gap-2">
-                                <span className="size-1.5 rounded-full bg-accent animate-pulse-subtle" />
-                                <span className="num text-xs text-muted-foreground">
-                                    cryptai · markets
-                                </span>
-                            </div>
-                            <span className="num text-[10px] uppercase tracking-wider text-subtle-foreground">
-                                Illustrative
-                            </span>
-                        </div>
-
+                    <motion.div
+                        style={{ rotateX, rotateY }}
+                        className="overflow-hidden rounded-xl border border-border bg-surface"
+                    >
                         {/* Price header + timeframes */}
-                        <div className="flex items-center justify-between px-4 pt-3.5">
+                        <div className="flex items-center justify-between px-4 pt-4">
                             <div>
                                 <div className="text-[10px] font-medium uppercase tracking-wider text-subtle-foreground">
                                     BTC/USD
@@ -304,7 +347,7 @@ export function HeroSection() {
                                 </div>
                             </motion.div>
                         </div>
-                    </div>
+                    </motion.div>
 
                     {/* Single quiet accent: a hairline crimson rule under the panel. */}
                     <div className="mx-auto mt-px h-px w-2/3 bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
