@@ -128,7 +128,7 @@ function Cursor() {
 
 export function HeroSection() {
     return (
-        <section className="relative overflow-hidden pt-36 pb-24 md:pt-44 md:pb-28">
+        <section className="relative overflow-hidden pt-36 pb-32 md:pt-44 md:pb-40">
             <BackgroundGrid />
 
             {/* ---- Ambient product demo — a 3D-tilted background layer ----------
@@ -155,13 +155,13 @@ export function HeroSection() {
                     className="absolute inset-0"
                     style={{
                         maskImage:
-                            "linear-gradient(to bottom, transparent 2%, black 20%, black 90%, transparent 100%)",
+                            "linear-gradient(to bottom, transparent 2%, black 20%, black 94%, transparent 100%)",
                         WebkitMaskImage:
-                            "linear-gradient(to bottom, transparent 2%, black 20%, black 90%, transparent 100%)",
+                            "linear-gradient(to bottom, transparent 2%, black 20%, black 94%, transparent 100%)",
                     }}
                 >
                     <div
-                        className="absolute right-0 top-[64%] w-[1012px] max-w-none opacity-[0.88]"
+                        className="absolute right-0 top-[68%] w-[1012px] max-w-none opacity-[0.88]"
                         style={{
                             transform:
                                 "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg) scale(1.05)",
