@@ -34,7 +34,7 @@ const features = [
 
 export function FeaturesSection() {
     return (
-        <section id="features" className="relative py-24 md:py-32">
+        <section id="features" className="relative pt-14 pb-24 md:pt-16 md:pb-32">
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
                 <div className="mb-12 max-w-2xl">
                     <span className="eyebrow text-accent-300">Why CryptAI</span>

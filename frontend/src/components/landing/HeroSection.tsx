@@ -128,7 +128,7 @@ function Cursor() {
 
 export function HeroSection() {
     return (
-        <section className="relative overflow-hidden pt-36 pb-24 md:pt-44 md:pb-32">
+        <section className="relative overflow-hidden pt-36 pb-14 md:pt-44 md:pb-16">
             <BackgroundGrid />
 
             {/* ---- Ambient product demo — a 3D-tilted background layer ----------
@@ -161,10 +161,10 @@ export function HeroSection() {
                     }}
                 >
                     <div
-                        className="absolute right-[2%] top-1/2 w-[860px] max-w-none opacity-[0.88]"
+                        className="absolute right-[2%] top-[60%] w-[960px] max-w-none opacity-[0.88]"
                         style={{
                             transform:
-                                "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg) scale(1.04)",
+                                "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg) scale(1.05)",
                             transformStyle: "preserve-3d",
                         }}
                     >
