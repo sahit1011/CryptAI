@@ -21,50 +21,38 @@ export function CTASection() {
 
             <div className="container relative z-10 mx-auto px-4 md:px-6">
                 <motion.div
-                    initial={{ opacity: 0, y: 24 }}
+                    initial={{ opacity: 0, y: 16 }}
                     whileInView={{ opacity: 1, y: 0 }}
                     viewport={{ once: true, margin: "-80px" }}
                     transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                    className="glass-panel mx-auto max-w-3xl px-6 py-14 text-center md:px-14 md:py-16"
+                    className="mx-auto max-w-3xl rounded-xl border border-border bg-surface px-6 py-14 md:px-14 md:py-16"
                 >
-                    <span className="label-md text-accent-300">Get started</span>
+                    <span className="eyebrow text-accent-300">Get started</span>
 
-                    <h2 className="display-3 mt-4 text-balance">
-                        Put your strategy on{" "}
-                        <span className="text-gradient-brand animate-shine bg-[length:200%_auto]">
-                            autopilot
-                        </span>
+                    <h2 className="display-2 mt-4 max-w-xl text-balance">
+                        Put a whole trading desk behind your account.
                     </h2>
 
-                    <p className="body-md text-muted-foreground mx-auto mt-5 max-w-xl text-pretty">
-                        Spin up an autonomous trading agent in minutes. Start safely on
-                        testnet, validate against real market history, and go live only when
-                        you&apos;re ready — you keep custody the whole way.
+                    <p className="body-md text-muted-foreground mt-5 max-w-xl text-pretty">
+                        Spin up the agent pipeline in minutes. Start safely on testnet paper
+                        trading, watch how it argues each setup, and connect your exchange only
+                        when you&apos;re ready — you keep custody the whole way.
                     </p>
 
-                    <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-                        <Button
-                            asChild
-                            size="lg"
-                            className="brand-glow h-12 rounded-full px-8 text-base"
-                        >
+                    <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <Button asChild size="lg" className="h-11 px-6 text-[15px]">
                             <Link href="/auth/signup">
                                 Start free on testnet
-                                <ArrowRight className="ml-1 h-5 w-5" />
+                                <ArrowRight className="size-4" />
                             </Link>
                         </Button>
-                        <Button
-                            asChild
-                            variant="outline"
-                            size="lg"
-                            className="h-12 rounded-full px-8 text-base"
-                        >
+                        <Button asChild variant="ghost" size="lg" className="h-11 px-4 text-[15px]">
                             <Link href="/contact">Talk to us</Link>
                         </Button>
                     </div>
 
-                    <p className="body-xs mt-6">
-                        No credit card required · Non-custodial · Cancel anytime
+                    <p className="num mt-8 text-xs text-subtle-foreground">
+                        No credit card · non-custodial · cancel anytime
                     </p>
                 </motion.div>
             </div>

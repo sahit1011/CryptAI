@@ -67,20 +67,22 @@ function CountUp({ stat }: { stat: Stat }) {
             decimals={stat.decimals}
             prefix={stat.prefix}
             suffix={stat.suffix}
-            className="display-3 text-4xl md:text-5xl text-gradient-brand"
+            className="display-3 text-4xl text-foreground md:text-[2.75rem]"
         />
     );
 }
 
+/*
+ * A single bordered stat band with hairline dividers — numbers in plain
+ * foreground mono, labels in small caps. One quiet strip, not four floating
+ * glass cards: the restraint is the design.
+ */
 export function StatsSection() {
     return (
-        <section className="relative overflow-hidden border-y border-border py-20 md:py-24">
-            {/* Shared crimson atmosphere — keeps the page one continuous feel. */}
-            <div className="aurora z-0 opacity-70" aria-hidden />
-
-            <div className="container relative z-10 mx-auto px-4 md:px-6">
-                <div className="mx-auto mb-12 max-w-2xl text-center">
-                    <span className="label-md text-accent-300">By the numbers</span>
+        <section className="relative overflow-hidden py-20 md:py-24">
+            <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
+                <div className="mb-10 max-w-2xl">
+                    <span className="eyebrow text-accent-300">By the numbers</span>
                     <h2 className="display-3 mt-3 text-balance">Built to run at market speed</h2>
                     <p className="body-sm mt-3">
                         Illustrative figures shown to convey scale and design targets — not
@@ -88,21 +90,20 @@ export function StatsSection() {
                     </p>
                 </div>
 
-                <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
-                    {stats.map((stat, i) => (
-                        <motion.div
-                            key={stat.label}
-                            initial={{ opacity: 0, y: 24 }}
-                            whileInView={{ opacity: 1, y: 0 }}
-                            viewport={{ once: true, margin: "-80px" }}
-                            transition={{ duration: 0.5, delay: i * 0.08, ease: [0.16, 1, 0.3, 1] }}
-                            className="glass-panel glass-panel-hover flex flex-col items-center justify-center px-4 py-8 text-center"
-                        >
+                <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true, margin: "-80px" }}
+                    transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                    className="grid grid-cols-2 divide-border overflow-hidden rounded-xl border border-border bg-surface max-lg:gap-px max-lg:bg-border lg:grid-cols-4 lg:divide-x"
+                >
+                    {stats.map((stat) => (
+                        <div key={stat.label} className="bg-surface px-6 py-8">
                             <CountUp stat={stat} />
                             <div className="label-md mt-3 text-subtle-foreground">{stat.label}</div>
-                        </motion.div>
+                        </div>
                     ))}
-                </div>
+                </motion.div>
             </div>
         </section>
     );

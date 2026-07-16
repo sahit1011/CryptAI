@@ -22,10 +22,12 @@ test.afterAll(async () => {
 
 test("landing page renders with USD marketing content", async () => {
     await page.goto("/");
-    await expect(page.getByRole("link", { name: /log in|sign up|start trading/i }).first())
+    await expect(page.getByRole("link", { name: /log in|sign up|start/i }).first())
         .toBeVisible({ timeout: 15_000 });
+    // New hero claim renders (post-redesign).
+    await expect(page.getByRole("heading", { name: /Five AI agents/i })).toBeVisible();
     // Pre-login marketing shows dollars (the ₹/$ toggle is a dashboard feature).
-    await expect(page.locator("text=/\\$1[0-9]{2},[0-9]{3}/").first()).toBeVisible();
+    await expect(page.locator("text=/\\$/").first()).toBeVisible();
 });
 
 test("logs in with real Supabase auth and lands on the dashboard", async () => {

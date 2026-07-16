@@ -94,11 +94,18 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  /* ---- Radius ---------------------------------------------------------- */
-  --radius-sm: calc(var(--radius) - 3px);
-  --radius-md: calc(var(--radius) - 1px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  /* ---- Radius ----------------------------------------------------------
+   * Strict two-step system (Vercel-style): 4px controls, 6px cards. xl/2xl
+   * are capped at 8px so nothing reads "bubbly" — sharper corners are one of
+   * the clearest human-crafted signals on dark UIs. Pills (rounded-full) are
+   * reserved for status dots and countable badges only.
+   */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+  --radius-2xl: 8px;
+  --radius-3xl: 8px;
 
   /* ---- Elevation (subtle, dark-native) --------------------------------- */
   --shadow-elevation-low: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
@@ -273,10 +280,30 @@
   /*
    * Typography scale (sans for prose/labels). Kept lean and token-aligned; used
    * across dashboard sections + landing. Numbers must still use .num / <Value>.
+   * Display sizes get progressively tighter negative tracking (the Linear/Vercel
+   * scale: ~-0.022em and beyond at large sizes) — loose large type is the
+   * fastest "template" tell. Weights cap at 600: bold-700 headlines read shouty.
    */
-  .display-3 { @apply text-3xl md:text-4xl font-semibold tracking-tight; }
-  .heading-2 { @apply text-2xl font-semibold tracking-tight; }
+  .display-1 {
+    @apply font-semibold text-balance;
+    font-size: clamp(2.5rem, 5.5vw, 4.25rem);
+    line-height: 1.04;
+    letter-spacing: -0.035em;
+  }
+  .display-2 {
+    @apply text-4xl md:text-5xl font-semibold;
+    letter-spacing: -0.03em;
+    line-height: 1.08;
+  }
+  .display-3 { @apply text-3xl md:text-4xl font-semibold; letter-spacing: -0.025em; }
+  .heading-2 { @apply text-2xl font-semibold; letter-spacing: -0.02em; }
   .heading-4 { @apply text-base font-semibold tracking-tight; }
+  /* Mono eyebrow — the small uppercase label that opens a section. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    @apply text-[11px] font-medium uppercase;
+    letter-spacing: 0.14em;
+  }
   .body-md { @apply text-base leading-relaxed; }
   .body-sm { @apply text-sm leading-relaxed text-muted-foreground; }
   .body-xs { @apply text-xs leading-relaxed text-muted-foreground; }
@@ -365,7 +392,7 @@
       color-mix(in oklch, var(--accent-500) 26%, transparent),
       transparent 72%
     );
-    opacity: 0.55;
+    opacity: 0.28;
     animation: aurora-drift-a 22s ease-in-out infinite alternate;
   }
   /* Secondary glow — lower, deeper crimson, offset for depth */
@@ -379,7 +406,7 @@
       color-mix(in oklch, var(--accent-700) 22%, transparent),
       transparent 70%
     );
-    opacity: 0.4;
+    opacity: 0.2;
     animation: aurora-drift-b 26s ease-in-out infinite alternate;
   }
 

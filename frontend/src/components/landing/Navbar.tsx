@@ -52,7 +52,7 @@ export function Navbar() {
 
     const navLinks = [
         { href: "#features", label: "Features" },
-        { href: "#how-it-works", label: "Architecture" },
+        { href: "#architecture", label: "Architecture" },
         { href: "#pricing", label: "Pricing" },
         { href: "#docs", label: "Docs" },
     ];
@@ -68,37 +68,24 @@ export function Navbar() {
                 <div className="max-w-7xl mx-auto px-6">
                     <div className="flex items-center justify-between relative">
                         {/* Left Side - Logo/Brand */}
-                        <Link href="/" className="flex items-center gap-3 group z-10">
-                            <div
-                                className={`relative transition-all duration-300 ${isScrolled ? "w-9 h-9" : "w-10 h-10"
-                                    }`}
-                            >
-                                {/* Crimson brand mark */}
-                                <div className="chip-brand w-full h-full group-hover:brand-glow group-hover:scale-105 transition-all duration-300">
-                                    <Activity className="w-5 h-5 text-accent-300" />
-                                </div>
+                        <Link href="/" className="flex items-center gap-2.5 group z-10">
+                            <div className="chip-brand size-8">
+                                <Activity className="w-4.5 h-4.5 text-accent-300" />
                             </div>
-
-                            <span className="text-xl font-bold font-mono tracking-tight text-foreground group-hover:text-accent-300 transition-colors duration-300">
+                            <span className="text-lg font-semibold tracking-tight text-foreground">
                                 CryptAI
                             </span>
                         </Link>
 
-                        {/* Center - Navigation Links */}
-                        <div className="hidden md:flex items-center gap-2 absolute left-1/2 -translate-x-1/2">
+                        {/* Center - Navigation Links (quiet: color shift only, 150ms) */}
+                        <div className="hidden md:flex items-center gap-1 absolute left-1/2 -translate-x-1/2">
                             {navLinks.map((link) => (
                                 <Link
                                     key={link.href}
                                     href={link.href}
-                                    className="relative px-5 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-all duration-300 group"
+                                    className="rounded-md px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors duration-150 hover:bg-elevated hover:text-foreground"
                                 >
-                                    <span className="relative z-10">{link.label}</span>
-
-                                    {/* Hover background — crimson tint */}
-                                    <div className="absolute inset-0 rounded-lg bg-accent/0 group-hover:bg-accent/10 transition-all duration-300" />
-
-                                    {/* Bottom border animation — crimson */}
-                                    <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0 h-[2px] bg-accent group-hover:w-3/4 transition-all duration-300" />
+                                    {link.label}
                                 </Link>
                             ))}
                         </div>
@@ -140,18 +127,13 @@ export function Navbar() {
                                 <>
                                     <Link
                                         href="/auth/login"
-                                        className="relative px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-all duration-300 group"
+                                        className="rounded-md px-3.5 py-2 text-sm font-medium text-muted-foreground transition-colors duration-150 hover:bg-elevated hover:text-foreground"
                                     >
-                                        <span className="relative z-10">Log in</span>
-                                        <div className="absolute inset-0 rounded-lg bg-accent/0 group-hover:bg-accent/10 transition-all duration-300" />
+                                        Log in
                                     </Link>
 
                                     <Link href="/auth/signup">
-                                        <Button
-                                            className="h-10 px-6 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium brand-glow transition-transform hover:scale-[1.03]"
-                                        >
-                                            Sign up
-                                        </Button>
+                                        <Button className="h-9 px-5">Sign up</Button>
                                     </Link>
                                 </>
                             )}
@@ -217,7 +199,7 @@ export function Navbar() {
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button
-                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium brand-glow"
+                                        className="w-full h-11"
                                     >
                                         Go to Dashboard
                                     </Button>
@@ -257,7 +239,7 @@ export function Navbar() {
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button
-                                        className="w-full h-12 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover font-medium brand-glow"
+                                        className="w-full h-11"
                                     >
                                         Sign up
                                     </Button>
