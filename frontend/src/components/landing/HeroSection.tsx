@@ -161,7 +161,7 @@ export function HeroSection() {
                     }}
                 >
                     <div
-                        className="absolute right-0 top-[55%] w-[880px] max-w-none opacity-[0.88]"
+                        className="absolute right-0 top-[64%] w-[880px] max-w-none opacity-[0.88]"
                         style={{
                             transform:
                                 "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg) scale(1.05)",
