@@ -5,6 +5,7 @@ import { Plug, Settings2, Sparkles } from "lucide-react";
 import { SectionHeader } from "../ui/SectionHeader";
 import { Card } from "@/components/ui/card";
 import { TradingModeSelector } from "../ui/TradingModeSelector";
+import { EngineControl } from "../ui/EngineControl";
 import { ConnectExchangeSection } from "./ConnectExchangeSection";
 import { getSettings, type TradingMode } from "@/lib/api";
 
@@ -28,6 +29,9 @@ export function SettingsSection() {
                 description="Your trading preferences — how the AI acts on its signals, and which exchange account it trades."
                 icon={Settings2}
             />
+
+            {/* AI engine control (owner only; renders null for other users) */}
+            <EngineControl />
 
             {/* Trading mode */}
             <Card className="mb-8 gap-4 p-5">

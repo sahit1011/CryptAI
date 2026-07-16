@@ -661,6 +661,30 @@ def require_user(principal: Dict[str, Any] = Depends(current_principal)) -> str:
     return user_id
 
 
+# Owner/admin allow-list — Supabase UUIDs from the ADMIN_USER_IDS env (comma-separated).
+# These users may control the AI engine; everyone else can only read its status.
+ADMIN_USER_IDS = {u.strip() for u in os.getenv("ADMIN_USER_IDS", "").split(",") if u.strip()}
+
+
+def require_admin(principal: Dict[str, Any] = Depends(current_principal)) -> str:
+    """Require an admin. The service token is always admin; end-users must be allow-listed."""
+    # Service token (no user_id, authenticated via API_AUTH_TOKEN) is trusted. In local
+    # dev with no auth configured, the anonymous principal is also allowed through.
+    if principal.get("kind") in ("service", "anonymous"):
+        return principal.get("kind")
+    user_id = principal.get("user_id")
+    # If no allow-list is configured, admin control is open (dev). Once ADMIN_USER_IDS
+    # is set (prod), only those UUIDs pass — mirrors get_engine's `is_admin`.
+    if not ADMIN_USER_IDS and user_id:
+        return user_id
+    if user_id and user_id in ADMIN_USER_IDS:
+        return user_id
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the owner can control the AI engine",
+    )
+
+
 class ExchangeKeysBody(BaseModel):
     api_key: str
     api_secret: str
@@ -758,6 +782,51 @@ async def set_settings(body: SettingsBody, user_id: str = Depends(require_user))
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- AI engine switch (owner-controlled; protects the LLM quota) --------------
+class EngineBody(BaseModel):
+    enabled: bool
+    # How long to stay on before auto-off. None/0 = "always on" (until turned off).
+    # Bounded so a fat-finger can't leave it running for weeks.
+    duration_seconds: Optional[int] = Field(default=None, ge=0, le=7 * 24 * 3600)
+
+
+def _engine_switch():
+    """Build an EngineSwitch on the shared Redis client, or None if Redis is down."""
+    if state_manager is None or getattr(state_manager, "redis", None) is None:
+        return None
+    from src.core.engine_switch import EngineSwitch
+    return EngineSwitch(state_manager.redis)
+
+
+@app.get("/api/engine")
+async def get_engine(principal: Dict[str, Any] = Depends(current_principal)):
+    """AI-engine status — any authenticated caller can see whether analysis is running.
+
+    Also reports `is_admin` so the dashboard only shows the toggle to the owner.
+    """
+    sw = _engine_switch()
+    status_obj = await sw.status() if sw else {"enabled": False, "expires_in_seconds": None, "enabled_by": None}
+    uid = principal.get("user_id")
+    # Admin if: service/anonymous principal, allow-list unset (dev), or listed owner.
+    status_obj["is_admin"] = (
+        principal.get("kind") in ("service", "anonymous")
+        or not ADMIN_USER_IDS
+        or (uid is not None and uid in ADMIN_USER_IDS)
+    )
+    return status_obj
+
+
+@app.post("/api/engine")
+async def set_engine(body: EngineBody, admin: str = Depends(require_admin)):
+    """Turn the AI engine on/off (owner only). On = daemon resumes analysis + LLM calls."""
+    sw = _engine_switch()
+    if sw is None:
+        raise HTTPException(status_code=503, detail="Engine switch unavailable (Redis down)")
+    if body.enabled:
+        return await sw.turn_on(duration_seconds=body.duration_seconds, enabled_by=admin)
+    return await sw.turn_off(disabled_by=admin)
 
 
 @app.get("/api/setups")

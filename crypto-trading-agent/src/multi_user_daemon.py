@@ -65,7 +65,9 @@ class MultiUserTradingDaemon:
         self.vault: Optional[CredentialVault] = None
         self.registry: Optional[UserRegistry] = None
         self.coordinator: Optional[MultiUserCoordinator] = None
+        self.engine_switch = None  # EngineSwitch, set once Redis is up
         self._loop_task: Optional[asyncio.Task] = None
+        self._was_on = None  # tracks on/off transitions for one-time log lines
 
     # ------------------------------------------------------------------ setup
     async def initialize_infrastructure(self):
@@ -74,6 +76,8 @@ class MultiUserTradingDaemon:
         await self.message_bus.connect()
         self.state_manager = StateManager()
         await self.state_manager.connect()
+        from src.core.engine_switch import EngineSwitch
+        self.engine_switch = EngineSwitch(self.state_manager.redis)
         plog.info("  └─ ✅ Infrastructure ready", agent="daemon")
 
     async def _add_agent(self, name: str, factory):
@@ -282,7 +286,24 @@ class MultiUserTradingDaemon:
 
         Analysis is per-symbol but user-independent, so it runs once per symbol per cycle
         (not per user); every resulting setup then fans out to all active tenants.
+
+        GATED by the owner's AI-engine switch: while OFF, we return immediately WITHOUT
+        calling the LLM — this is what protects the (free) API quota from unattended
+        burn. The cycle timer keeps ticking; each tick is a cheap Redis check until the
+        owner turns the engine on.
         """
+        if self.engine_switch is not None:
+            on = await self.engine_switch.is_on()
+            if on != self._was_on:  # log only on transition, not every idle cycle
+                plog.info(
+                    f"🟢 AI engine ON — running analysis" if on
+                    else "⏸️  AI engine OFF — analysis paused (owner turns it on to run)",
+                    agent="daemon",
+                )
+                self._was_on = on
+            if not on:
+                return []
+
         all_setups = []
         for sym in self.symbols:
             try:

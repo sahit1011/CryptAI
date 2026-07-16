@@ -212,6 +212,34 @@ export async function saveSettings(body: Partial<UserSettings>): Promise<UserSet
     return res.json();
 }
 
+export interface EngineStatus {
+    enabled: boolean;
+    expires_in_seconds: number | null;  // null = "always on" (or off)
+    enabled_by: string | null;
+    is_admin?: boolean;
+}
+
+/** AI-engine status (any logged-in user); is_admin gates the control UI. */
+export async function getEngine(): Promise<EngineStatus> {
+    const res = await fetch(`${API_URL}/api/engine`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Turn the AI engine on/off (owner only). durationSeconds null = always on. */
+export async function setEngine(enabled: boolean, durationSeconds?: number | null): Promise<EngineStatus> {
+    const res = await fetch(`${API_URL}/api/engine`, {
+        method: "POST",
+        headers: await authHeaders(true),
+        body: JSON.stringify({ enabled, duration_seconds: durationSeconds ?? null }),
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
 /** Recent trade-setup suggestions (shared across users) for load-time hydration. */
 export async function getSetups(): Promise<{ setups: Record<string, unknown>[] }> {
     const res = await fetch(`${API_URL}/api/setups`, { cache: "no-store" });

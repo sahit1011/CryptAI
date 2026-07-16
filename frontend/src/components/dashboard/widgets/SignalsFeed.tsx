@@ -15,7 +15,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/states";
 import { useStore, type Signal } from "@/store/useStore";
-import { executeSetup, getSettings, getSetups, type TradingMode } from "@/lib/api";
+import { executeSetup, getEngine, getSettings, getSetups, type TradingMode } from "@/lib/api";
 import { payloadToSignal } from "@/lib/signals";
 import { formatMoney } from "@/lib/currency";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,7 @@ export function SignalsFeed({ limit }: { limit?: number }) {
     const setSignals = useStore((s) => s.setSignals);
     const addSignal = useStore((s) => s.addSignal);
     const [mode, setMode] = useState<TradingMode>("paper");
+    const [engineOn, setEngineOn] = useState<boolean | null>(null);
 
     useEffect(() => {
         (async () => {
@@ -41,18 +42,28 @@ export function SignalsFeed({ limit }: { limit?: number }) {
             try {
                 setMode((await getSettings()).trading_mode);
             } catch { /* keep default */ }
+            try {
+                setEngineOn((await getEngine()).enabled);
+            } catch { /* status is best-effort */ }
         })();
     }, [setSignals]);
 
     const shown = limit ? signals.slice(0, limit) : signals;
 
     if (shown.length === 0) {
+        // Distinguish "engine paused" (no analysis running) from "engine on, no setup yet"
+        // so an empty feed is never mysterious.
+        const paused = engineOn === false;
         return (
             <Card className="py-10">
                 <EmptyState
                     icon={<Radar className="size-6" />}
-                    title="Waiting for AI setups"
-                    description="The agents publish trade setups here as they find them each analysis cycle."
+                    title={paused ? "AI engine is paused" : "Waiting for AI setups"}
+                    description={
+                        paused
+                            ? "The trading agents aren't analyzing the markets right now. An admin can start the engine in Settings to generate fresh setups."
+                            : "The agents publish trade setups here as they find them each analysis cycle."
+                    }
                 />
             </Card>
         );
