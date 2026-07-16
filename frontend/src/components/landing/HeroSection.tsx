@@ -29,8 +29,8 @@ const item = {
     visible: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] as const } },
 };
 
-const LINE1 = "Five AI agents.";
-const LINE2 = "One disciplined trader.";
+const LINE1 = "Five minds,";
+const LINE2 = "one disciplined trader.";
 const HEADLINE = `${LINE1}\n${LINE2}`;
 
 /*
@@ -99,9 +99,10 @@ function TypedHeadline() {
     const typed = HEADLINE.slice(0, count);
     const [t1, t2 = ""] = typed.split("\n");
     const cursorOnLine2 = typed.includes("\n");
-    // Line one is the editorial accent: Instrument Serif italic, optically
-    // matched to the sans line with a slight size bump and relaxed tracking.
-    const line1Class = "font-serif italic tracking-[-0.01em] text-[1.05em]";
+    // Line one is the editorial accent: Instrument Serif italic in crimson —
+    // accent-400 sits a step below full saturation so it complements rather
+    // than shouts; optically matched with a slight size bump + relaxed tracking.
+    const line1Class = "font-serif italic tracking-[-0.01em] text-[1.06em] text-accent-300";
 
     return (
         <h1 className="display-1 mb-6 text-foreground" aria-label={`${LINE1} ${LINE2}`}>
@@ -161,7 +162,7 @@ export function HeroSection() {
             <div className="container relative z-10 mx-auto grid max-w-6xl items-center gap-14 px-4 md:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10">
                 {/* ---- Claim ---------------------------------------------------- */}
                 <motion.div variants={container} initial="hidden" animate="visible">
-                    <motion.p variants={item} className="eyebrow mb-5 text-accent-300">
+                    <motion.p variants={item} className="eyebrow mb-5 text-foreground">
                         Multi-agent trading system
                     </motion.p>
 

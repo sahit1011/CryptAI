@@ -288,8 +288,8 @@
    */
   .display-1 {
     @apply font-semibold text-balance;
-    font-size: clamp(2.5rem, 5.5vw, 4.25rem);
-    line-height: 1.04;
+    font-size: clamp(2.25rem, 4.5vw, 3.5rem);
+    line-height: 1.06;
     letter-spacing: -0.035em;
   }
   .display-2 {
