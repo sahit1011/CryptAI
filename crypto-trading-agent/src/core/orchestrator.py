@@ -931,7 +931,7 @@ class TradingOrchestrator:
             )
             raise e
 
-    async def run_analysis_cycle(self) -> List[Dict[str, Any]]:
+    async def run_analysis_cycle(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """Run ONLY the shared, user-independent analysis phases; return candidate setups.
 
         This is the integration seam for the multi-user daemon (see
@@ -941,17 +941,21 @@ class TradingOrchestrator:
         user's own portfolio. The single-bot risk / execute / log nodes are intentionally
         skipped: per-user risk validation + booking is MultiUserCoordinator's job.
 
+        `symbol` overrides the instrument for this cycle (the daemon calls this once per
+        traded symbol — BTC/ETH/gold). Defaults to the orchestrator's configured symbol.
+
         Faithful to the graph's own gates (error short-circuit after each node, and the
         volatile-regime skip). Never raises — returns [] on any error or unfavorable
         regime so one bad cycle can't take the daemon down.
         """
+        sym = symbol or self.symbol
         self.current_cycle += 1
         initial_state: TradingState = {
-            "cycle_id": f"analysis_{self.current_cycle}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            "cycle_id": f"analysis_{self.current_cycle}_{sym}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
             "cycle_start": datetime.now(),
             "cycle_number": self.current_cycle,
             "phase": WorkflowPhase.IDLE.value,
-            "symbol": self.symbol,
+            "symbol": sym,
             "market_data": None,
             "candles": None,
             "analysis_result": None,

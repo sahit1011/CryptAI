@@ -140,7 +140,10 @@ class MultiUserTradingDaemon:
 
     def initialize_multi_user(self):
         plog.info("👥 Initializing multi-user layer...", agent="daemon", phase="startup")
-        symbol = os.getenv("TRADING_SYMBOL", "BTCUSDT")
+        # Traded instruments (config/env-driven): BTC + ETH + gold (PAXG) by default.
+        # Analysis runs once per symbol each cycle; setups fan out to all tenants.
+        self.symbols = list(self.config.trading.symbols) or ["BTCUSDT"]
+        symbol = self.symbols[0]
 
         # Surface which LLM powers each use case (premium if keyed, else OpenRouter
         # open-source). Loud warning if nothing is configured — cycles will be empty.
@@ -252,7 +255,7 @@ class MultiUserTradingDaemon:
         active = self.registry.active_user_ids()
         plog.info(
             f"✅ Daemon started | cycle={interval}s | active_tenants={len(active)} "
-            f"| symbol={self.orchestrator.symbol}",
+            f"| symbols={','.join(self.symbols)}",
             agent="daemon",
             phase="startup_complete",
         )
@@ -264,10 +267,22 @@ class MultiUserTradingDaemon:
         )
 
     async def _analysis_with_signals(self):
-        """Run the shared analysis, publish the setups as suggestions, then return them."""
-        setups = await self.orchestrator.run_analysis_cycle()
-        await self._publish_setups(setups)
-        return setups
+        """Run shared analysis for EACH traded symbol, publish setups, return them all.
+
+        Analysis is per-symbol but user-independent, so it runs once per symbol per cycle
+        (not per user); every resulting setup then fans out to all active tenants.
+        """
+        all_setups = []
+        for sym in self.symbols:
+            try:
+                setups = await self.orchestrator.run_analysis_cycle(sym)
+            except Exception as e:
+                plog.warning(f"[analysis] {sym} cycle failed: {e}", agent="daemon")
+                continue
+            if setups:
+                await self._publish_setups(setups)
+                all_setups.extend(setups)
+        return all_setups
 
     async def _publish_setups(self, setups):
         """Broadcast each candidate setup to the Signals feed (untenanted — shared).

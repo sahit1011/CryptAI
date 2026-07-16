@@ -29,6 +29,13 @@ type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d"
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
+// Instruments the chart can display (match the backend's traded symbols). PAXG = gold.
+const SYMBOLS: { id: string; label: string }[] = [
+    { id: "BTCUSDT", label: "BTC" },
+    { id: "ETHUSDT", label: "ETH" },
+    { id: "XAUTUSDT", label: "Gold" },   // Tether Gold (XAUT) ≈ 1oz XAU
+]
+
 const INTERVAL_SECONDS: Record<Timeframe, number> = {
     "1m": 60,
     "5m": 300,
@@ -114,6 +121,7 @@ export function ChartWidget() {
     const priceLinesRef = useRef<IPriceLine[]>([])
 
     const [timeframe, setTimeframe] = useState<Timeframe>("1m")
+    const [symbol, setSymbol] = useState("BTCUSDT")
     const [isLoading, setIsLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
     const [ohlc, setOhlc] = useState<OHLC | null>(null)
@@ -130,7 +138,7 @@ export function ChartWidget() {
         try {
             // Same-origin proxy (src/app/api/klines) — the browser can't hit Binance
             // directly (no CORS headers); the server route fetches + falls back.
-            const url = `/api/klines?symbol=BTCUSDT&interval=${interval}&limit=500`
+            const url = `/api/klines?symbol=${symbol}&interval=${interval}&limit=500`
             const res = await fetch(url)
             if (!res.ok) throw new Error(`Market data request failed (${res.status})`)
             const raw: unknown = await res.json()
@@ -177,7 +185,7 @@ export function ChartWidget() {
         } finally {
             setIsLoading(false)
         }
-    }, [])
+    }, [symbol])
 
     // --- Chart init ---------------------------------------------------------
     useEffect(() => {
@@ -340,6 +348,9 @@ export function ChartWidget() {
     // --- Aggregate live ticker into the current candle ----------------------
     useEffect(() => {
         if (!ticker || !candleSeriesRef.current) return
+        // The live WS ticker is BTC-only; don't overlay it on an ETH/Gold chart
+        // (those refresh from the historical/polled feed on symbol switch).
+        if (symbol !== "BTCUSDT") return
         const price = safeNum(ticker.c, NaN)
         if (!Number.isFinite(price)) return
 
@@ -366,7 +377,7 @@ export function ChartWidget() {
         } catch {
             // Ignore stale-timestamp updates when history is newer than the tick.
         }
-    }, [ticker, timeframe])
+    }, [ticker, timeframe, symbol])
 
     // --- Trade overlay lines (entry / SL / TP) in token colors --------------
     useEffect(() => {
@@ -426,9 +437,26 @@ export function ChartWidget() {
                 a floating overlay on the chart (below), NOT here, so it can't shift the
                 timeframe buttons as the crosshair moves. */}
             <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-                <h3 className="heading-4 truncate">
-                    BTC/USDT · <span className="num text-muted-foreground">{timeframe.toUpperCase()}</span>
-                </h3>
+                {/* Symbol selector — BTC / ETH / Gold (matches the backend's traded set) */}
+                <div className="flex shrink-0 items-center gap-0.5">
+                    {SYMBOLS.map((s) => (
+                        <Button
+                            key={s.id}
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSymbol(s.id)}
+                            className={cn(
+                                "h-7 px-2.5 text-xs font-semibold",
+                                symbol === s.id && "bg-accent-muted text-accent-300 hover:bg-accent-muted",
+                            )}
+                        >
+                            {s.label}
+                        </Button>
+                    ))}
+                    <span className="num ml-1.5 hidden text-xs text-subtle-foreground sm:inline">
+                        {timeframe.toUpperCase()}
+                    </span>
+                </div>
 
                 <div className="flex shrink-0 gap-0.5">
                     {TIMEFRAMES.map((tf) => (
@@ -504,12 +532,6 @@ export function ChartWidget() {
                     </div>
                 ) : null}
 
-                {/* Honest placeholder: agent chart annotations are not wired yet. */}
-                <div className="pointer-events-none absolute left-4 top-4 z-20">
-                    <span className="rounded-md border border-border bg-elevated/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur-sm">
-                        Agent annotations · Coming soon
-                    </span>
-                </div>
             </div>
         </Card>
     )

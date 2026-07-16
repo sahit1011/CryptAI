@@ -51,7 +51,10 @@ class TradingConfig(BaseModel):
     max_concurrent_positions: int = 3
     min_risk_reward: float = 1.0  # Changed from 2.0 to 1.0 for more trade opportunities
     analysis_interval_seconds: int = 180  # 3 minutes
-    symbols: list = ["BTCUSDT", "ETHUSDT"]
+    # Traded instruments: BTC, ETH, and GOLD. Gold = XAUTUSDT (Tether Gold, 1 XAUT ≈ 1
+    # troy oz), the crypto gold instrument listed on Binance/Bybit/OKX — a literal
+    # "XAUUSDT" pair isn't listed on crypto exchanges. Override via TRADING_SYMBOLS.
+    symbols: list = ["BTCUSDT", "ETHUSDT", "XAUTUSDT"]
     timeframes: list = ["5m", "15m", "1h", "4h", "1d"]
 
 class Config(BaseModel):
@@ -106,6 +109,16 @@ def load_config(env: str = None) -> Config:
         },
         "trading": yaml_config.get("trading", {})
     }
+
+    # TRADING_SYMBOLS env (comma-separated) overrides the traded instruments, e.g.
+    # "BTCUSDT,ETHUSDT,PAXGUSDT". Drives both the data agent's subscriptions and the
+    # daemon's per-symbol analysis loop.
+    _symbols_env = os.getenv("TRADING_SYMBOLS", "").strip()
+    if _symbols_env:
+        config_dict["trading"] = {
+            **config_dict["trading"],
+            "symbols": [s.strip().upper() for s in _symbols_env.split(",") if s.strip()],
+        }
 
     return Config(**config_dict)
 

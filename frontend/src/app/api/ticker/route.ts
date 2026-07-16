@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 const COINS = [
   { symbol: "BTCUSDT", cg: "bitcoin" },
   { symbol: "ETHUSDT", cg: "ethereum" },
+  { symbol: "XAUTUSDT", cg: "tether-gold" },
   { symbol: "SOLUSDT", cg: "solana" },
   { symbol: "ADAUSDT", cg: "cardano" },
   { symbol: "XRPUSDT", cg: "ripple" },

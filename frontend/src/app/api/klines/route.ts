@@ -26,6 +26,7 @@ const HOSTS = [
 const CG_IDS: Record<string, string> = {
   BTCUSDT: "bitcoin", ETHUSDT: "ethereum", SOLUSDT: "solana", ADAUSDT: "cardano",
   XRPUSDT: "ripple", DOTUSDT: "polkadot", LINKUSDT: "chainlink", AVAXUSDT: "avalanche-2",
+  PAXGUSDT: "pax-gold", XAUTUSDT: "tether-gold",   // tokenized gold (~1oz XAU)
 };
 
 function daysForInterval(interval: string): number {
