@@ -25,7 +25,10 @@ const item = {
 };
 
 const LINE1 = "Multiple minds.";
-const LINE2 = "One disciplined trader.";
+// Line two breaks explicitly so "trader." always lands on its own third line.
+const LINE2A = "One disciplined";
+const LINE2B = "trader.";
+const LINE2 = `${LINE2A} ${LINE2B}`;
 const HEADLINE = `${LINE1}\n${LINE2}`;
 
 /*
@@ -93,7 +96,11 @@ function TypedHeadline() {
 
     const typed = HEADLINE.slice(0, count);
     const [t1, t2 = ""] = typed.split("\n");
-    const cursorOnLine2 = typed.includes("\n");
+    // Split line two at the explicit break: "One disciplined" / "trader."
+    const t2a = t2.slice(0, LINE2A.length);
+    const t2b = t2.slice(LINE2A.length).trimStart();
+    const cursorOnLine2 = typed.includes("\n") && t2.length <= LINE2A.length;
+    const cursorOnLine3 = typed.includes("\n") && t2.length > LINE2A.length;
     // Line one is the editorial accent: Instrument Serif italic in crimson —
     // accent-400 sits a step below full saturation so it complements rather
     // than shouts; optically matched with a slight size bump + relaxed tracking.
@@ -106,14 +113,19 @@ function TypedHeadline() {
                 <span className="invisible block">
                     <span className={line1Class}>{LINE1}</span>
                     <br />
-                    {LINE2}
+                    {LINE2A}
+                    <br />
+                    {LINE2B}
                 </span>
                 <span className="absolute inset-0">
                     <span className={line1Class}>{t1}</span>
-                    {!cursorOnLine2 && !cursorGone && <Cursor />}
+                    {!cursorOnLine2 && !cursorOnLine3 && !cursorGone && <Cursor />}
                     <br />
-                    {t2}
+                    {t2a}
                     {cursorOnLine2 && !cursorGone && <Cursor />}
+                    <br />
+                    {t2b}
+                    {cursorOnLine3 && !cursorGone && <Cursor />}
                 </span>
             </span>
         </h1>
