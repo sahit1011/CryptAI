@@ -288,8 +288,17 @@ export function ChartWidget() {
         }
         window.addEventListener("resize", handleResize)
 
+        // Track the CONTAINER's size, not just the window. Hovering/clicking the chart
+        // makes the OHLC readout appear in the header, which shrinks the chart area — the
+        // canvas kept its old pixel size and visibly glitched/overflowed. ResizeObserver
+        // re-fits the chart to its box on any layout change (header, sidebar, tab switch).
+        const ro =
+            typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => handleResize()) : null
+        if (ro && chartContainerRef.current) ro.observe(chartContainerRef.current)
+
         return () => {
             window.removeEventListener("resize", handleResize)
+            ro?.disconnect()
             chart.remove()
             chartRef.current = null
             candleSeriesRef.current = null
@@ -420,7 +429,7 @@ export function ChartWidget() {
                         BTC/USDT · <span className="num text-muted-foreground">{timeframe.toUpperCase()}</span>
                     </h3>
                     {ohlc ? (
-                        <div className="flex items-center gap-2 text-xs">
+                        <div className="flex items-center gap-2 whitespace-nowrap text-xs">
                             <span className="label-md">O</span>
                             <Value className="text-xs" value={ohlc.open} decimals={2} money />
                             <span className="label-md">H</span>
