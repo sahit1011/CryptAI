@@ -22,11 +22,12 @@ class LLMConfig(BaseModel):
     gpt4o_model: str = "gpt-4o"
     gemini_model: str = "gemini-2.0-flash"
     groq_model: str = "llama-3.1-8b-instant"
-    # OpenRouter is the universal fallback. `deepseek_model` is a free open-source
-    # reasoning model reached via OpenRouter — used whenever no premium key is set, so
-    # the whole system runs on an OpenRouter key alone (see src/utils/llm_router.py).
-    deepseek_model: str = "tngtech/deepseek-r1t-chimera:free"
-    openrouter_fallback_model: str = "tngtech/deepseek-r1t-chimera:free"
+    # OpenRouter is the universal fallback: a FREE open-source model used whenever no
+    # premium key is set, so the whole system runs on an OpenRouter key alone (see
+    # src/utils/llm_router.py). OpenRouter's free catalog ROTATES — override with the
+    # OPENROUTER_MODEL env var when the default disappears (verified live 2026-07-16).
+    deepseek_model: str = "google/gemma-4-31b-it:free"
+    openrouter_fallback_model: str = "google/gemma-4-31b-it:free"
     max_retries: int = 3
     timeout: int = 60
 
@@ -120,6 +121,13 @@ def load_config(env: str = None) -> Config:
             **config_dict["trading"],
             "symbols": [s.strip().upper() for s in _symbols_env.split(",") if s.strip()],
         }
+
+    # OPENROUTER_MODEL env overrides the free fallback model (OpenRouter's free
+    # catalog rotates; swapping models must not need a code change).
+    _or_model = os.getenv("OPENROUTER_MODEL", "").strip()
+    if _or_model:
+        config_dict["llm"]["deepseek_model"] = _or_model
+        config_dict["llm"]["openrouter_fallback_model"] = _or_model
 
     return Config(**config_dict)
 
