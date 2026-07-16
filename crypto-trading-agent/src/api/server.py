@@ -502,13 +502,39 @@ async def startup_event():
         for channel in channels:
             await message_bus.subscribe(channel, handle_agent_message)
             logger.info(f"Subscribed to agent channel: {channel}")
-            
+
     except Exception as e:
         logger.error(f"Failed to initialize MessageBus: {e}")
+
+    # Optional: run the multi-user trading daemon INSIDE this process. This is how the
+    # free tier gets an always-on daemon — free hosts (e.g. Render) offer a free WEB
+    # service but no free background workers, and it's all asyncio anyway. A keep-alive
+    # ping (see .github/workflows/keepalive.yml) prevents the idle spin-down. Failure
+    # is isolated: a daemon that can't start must never take the API down.
+    if os.getenv("RUN_DAEMON_IN_API", "false").lower() == "true":
+        global embedded_daemon
+        try:
+            from src.multi_user_daemon import MultiUserTradingDaemon
+            embedded_daemon = MultiUserTradingDaemon()
+            await embedded_daemon.start()
+            logger.info("Embedded trading daemon started in the API process")
+        except Exception as e:
+            logger.error(f"Embedded daemon failed to start (API continues without it): {e}")
+            embedded_daemon = None
+
+
+# In-process daemon instance when RUN_DAEMON_IN_API=true (else None).
+embedded_daemon = None
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down...")
+    if embedded_daemon is not None:
+        try:
+            await embedded_daemon.stop()
+        except Exception as e:
+            logger.warning(f"Embedded daemon stop error: {e}")
     await binance_client.disconnect()
     
     if message_bus:

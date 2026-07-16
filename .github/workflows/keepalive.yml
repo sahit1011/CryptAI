@@ -1,0 +1,28 @@
+# Keep the free-tier backend awake.
+#
+# Render's free web services spin down after ~15 minutes without traffic, which would
+# pause the embedded trading daemon (RUN_DAEMON_IN_API=true). This pings the liveness
+# endpoint every ~10 minutes so the instance — and the trading cycles — stay up.
+# GitHub Actions cron is free and uses only seconds of runner time per ping.
+#
+# NOTE: scheduled workflows run on the repo's DEFAULT branch. If the default branch
+# isn't v2 yet, merge/point it accordingly for this to fire.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping backend liveness
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            https://cryptai-backend.onrender.com/health/live || true)
+          echo "backend /health/live -> $code"
+          # A cold start can take ~1 min; the request itself is the wake-up call,
+          # so even a slow/failed first probe has done its job. Never fail the run.

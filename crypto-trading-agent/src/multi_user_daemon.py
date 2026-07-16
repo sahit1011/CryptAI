@@ -126,14 +126,22 @@ class MultiUserTradingDaemon:
         )
         # Memory agent backs the orchestrator's regime detection (detect_regime node).
         # Its __init__ builds an embeddings client, so it needs an LLM key to construct.
-        self.memory_agent = await self._add_agent(
-            "Memory Agent",
-            lambda: MemoryAgent(
-                message_bus=bus, state_manager=sm,
-                database_url=database_url, openai_api_key=openai_api_key,
-                initial_capital=float(os.getenv("INITIAL_BALANCE", "10000")),
-            ),
-        )
+        # DAEMON_DISABLE_AGENTS=memory skips it entirely — it pulls chromadb (heavy),
+        # which matters on small instances (e.g. 512MB free tiers); the regime phase
+        # then falls back to the analysis agent's regime estimate.
+        disabled = {a.strip() for a in os.getenv("DAEMON_DISABLE_AGENTS", "").split(",") if a.strip()}
+        if "memory" in disabled:
+            plog.info("Memory Agent disabled via DAEMON_DISABLE_AGENTS", agent="daemon")
+            self.memory_agent = None
+        else:
+            self.memory_agent = await self._add_agent(
+                "Memory Agent",
+                lambda: MemoryAgent(
+                    message_bus=bus, state_manager=sm,
+                    database_url=database_url, openai_api_key=openai_api_key,
+                    initial_capital=float(os.getenv("INITIAL_BALANCE", "10000")),
+                ),
+            )
         up = [n for n, a in (("data", self.data_agent), ("analysis", self.analysis_agent),
                              ("strategy", self.strategy_agent), ("memory", self.memory_agent)) if a]
         plog.info(f"  └─ ✅ Analysis agents ready ({len(up)}/4 up: {', '.join(up) or 'none'})", agent="daemon")
