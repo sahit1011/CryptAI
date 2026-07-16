@@ -48,7 +48,8 @@ class CredentialVault:
     """Stores/reads per-user exchange credentials as ciphertext in Postgres."""
 
     def __init__(self, database_url: str):
-        self.engine = create_engine(database_url)
+        from src.utils.db import pool_kwargs
+        self.engine = create_engine(database_url, **pool_kwargs())
         # Create only this table (checkfirst) — don't touch other models' schema.
         ExchangeCredential.__table__.create(self.engine, checkfirst=True)
         self.Session = sessionmaker(bind=self.engine)

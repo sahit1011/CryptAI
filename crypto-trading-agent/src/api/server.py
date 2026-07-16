@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from src.data.binance_client import BinanceWebSocketClient
@@ -32,9 +32,23 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    """Baseline security headers on every response (clickjacking, MIME-sniffing, etc.)."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    # HSTS is honored only over HTTPS (ignored on plain HTTP), safe to always send.
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -628,14 +642,16 @@ async def get_setups():
 
 
 class ExecuteSetupBody(BaseModel):
-    symbol: str
-    direction: str
-    entry_price: float
-    stop_loss: float
-    take_profit_levels: List[float] = []
-    confidence_score: Optional[float] = None
-    market_regime: Optional[str] = None
-    recommended_position_size: Optional[float] = None
+    # Bounded inputs so a malformed/hostile body can't submit a nonsensical or oversized
+    # order; per-user risk validation still runs downstream.
+    symbol: str = Field(..., min_length=3, max_length=20)
+    direction: str = Field(..., pattern="^(LONG|SHORT)$")
+    entry_price: float = Field(..., gt=0)
+    stop_loss: float = Field(..., gt=0)
+    take_profit_levels: List[float] = Field(default_factory=list, max_length=10)
+    confidence_score: Optional[float] = Field(default=None, ge=0)
+    market_regime: Optional[str] = Field(default=None, max_length=40)
+    recommended_position_size: Optional[float] = Field(default=None, ge=0)
 
 
 def _build_user_engine(user_id: str):

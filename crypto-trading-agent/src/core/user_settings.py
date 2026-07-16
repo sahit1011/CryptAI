@@ -21,7 +21,8 @@ class UserSettingsStore:
     """CRUD for per-user trading settings."""
 
     def __init__(self, database_url: str):
-        self.engine = create_engine(database_url)
+        from src.utils.db import pool_kwargs
+        self.engine = create_engine(database_url, **pool_kwargs())
         UserSettings.__table__.create(self.engine, checkfirst=True)
         self.Session = sessionmaker(bind=self.engine)
 

@@ -35,7 +35,8 @@ class StateManager:
 
         # PostgreSQL for persistent state
         self.postgres_url = config.database.postgres_url.replace('postgresql://', 'postgresql+asyncpg://')
-        self.engine = create_async_engine(self.postgres_url, echo=False)
+        from src.utils.db import pool_kwargs
+        self.engine = create_async_engine(self.postgres_url, echo=False, **pool_kwargs())
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )
