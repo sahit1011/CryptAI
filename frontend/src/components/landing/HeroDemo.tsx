@@ -513,15 +513,19 @@ export function HeroDemo({ ghost = false }: { ghost?: boolean }) {
 
     // Ghost hairlines are nearly invisible — quads separate by spacing, not lines.
     const cell = ghost ? "overflow-hidden bg-surface/25" : "overflow-hidden bg-surface";
-    // Ghost order flips the columns: the mask dissolves toward the LEFT, so the
-    // richest quads (chart, agents) sit on the fully-visible RIGHT side.
+    // Ghost order: the mask dissolves toward the LEFT, so the richest quads
+    // (chart, trade) sit on the fully-visible RIGHT; the panel is also TALLER
+    // than the solid variant — it expands vertically into the hero, never
+    // horizontally into the claim column.
     const quads = ghost
-        ? [TradeQuad, ChartQuad, PortfolioQuad, AgentsQuad]
+        ? [AgentsQuad, ChartQuad, PortfolioQuad, TradeQuad]
         : [ChartQuad, TradeQuad, AgentsQuad, PortfolioQuad];
     return (
         <div
-            className={`grid h-[440px] grid-cols-2 grid-rows-2 md:h-[460px] ${
-                ghost ? "gap-3 bg-transparent" : "gap-px bg-border"
+            className={`grid grid-cols-2 grid-rows-2 ${
+                ghost
+                    ? "h-[620px] gap-5 bg-transparent"
+                    : "h-[440px] gap-px bg-border md:h-[460px]"
             }`}
         >
             {quads.map((Quad, i) => (
