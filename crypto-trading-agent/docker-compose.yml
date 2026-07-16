@@ -49,16 +49,14 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # One-shot schema bootstrap. Creates the schema from the live SQLAlchemy models
-  # (create_all, idempotent) and exits 0; the app services wait for it to complete.
-  # NOTE: this replaces `alembic upgrade head` — the single alembic migration had
-  # drifted from the models (no trades.user_id, no exchange_credentials). create_all
-  # is the codebase's real source of truth. See scripts/bootstrap_schema.py.
+  # One-shot migration runner (Alembic, versioned + rollback-able). Adopts DBs that
+  # were provisioned by the old create_all bootstrap (stamps the baseline), then
+  # upgrades to head. See scripts/migrate.py + docs/OPERATIONS.md.
   migrate:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["python", "scripts/bootstrap_schema.py"]
+    command: ["python", "scripts/migrate.py"]
     env_file: .env
     depends_on:
       postgres:
@@ -162,6 +160,22 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Optional nightly DB backups with retention (profile "ops"):
+  #   docker compose --profile ops up -d backup
+  # Dumps land in the backup_data volume; see scripts/backup_db.sh + docs/OPERATIONS.md.
+  backup:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "-c", "while true; do sh /backup_db.sh; sleep 86400; done"]
+    env_file: .env
+    volumes:
+      - ./scripts/backup_db.sh:/backup_db.sh:ro
+      - backup_data:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["ops"]
+    restart: unless-stopped
+
   # Optional DB admin UI. Credentials are env-driven (no admin/admin default).
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -179,3 +193,4 @@ services:
 volumes:
   redis_data:
   postgres_data:
+  backup_data:

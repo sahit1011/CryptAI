@@ -38,6 +38,35 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def _metrics_mw(request, call_next):
+    """Prometheus instrumentation: count + time every request (normalized path)."""
+    import time as _time
+    from src.utils.metrics import HTTP_LATENCY, HTTP_REQUESTS, normalize_path
+    path = normalize_path(request.url.path)
+    start = _time.perf_counter()
+    response = await call_next(request)
+    HTTP_REQUESTS.labels(request.method, path, str(response.status_code)).inc()
+    HTTP_LATENCY.labels(request.method, path).observe(_time.perf_counter() - start)
+    return response
+
+
+@app.middleware("http")
+async def _request_id(request, call_next):
+    """Correlate every request with an ID: honor the client/proxy's X-Request-ID or mint
+    one; expose it on the response and on every log line emitted while handling it."""
+    import uuid
+    from src.utils.logging_setup import request_id_var
+    rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    token = request_id_var.set(rid)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
+    response.headers["X-Request-ID"] = rid
+    return response
+
+
+@app.middleware("http")
 async def _rate_limit(request, call_next):
     """Per-caller rate limiting (sliding 60s window; user token if present, else IP).
 
@@ -51,6 +80,8 @@ async def _rate_limit(request, call_next):
         limiter = write_limiter if request.method in ("POST", "DELETE") else read_limiter
         allowed, retry_after = limiter.allow(key)
         if not allowed:
+            from src.utils.metrics import RATE_LIMITED
+            RATE_LIMITED.labels(request.method).inc()
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded — slow down."},
@@ -383,6 +414,9 @@ async def handle_agent_message(data: Dict[str, Any]):
 
 @app.on_event("startup")
 async def startup_event():
+    # Structured logging (LOG_JSON=true → JSON lines) + request-ID on every line.
+    from src.utils.logging_setup import setup_logging
+    setup_logging()
     logger.info("Starting up Antigravity API...")
 
     # Error tracking (Sentry) — no-op unless SENTRY_DSN is set.
@@ -582,11 +616,11 @@ async def get_trades(
         logger.info(f"📊 Fetched {len(formatted_trades)} trades from database")
         return {"trades": formatted_trades}
         
-    except Exception as e:
-        logger.error(f"Error fetching trades from database: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"error": str(e), "trades": []}
+    except Exception:
+        # Full details (with request_id) go to the logs; clients get a generic error so
+        # internal paths/SQL/hostnames never leak in responses.
+        logger.exception("Error fetching trades from database")
+        return {"error": "Trade history is temporarily unavailable", "trades": []}
 
 
 # --- Per-user exchange-key vault endpoints -------------------------------------
@@ -756,9 +790,14 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
         result["exchange"] = exchange
         result["live"] = is_live
         return result
-    except Exception as e:
-        logger.error(f"execute-setup failed for {user_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
+    except Exception:
+        # Log the full error server-side (correlated via X-Request-ID); keep the client
+        # message generic — exception text can carry internal details.
+        logger.exception(f"execute-setup failed for {user_id}")
+        raise HTTPException(
+            status_code=500,
+            detail="Execution failed — see server logs (X-Request-ID header correlates).",
+        )
 
 
 @app.post("/api/close-positions")
@@ -811,17 +850,73 @@ async def close_all_positions(_auth: None = Depends(require_auth)):
                        "Watch the live position feed for confirmation.",
             "correlation_id": correlation_id,
         }
-    except Exception as e:
-        logger.error(f"Error dispatching close-positions command: {e}")
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+    except Exception:
+        logger.exception("Error dispatching close-positions command")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not dispatch close-positions — see server logs.",
+        )
 
 @app.get("/health")
 async def health_check():
     return {
-        "status": "online", 
+        "status": "online",
         "connections": len(manager.active_connections),
         "message_bus": message_bus is not None
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint (request counts/latency, rate-limit hits, WS gauge,
+    process metrics)."""
+    from fastapi.responses import Response
+    from src.utils.metrics import WS_CONNECTIONS, render_latest
+    WS_CONNECTIONS.set(len(manager.connections))
+    payload, content_type = render_latest()
+    return Response(content=payload, media_type=content_type)
+
+
+@app.get("/health/live")
+async def health_live():
+    """Liveness: the process is up and serving. Never checks dependencies — a dead
+    Redis must NOT make the orchestrator kill/restart the API pod."""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness: can this instance actually serve traffic? Checks the message bus
+    (Redis) and the trade DB. Returns 503 while not ready so load balancers /
+    orchestrators keep traffic away without restarting the process."""
+    from fastapi.responses import JSONResponse
+    checks: Dict[str, bool] = {}
+
+    try:
+        checks["redis"] = bool(message_bus) and await asyncio.wait_for(
+            message_bus.redis_client.ping(), timeout=2
+        )
+    except Exception:
+        checks["redis"] = False
+
+    try:
+        if trade_history_manager is not None:
+            def _db_ping() -> bool:
+                from sqlalchemy import text
+                with trade_history_manager.engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                return True
+            checks["database"] = await asyncio.wait_for(asyncio.to_thread(_db_ping), timeout=3)
+        else:
+            checks["database"] = False
+    except Exception:
+        checks["database"] = False
+
+    ready = all(checks.values())
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "not_ready", "checks": checks},
+    )
 
 if __name__ == "__main__":
     import uvicorn

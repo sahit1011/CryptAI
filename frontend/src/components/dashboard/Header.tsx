@@ -102,6 +102,7 @@ export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
                             key={c}
                             onClick={() => setCurrency(c)}
                             aria-pressed={currency === c}
+                            aria-label={c === "USD" ? "Show values in US Dollars" : "Show values in Indian Rupees"}
                             className={
                                 "num size-6 rounded text-sm font-semibold leading-none transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 " +
                                 (currency === c
@@ -123,7 +124,7 @@ export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
                 {/* Recent trades notifications */}
                 <Popover>
                     <PopoverTrigger asChild>
-                        <Button variant="ghost" size="icon" className="relative">
+                        <Button variant="ghost" size="icon" className="relative" aria-label="Recent trade notifications">
                             <Bell className="h-5 w-5" />
                             {recentTrades.length > 0 && (
                                 <span className="absolute right-2.5 top-2.5 size-1.5 rounded-full bg-accent ring-2 ring-background" />

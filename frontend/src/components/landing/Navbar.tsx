@@ -131,6 +131,7 @@ export function Navbar() {
                                         onClick={handleLogout}
                                         disabled={isLoggingOut}
                                         title="Logout"
+                                        aria-label="Logout"
                                     >
                                         <LogOut className="h-4 w-4" />
                                     </Button>
