@@ -179,3 +179,52 @@ export async function deleteExchangeKeys(exchange = "bingx"): Promise<ExchangeKe
     if (!res.ok) throw new Error(await backendError(res));
     return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Trading settings (per-user mode + active exchange) and setup suggestions.
+// ---------------------------------------------------------------------------
+
+export type TradingMode = "off" | "paper" | "manual" | "auto";
+export interface UserSettings {
+    trading_mode: TradingMode;
+    active_exchange: string;
+}
+
+/** The caller's trading mode + active exchange (safe defaults if unset). */
+export async function getSettings(): Promise<UserSettings> {
+    const res = await fetch(`${API_URL}/api/settings`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Update the caller's trading mode / active exchange. */
+export async function saveSettings(body: Partial<UserSettings>): Promise<UserSettings> {
+    const res = await fetch(`${API_URL}/api/settings`, {
+        method: "POST",
+        headers: await authHeaders(true),
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Recent trade-setup suggestions (shared across users) for load-time hydration. */
+export async function getSetups(): Promise<{ setups: Record<string, unknown>[] }> {
+    const res = await fetch(`${API_URL}/api/setups`, { cache: "no-store" });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Manually execute a setup as a full bracket on the caller's connected exchange. */
+export async function executeSetup(setup: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await fetch(`${API_URL}/api/execute-setup`, {
+        method: "POST",
+        headers: await authHeaders(true),
+        body: JSON.stringify(setup),
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}

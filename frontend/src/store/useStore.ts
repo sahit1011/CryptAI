@@ -33,6 +33,22 @@ export interface Trade {
     takeProfit?: number
 }
 
+export interface Signal {
+    id: string
+    symbol: string
+    direction: 'LONG' | 'SHORT'
+    entry: number
+    stopLoss: number
+    takeProfits: number[]
+    confidence?: number
+    riskReward?: number
+    regime?: string
+    strategy?: string
+    reasoning?: string
+    positionSize?: number
+    ts: string
+}
+
 export interface PortfolioMetrics {
     totalValue: number
     totalInvested: number
@@ -60,6 +76,11 @@ interface AppState {
 
     portfolio: PortfolioMetrics
     setPortfolio: (metrics: PortfolioMetrics) => void
+
+    // Trade-setup suggestions (Signals feed) — shared across users; live via WS.
+    signals: Signal[]
+    addSignal: (signal: Signal) => void
+    setSignals: (signals: Signal[]) => void
 
     isSidebarOpen: boolean
     toggleSidebar: () => void
@@ -125,6 +146,13 @@ export const useStore = create<AppState>()(
                 totalTrades: 0
             },
             setPortfolio: (metrics) => set({ portfolio: metrics }),
+
+            signals: [],
+            addSignal: (signal) => set((state) => ({
+                // newest first, dedupe by id, keep the last 30
+                signals: [signal, ...state.signals.filter((s) => s.id !== signal.id)].slice(0, 30),
+            })),
+            setSignals: (signals) => set({ signals }),
 
             isSidebarOpen: true,
             toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),

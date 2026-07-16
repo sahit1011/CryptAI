@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useSearchParams } from "next/navigation"
-import { LayoutDashboard, Activity, Bot, Wallet, LineChart, LogOut, TrendingUp, TrendingDown, Home, Plug } from "lucide-react"
+import { LayoutDashboard, Activity, Bot, Wallet, LineChart, LogOut, TrendingUp, TrendingDown, Home, Plug, Radar } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { PnL } from "@/components/ui/value"
@@ -18,6 +18,7 @@ const routes = [
     { label: "Overview", icon: LayoutDashboard, href: "/dashboard", section: "overview" },
     { label: "Portfolio", icon: Wallet, href: "/dashboard?section=portfolio", section: "portfolio" },
     { label: "Markets", icon: LineChart, href: "/dashboard?section=markets", section: "markets" },
+    { label: "Signals", icon: Radar, href: "/dashboard?section=signals", section: "signals" },
     { label: "Connect", icon: Plug, href: "/dashboard?section=connect", section: "connect" },
     { label: "AI Agents", icon: Bot, href: "/dashboard?section=agents", section: "agents" },
 ]

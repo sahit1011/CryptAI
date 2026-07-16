@@ -8,10 +8,11 @@ import { PortfolioSection } from "@/components/dashboard/sections/PortfolioSecti
 import { MarketsSection } from "@/components/dashboard/sections/MarketsSection";
 import { AgentsSection } from "@/components/dashboard/sections/AgentsSection";
 import { ConnectExchangeSection } from "@/components/dashboard/sections/ConnectExchangeSection";
+import { SignalsSection } from "@/components/dashboard/sections/SignalsSection";
 import { useMarketData } from "@/hooks/useMarketData";
 import { motion, AnimatePresence } from "framer-motion";
 
-const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "connect", "agents"];
+const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "signals", "connect", "agents"];
 
 const sectionVariants = {
     hidden: { opacity: 0, y: 20 },
@@ -55,6 +56,7 @@ function DashboardContent() {
                         {activeSection === "portfolio" && <PortfolioSection />}
                         {activeSection === "markets" && <MarketsSection />}
                         {activeSection === "agents" && <AgentsSection />}
+                        {activeSection === "signals" && <SignalsSection />}
                         {activeSection === "connect" && <ConnectExchangeSection />}
                     </motion.div>
                 </AnimatePresence>

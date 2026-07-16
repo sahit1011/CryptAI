@@ -22,9 +22,15 @@ import {
     getExchangeKeys,
     saveExchangeKeys,
     deleteExchangeKeys,
+    saveSettings,
     type ExchangeKeyStatus,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+const EXCHANGES: { id: string; label: string; hint: string; keysUrl: string }[] = [
+    { id: "bingx", label: "BingX", hint: "VST demo (testnet) — Futures/Perpetual keys", keysUrl: "https://bingx.com/en/account/api/" },
+    { id: "delta_india", label: "Delta Exchange India", hint: "Demo (testnet) — F&O trading keys", keysUrl: "https://www.delta.exchange/app/account/manageapikeys" },
+];
 
 /**
  * Connect-exchange onboarding. A signed-in user pastes their own BingX VST *testnet*
@@ -38,6 +44,7 @@ export function ConnectExchangeSection() {
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
 
+    const [exchange, setExchange] = useState("bingx");
     const [apiKey, setApiKey] = useState("");
     const [apiSecret, setApiSecret] = useState("");
     const [label, setLabel] = useState("");
@@ -77,10 +84,12 @@ export function ConnectExchangeSection() {
                 api_key: apiKey.trim(),
                 api_secret: apiSecret.trim(),
                 label: label.trim() || null,
-                exchange: "bingx",
+                exchange,
                 is_testnet: true,
             });
             setStatus(next);
+            // Point the daemon/manual-execute at the exchange the user just connected.
+            try { await saveSettings({ active_exchange: exchange }); } catch { /* non-fatal */ }
             setApiKey("");
             setApiSecret("");
             setLabel("");
@@ -149,17 +158,19 @@ export function ConnectExchangeSection() {
             ) : (
                 <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
                     <ConnectForm
+                        exchange={exchange}
                         apiKey={apiKey}
                         apiSecret={apiSecret}
                         label={label}
                         submitting={submitting}
                         error={formError}
+                        onExchange={setExchange}
                         onApiKey={setApiKey}
                         onApiSecret={setApiSecret}
                         onLabel={setLabel}
                         onSubmit={handleConnect}
                     />
-                    <HelpCard />
+                    <HelpCard exchange={exchange} />
                 </div>
             )}
         </div>
@@ -233,40 +244,66 @@ function ConnectedCard({
 }
 
 function ConnectForm({
+    exchange,
     apiKey,
     apiSecret,
     label,
     submitting,
     error,
+    onExchange,
     onApiKey,
     onApiSecret,
     onLabel,
     onSubmit,
 }: {
+    exchange: string;
     apiKey: string;
     apiSecret: string;
     label: string;
     submitting: boolean;
     error: string | null;
+    onExchange: (v: string) => void;
     onApiKey: (v: string) => void;
     onApiSecret: (v: string) => void;
     onLabel: (v: string) => void;
     onSubmit: (e: React.FormEvent) => void;
 }) {
+    const selected = EXCHANGES.find((x) => x.id === exchange) ?? EXCHANGES[0];
     return (
         <Card className="p-5">
             <form onSubmit={onSubmit} className="flex flex-col gap-5">
                 <div className="flex items-center gap-2">
                     <KeyRound className="size-4 text-accent" />
-                    <h2 className="text-sm font-semibold text-foreground">BingX testnet API keys</h2>
+                    <h2 className="text-sm font-semibold text-foreground">Exchange API keys</h2>
                 </div>
+
+                <Field label="Exchange" htmlFor="exchange">
+                    <div className="grid grid-cols-2 gap-2">
+                        {EXCHANGES.map((x) => (
+                            <button
+                                key={x.id}
+                                type="button"
+                                onClick={() => onExchange(x.id)}
+                                className={cn(
+                                    "rounded-md border px-3 py-2 text-left text-sm transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                                    exchange === x.id
+                                        ? "border-accent/40 bg-accent-muted/40 text-foreground"
+                                        : "border-border bg-elevated/30 text-muted-foreground hover:text-foreground",
+                                )}
+                            >
+                                <span className="block font-medium">{x.label}</span>
+                                <span className="block text-[11px] text-subtle-foreground">{x.hint}</span>
+                            </button>
+                        ))}
+                    </div>
+                </Field>
 
                 <Field label="API key" htmlFor="api-key">
                     <Input
                         id="api-key"
                         value={apiKey}
                         onChange={(e) => onApiKey(e.target.value)}
-                        placeholder="Paste your BingX VST API key"
+                        placeholder={`Paste your ${selected.label} API key`}
                         autoComplete="off"
                         spellCheck={false}
                         className="font-mono"
@@ -279,7 +316,7 @@ function ConnectForm({
                         type="password"
                         value={apiSecret}
                         onChange={(e) => onApiSecret(e.target.value)}
-                        placeholder="Paste your BingX VST API secret"
+                        placeholder={`Paste your ${selected.label} API secret`}
                         autoComplete="off"
                         spellCheck={false}
                         className="font-mono"
@@ -319,26 +356,27 @@ function ConnectForm({
     );
 }
 
-function HelpCard() {
+function HelpCard({ exchange }: { exchange: string }) {
+    const ex = EXCHANGES.find((x) => x.id === exchange) ?? EXCHANGES[0];
     return (
         <Card className="gap-4 p-5">
             <div className="flex items-center gap-2">
                 <ExternalLink className="size-4 text-accent" />
-                <h2 className="text-sm font-semibold text-foreground">How to get testnet keys</h2>
+                <h2 className="text-sm font-semibold text-foreground">How to get {ex.label} testnet keys</h2>
             </div>
             <ol className="flex flex-col gap-3 text-sm text-muted-foreground">
                 {[
                     <>
-                        Open the{" "}
+                        Open{" "}
                         <a
-                            href="https://bingx.com/en/account/api/"
+                            href={ex.keysUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-accent underline-offset-4 hover:underline"
                         >
-                            BingX API management
+                            {ex.label} API management
                         </a>{" "}
-                        page and switch to the <span className="font-medium text-foreground">VST demo</span> environment.
+                        and switch to the <span className="font-medium text-foreground">demo / testnet</span> environment.
                     </>,
                     <>Create an API key with <span className="font-medium text-foreground">Futures / Perpetual</span> read + trade permissions.</>,
                     <>Leave IP restrictions off (or allowlist the server) so the agents can place orders.</>,

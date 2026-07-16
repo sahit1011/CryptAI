@@ -185,6 +185,10 @@ export function useMarketData() {
                     applyAgentActivity(type, data)
                     break
 
+                case 'trade_setup':
+                    applySetup(data)
+                    break
+
                 case 'initial_state':
                     applyInitialState(data)
                     break
@@ -295,6 +299,36 @@ export function useMarketData() {
                 info: 'info', success: 'success', warning: 'warning', error: 'error',
             }
             addLog(makeLog(agent, message, sevMap[String(d.severity)] ?? 'info', d.id as string | undefined))
+        }
+
+        const applySetup = (raw: unknown) => {
+            // Backend shape: { type: 'trade_setup', payload: {...setup...} }
+            const outer = (raw ?? {}) as Record<string, unknown>
+            const p = (outer.payload ?? outer) as Record<string, unknown>
+            if (!p.symbol) return
+            const tps = (Array.isArray(p.take_profit_levels) ? p.take_profit_levels : [])
+                .map((tp) => (typeof tp === 'object' && tp !== null ? Number((tp as Record<string, unknown>).price) : Number(tp)))
+                .filter((n) => Number.isFinite(n))
+            const entry = Number(p.entry_price) || 0
+            const stopLoss = Number(p.stop_loss) || 0
+            // Content-derived id so WS replay doesn't create duplicates.
+            const id = `${p.symbol}-${p.direction}-${entry}-${stopLoss}`
+            useStore.getState().addSignal({
+                id,
+                symbol: String(p.symbol),
+                direction: String(p.direction) === 'SHORT' ? 'SHORT' : 'LONG',
+                entry,
+                stopLoss,
+                takeProfits: tps,
+                confidence: p.confidence_score != null ? Number(p.confidence_score) : undefined,
+                riskReward: p.risk_reward != null ? Number(p.risk_reward) : undefined,
+                regime: p.market_regime ? String(p.market_regime) : undefined,
+                strategy: p.strategy_type ? String(p.strategy_type) : undefined,
+                reasoning: typeof p.reasoning === 'string' ? p.reasoning : undefined,
+                positionSize: p.recommended_position_size != null ? Number(p.recommended_position_size) : undefined,
+                ts: new Date().toISOString(),
+            })
+            addLog(makeLog('STRATEGY', `Setup: ${p.direction} ${p.symbol} @ ${entry}`, 'info'))
         }
 
         const applyInitialState = (raw: unknown) => {
