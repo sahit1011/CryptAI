@@ -422,37 +422,15 @@ export function ChartWidget() {
 
     return (
         <Card className="flex h-full flex-col overflow-hidden py-0">
-            {/* Header: symbol + OHLC readout + timeframe switcher */}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-                <div className="flex flex-wrap items-center gap-4">
-                    <h3 className="heading-4">
-                        BTC/USDT · <span className="num text-muted-foreground">{timeframe.toUpperCase()}</span>
-                    </h3>
-                    {ohlc ? (
-                        <div className="flex items-center gap-2 whitespace-nowrap text-xs">
-                            <span className="label-md">O</span>
-                            <Value className="text-xs" value={ohlc.open} decimals={2} money />
-                            <span className="label-md">H</span>
-                            <Value className="text-xs text-profit" value={ohlc.high} decimals={2} money />
-                            <span className="label-md">L</span>
-                            <Value className="text-xs text-loss" value={ohlc.low} decimals={2} money />
-                            <span className="label-md">C</span>
-                            <Value
-                                className={cn(
-                                    "text-xs font-semibold",
-                                    ohlc.close >= ohlc.open ? "text-profit" : "text-loss",
-                                )}
-                                value={ohlc.close}
-                                decimals={2}
-                                money
-                            />
-                            <span className="label-md ml-1">Vol</span>
-                            <Value className="text-xs text-muted-foreground" value={ohlc.volume} decimals={2} />
-                        </div>
-                    ) : null}
-                </div>
+            {/* Header: symbol + timeframe switcher. STABLE layout — the OHLC readout is
+                a floating overlay on the chart (below), NOT here, so it can't shift the
+                timeframe buttons as the crosshair moves. */}
+            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+                <h3 className="heading-4 truncate">
+                    BTC/USDT · <span className="num text-muted-foreground">{timeframe.toUpperCase()}</span>
+                </h3>
 
-                <div className="flex gap-0.5">
+                <div className="flex shrink-0 gap-0.5">
                     {TIMEFRAMES.map((tf) => (
                         <Button
                             key={tf}
@@ -473,6 +451,31 @@ export function ChartWidget() {
             {/* Chart canvas + overlays */}
             <div className="relative min-h-0 flex-1">
                 <div ref={chartContainerRef} className="h-full w-full" />
+
+                {/* OHLC readout — floats over the chart (TradingView-style legend) so it
+                    never affects the header/button layout. */}
+                {ohlc ? (
+                    <div className="pointer-events-none absolute left-3 top-2 z-20 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md bg-background/70 px-2 py-1 text-xs backdrop-blur-sm">
+                        <span className="label-md">O</span>
+                        <Value className="text-xs" value={ohlc.open} decimals={2} money />
+                        <span className="label-md">H</span>
+                        <Value className="text-xs text-profit" value={ohlc.high} decimals={2} money />
+                        <span className="label-md">L</span>
+                        <Value className="text-xs text-loss" value={ohlc.low} decimals={2} money />
+                        <span className="label-md">C</span>
+                        <Value
+                            className={cn(
+                                "text-xs font-semibold",
+                                ohlc.close >= ohlc.open ? "text-profit" : "text-loss",
+                            )}
+                            value={ohlc.close}
+                            decimals={2}
+                            money
+                        />
+                        <span className="label-md ml-1">Vol</span>
+                        <Value className="text-xs text-muted-foreground" value={ohlc.volume} decimals={2} />
+                    </div>
+                ) : null}
 
                 {isLoading ? (
                     <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
