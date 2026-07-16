@@ -25,9 +25,20 @@ export default function DashboardLayout({
 
             if (!session) {
                 router.push("/auth/login");
-            } else {
-                setIsLoading(false);
+                return;
             }
+            // First-run users pick their preferences (mode + exchange) in onboarding
+            // before seeing the dashboard. Fail-open: if the settings API is
+            // unreachable (e.g. backend cold start), don't lock users out.
+            try {
+                const { getSettings } = await import("@/lib/api");
+                const s = await getSettings();
+                if (s.onboarded === false) {
+                    router.push("/onboarding");
+                    return;
+                }
+            } catch { /* fail-open */ }
+            setIsLoading(false);
         };
 
         checkAuth();

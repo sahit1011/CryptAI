@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from src.data.data_models import UserSettings
 
 VALID_MODES = ("off", "paper", "manual", "auto")
-DEFAULTS = {"trading_mode": "paper", "active_exchange": "bingx"}
+DEFAULTS = {"trading_mode": "paper", "active_exchange": "bingx", "onboarded": False}
 
 
 class UserSettingsStore:
@@ -26,6 +26,15 @@ class UserSettingsStore:
         UserSettings.__table__.create(self.engine, checkfirst=True)
         self.Session = sessionmaker(bind=self.engine)
 
+    @staticmethod
+    def _to_dict(user_id: str, row) -> dict:
+        return {
+            "user_id": user_id,
+            "trading_mode": row.trading_mode,
+            "active_exchange": row.active_exchange,
+            "onboarded": bool(row.onboarded),
+        }
+
     def get(self, user_id: str) -> dict:
         """Return the user's settings, falling back to safe defaults."""
         session = self.Session()
@@ -33,11 +42,7 @@ class UserSettingsStore:
             row = session.query(UserSettings).filter_by(user_id=user_id).first()
             if not row:
                 return {"user_id": user_id, **DEFAULTS}
-            return {
-                "user_id": user_id,
-                "trading_mode": row.trading_mode,
-                "active_exchange": row.active_exchange,
-            }
+            return self._to_dict(user_id, row)
         finally:
             session.close()
 
@@ -46,6 +51,7 @@ class UserSettingsStore:
         user_id: str,
         trading_mode: Optional[str] = None,
         active_exchange: Optional[str] = None,
+        onboarded: Optional[bool] = None,
     ) -> dict:
         """Upsert the user's settings. Unknown modes are rejected."""
         if trading_mode is not None and trading_mode not in VALID_MODES:
@@ -60,9 +66,14 @@ class UserSettingsStore:
                 row.trading_mode = trading_mode
             if active_exchange is not None:
                 row.active_exchange = active_exchange
+            if onboarded is not None:
+                row.onboarded = bool(onboarded)
             session.commit()
-            logger.info(f"Updated settings for {user_id}: mode={row.trading_mode} exch={row.active_exchange}")
-            return {"user_id": user_id, "trading_mode": row.trading_mode, "active_exchange": row.active_exchange}
+            logger.info(
+                f"Updated settings for {user_id}: mode={row.trading_mode} "
+                f"exch={row.active_exchange} onboarded={row.onboarded}"
+            )
+            return self._to_dict(user_id, row)
         finally:
             session.close()
 

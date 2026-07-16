@@ -38,7 +38,7 @@ test("logs in with real Supabase auth and lands on the dashboard", async () => {
 });
 
 test("all dashboard sections open", async () => {
-    for (const section of ["portfolio", "markets", "signals", "connect", "agents"]) {
+    for (const section of ["portfolio", "markets", "agents", "settings"]) {
         await page.goto(`/dashboard?section=${section}`);
         // Each section renders its own header; the app shell must not error-screen.
         await expect(page.locator("text=/something went wrong|unhandled error/i")).toHaveCount(0);
@@ -59,8 +59,8 @@ test("currency toggle switches the dashboard to ₹ and back, and persists", asy
     await expect(inr).toBeVisible();
 });
 
-test("signals: trading mode switches to Manual and persists server-side", async () => {
-    await page.goto("/dashboard?section=signals");
+test("settings: trading mode switches to Manual and persists server-side", async () => {
+    await page.goto("/dashboard?section=settings");
     await expect(page.getByText("Trading mode")).toBeVisible({ timeout: 15_000 });
     await page.getByRole("button", { name: /manual/i }).click();
     // Server persists via POST /api/settings; reload must come back as Manual.
@@ -73,9 +73,9 @@ test("signals: trading mode switches to Manual and persists server-side", async 
     await page.getByRole("button", { name: /paper/i }).click();
 });
 
-test("connect exchange: picker offers BingX and Delta India, testnet-gated", async () => {
-    await page.goto("/dashboard?section=connect");
-    await expect(page.getByText("Connect Exchange").first()).toBeVisible({ timeout: 15_000 });
+test("settings: exchange picker offers BingX and Delta India, testnet-gated", async () => {
+    await page.goto("/dashboard?section=settings");
+    await expect(page.getByText("Exchange connection")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("Testnet only.")).toBeVisible();
     await expect(page.getByRole("button", { name: /BingX/ })).toBeVisible();
     const delta = page.getByRole("button", { name: /Delta Exchange India/ });

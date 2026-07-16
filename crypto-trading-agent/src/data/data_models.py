@@ -165,6 +165,8 @@ class UserSettings(Base):
     user_id = Column(String(64), nullable=False, index=True, unique=True)  # Supabase UUID
     trading_mode = Column(String(10), nullable=False, default='paper')
     active_exchange = Column(String(20), nullable=False, default='bingx')
+    # First-run onboarding completed? Drives the post-login redirect to /onboarding.
+    onboarded = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

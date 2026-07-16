@@ -13,7 +13,9 @@ import {
     BarChart3,
     ArrowRight,
     History,
+    Radar,
 } from "lucide-react";
+import { SignalsFeed } from "../widgets/SignalsFeed";
 import { useStore, Trade } from "@/store/useStore";
 import { useMarketStore } from "@/hooks/useMarketData";
 import { API_URL, authHeaders } from "@/lib/api";
@@ -193,6 +195,15 @@ export function OverviewSection() {
                             : "No data"}
                     </span>
                 </StatCard>
+            </div>
+
+            {/* Live AI trade setups (behavior follows the user's trading mode) */}
+            <div>
+                <div className="mb-3 flex items-center gap-2">
+                    <Radar className="size-4 text-subtle-foreground" />
+                    <h3 className="heading-4 text-foreground">AI Signals</h3>
+                </div>
+                <SignalsFeed limit={4} />
             </div>
 
             {/* Recent Closed Trades — historical closed trades from the database */}

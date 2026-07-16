@@ -1,153 +1,68 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-    Radar,
-    TrendingUp,
-    TrendingDown,
-    Loader2,
-    Zap,
-    Bot,
-    Hand,
     Beaker,
-    Power,
+    Bot,
+    Loader2,
+    Radar,
     Target,
-    ShieldAlert,
-    Sparkles,
+    TrendingDown,
+    TrendingUp,
+    Zap,
 } from "lucide-react";
-import { SectionHeader } from "../ui/SectionHeader";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/states";
 import { useStore, type Signal } from "@/store/useStore";
-import {
-    getSettings,
-    saveSettings,
-    getSetups,
-    executeSetup,
-    type TradingMode,
-} from "@/lib/api";
-import { cn } from "@/lib/utils";
-import { formatMoney } from "@/lib/currency";
+import { executeSetup, getSettings, getSetups, type TradingMode } from "@/lib/api";
 import { payloadToSignal } from "@/lib/signals";
-
-const MODES: { id: TradingMode; label: string; icon: typeof Bot; hint: string }[] = [
-    { id: "off", label: "Off", icon: Power, hint: "Ignore setups — no trading." },
-    { id: "paper", label: "Paper", icon: Beaker, hint: "Auto-trade a paper portfolio. No exchange, no risk." },
-    { id: "manual", label: "Manual", icon: Hand, hint: "You place each setup yourself with one click." },
-    { id: "auto", label: "Auto", icon: Bot, hint: "The AI places orders on your connected exchange." },
-];
+import { formatMoney } from "@/lib/currency";
+import { cn } from "@/lib/utils";
 
 /**
- * Signals feed + trading-mode control. Shows the live trade-setup suggestions the
- * agents generate (shared across users), and lets the user choose how they're acted on:
- * Off / Paper (default) / Manual (Execute button) / Auto (agents place orders).
+ * Live AI trade-setup feed. Hydrates from GET /api/setups, then updates over the
+ * WebSocket (`trade_setup` messages via useMarketData -> store.signals). Behavior of
+ * each card follows the user's trading mode (Manual -> Execute button).
  */
-export function SignalsSection() {
+export function SignalsFeed({ limit }: { limit?: number }) {
     const signals = useStore((s) => s.signals);
     const setSignals = useStore((s) => s.setSignals);
     const addSignal = useStore((s) => s.addSignal);
-
     const [mode, setMode] = useState<TradingMode>("paper");
-    const [savingMode, setSavingMode] = useState<TradingMode | null>(null);
-    const [modeError, setModeError] = useState<string | null>(null);
 
-    // Hydrate recent setups + current mode on mount.
     useEffect(() => {
         (async () => {
             try {
                 const { setups } = await getSetups();
                 const mapped = setups.map(payloadToSignal).filter(Boolean) as Signal[];
                 if (mapped.length) setSignals(mapped);
-            } catch {
-                /* WS will still deliver live setups */
-            }
+            } catch { /* WS still delivers live setups */ }
             try {
                 setMode((await getSettings()).trading_mode);
-            } catch {
-                /* keep default */
-            }
+            } catch { /* keep default */ }
         })();
     }, [setSignals]);
 
-    const changeMode = useCallback(async (next: TradingMode) => {
-        setSavingMode(next);
-        setModeError(null);
-        try {
-            const saved = await saveSettings({ trading_mode: next });
-            setMode(saved.trading_mode);
-        } catch (e) {
-            setModeError(e instanceof Error ? e.message : "Could not update mode");
-        } finally {
-            setSavingMode(null);
-        }
-    }, []);
+    const shown = limit ? signals.slice(0, limit) : signals;
+
+    if (shown.length === 0) {
+        return (
+            <Card className="py-10">
+                <EmptyState
+                    icon={<Radar className="size-6" />}
+                    title="Waiting for AI setups"
+                    description="The agents publish trade setups here as they find them each analysis cycle."
+                />
+            </Card>
+        );
+    }
 
     return (
-        <div>
-            <SectionHeader
-                title="Signals"
-                description="Live trade-setup suggestions from the AI agents. Choose how they're acted on — watch only, paper-trade, place them yourself, or let the agents trade your connected exchange."
-                icon={Radar}
-            />
-
-            {/* Trading-mode selector */}
-            <Card className="mb-6 gap-4 p-5">
-                <div className="flex items-center gap-2">
-                    <Sparkles className="size-4 text-accent" />
-                    <h2 className="text-sm font-semibold text-foreground">Trading mode</h2>
-                </div>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    {MODES.map((m) => {
-                        const Icon = m.icon;
-                        const active = mode === m.id;
-                        const busy = savingMode === m.id;
-                        return (
-                            <button
-                                key={m.id}
-                                onClick={() => changeMode(m.id)}
-                                disabled={savingMode !== null}
-                                className={cn(
-                                    "flex flex-col gap-1.5 rounded-lg border px-4 py-3 text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60",
-                                    active
-                                        ? "border-accent/40 bg-accent-muted/40 text-foreground"
-                                        : "border-border bg-elevated/30 text-muted-foreground hover:border-border-strong hover:text-foreground",
-                                )}
-                            >
-                                <span className="flex items-center gap-2 text-sm font-medium">
-                                    {busy ? <Loader2 className="size-4 animate-spin" /> : <Icon className={cn("size-4", active && "text-accent")} />}
-                                    {m.label}
-                                </span>
-                                <span className="text-[11px] leading-snug text-subtle-foreground">{m.hint}</span>
-                            </button>
-                        );
-                    })}
-                </div>
-                {modeError && <p className="text-sm text-loss">{modeError}</p>}
-                {(mode === "manual" || mode === "auto") && (
-                    <p className="flex items-center gap-1.5 text-xs text-subtle-foreground">
-                        <ShieldAlert className="size-3" />
-                        Real orders require a connected exchange (Connect tab) and stay testnet-gated.
-                    </p>
-                )}
-            </Card>
-
-            {/* Live setups */}
-            {signals.length === 0 ? (
-                <Card className="py-12">
-                    <EmptyState
-                        icon={<Radar className="size-6" />}
-                        title="Waiting for setups"
-                        description="The agents publish setups here as they find them each cycle. (Needs an LLM key configured on the backend to generate live suggestions.)"
-                    />
-                </Card>
-            ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                    {signals.map((s) => (
-                        <SignalCard key={s.id} signal={s} mode={mode} onExecuted={addSignal} />
-                    ))}
-                </div>
-            )}
+        <div className="grid gap-4 md:grid-cols-2">
+            {shown.map((s) => (
+                <SignalCard key={s.id} signal={s} mode={mode} onExecuted={addSignal} />
+            ))}
         </div>
     );
 }
@@ -181,7 +96,7 @@ function SignalCard({
                 recommended_position_size: signal.positionSize,
             });
             setResult(String(r.status ?? "submitted"));
-            onExecuted({ ...signal }); // refresh card ordering
+            onExecuted({ ...signal });
         } catch (e) {
             setError(e instanceof Error ? e.message : "Execution failed");
         } finally {
@@ -231,7 +146,6 @@ function SignalCard({
                 <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">{signal.reasoning}</p>
             )}
 
-            {/* Action row depends on mode */}
             <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
                 <span className="text-[11px] text-subtle-foreground">
                     {signal.regime ? signal.regime.replace(/_/g, " ").toLowerCase() : "suggestion"}

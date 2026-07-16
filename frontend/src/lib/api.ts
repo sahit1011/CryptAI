@@ -188,6 +188,7 @@ export type TradingMode = "off" | "paper" | "manual" | "auto";
 export interface UserSettings {
     trading_mode: TradingMode;
     active_exchange: string;
+    onboarded?: boolean;
 }
 
 /** The caller's trading mode + active exchange (safe defaults if unset). */

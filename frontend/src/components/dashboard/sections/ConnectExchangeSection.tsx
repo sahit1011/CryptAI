@@ -39,7 +39,7 @@ const EXCHANGES: { id: string; label: string; hint: string; keysUrl: string }[] 
  * once stored, the API only ever returns a masked hint (never the raw secret), so this
  * screen never displays or persists the plaintext.
  */
-export function ConnectExchangeSection() {
+export function ConnectExchangeSection({ embedded = false }: { embedded?: boolean } = {}) {
     const [status, setStatus] = useState<ExchangeKeyStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -117,11 +117,13 @@ export function ConnectExchangeSection() {
 
     return (
         <div>
-            <SectionHeader
-                title="Connect Exchange"
-                description="Link your BingX testnet account to let the AI agents trade your own portfolio. Analysis is shared; execution and balances stay entirely yours."
-                icon={Plug}
-            />
+            {!embedded && (
+                <SectionHeader
+                    title="Connect Exchange"
+                    description="Link your BingX testnet account to let the AI agents trade your own portfolio. Analysis is shared; execution and balances stay entirely yours."
+                    icon={Plug}
+                />
+            )}
 
             {/* Testnet-only safety banner — this is a hard backend gate, surfaced up front. */}
             <div className="mb-6 flex items-start gap-3 rounded-lg border border-accent/25 bg-accent-muted/40 px-4 py-3">

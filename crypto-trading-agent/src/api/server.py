@@ -707,13 +707,16 @@ async def delete_exchange_keys(exchange: str = "bingx", user_id: str = Depends(r
 class SettingsBody(BaseModel):
     trading_mode: Optional[str] = None      # off | paper | manual | auto
     active_exchange: Optional[str] = None   # bingx | delta_india
+    onboarded: Optional[bool] = None        # first-run onboarding completed
 
 
 @app.get("/api/settings")
 async def get_settings(user_id: str = Depends(require_user)):
     """The caller's trading settings (mode + active exchange), with safe defaults."""
     if user_settings_store is None:
-        return {"trading_mode": "paper", "active_exchange": "bingx"}
+        # Degraded fallback: report onboarded so a broken store can't trap users
+        # in the onboarding redirect loop.
+        return {"trading_mode": "paper", "active_exchange": "bingx", "onboarded": True}
     return await asyncio.to_thread(user_settings_store.get, user_id)
 
 
@@ -724,7 +727,8 @@ async def set_settings(body: SettingsBody, user_id: str = Depends(require_user))
         raise HTTPException(status_code=503, detail="Settings store is not configured")
     try:
         return await asyncio.to_thread(
-            user_settings_store.set, user_id, body.trading_mode, body.active_exchange
+            user_settings_store.set, user_id, body.trading_mode, body.active_exchange,
+            body.onboarded,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
