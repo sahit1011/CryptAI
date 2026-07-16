@@ -138,6 +138,8 @@ class UserRegistry:
         vault: Optional[Any] = None,
         config_for: Optional[Callable[[str], UserRiskConfig]] = None,
         seed_user_ids: Optional[List[str]] = None,
+        mode_for: Optional[Callable[[str], str]] = None,
+        exchange_builder: Optional[Callable[[str], Any]] = None,
     ):
         self.message_bus = message_bus
         self.state_manager = state_manager
@@ -147,6 +149,18 @@ class UserRegistry:
         # Always-on tenants that don't need vault credentials — e.g. a demo/owner paper
         # account. Unioned with connected-key users below.
         self._seed_user_ids = list(seed_user_ids or [])
+        # Per-user trading mode (off | paper | manual | auto). Default paper.
+        self._mode_for = mode_for or (lambda uid: "paper")
+        # Optional: build a LIVE per-user engine (from vault keys) for auto+connected
+        # users. Returns None to fall back to the isolated paper engine.
+        self._exchange_builder = exchange_builder or (lambda uid: None)
+
+    def mode_for(self, user_id: str) -> str:
+        """This user's trading mode (off | paper | manual | auto)."""
+        try:
+            return self._mode_for(user_id) or "paper"
+        except Exception:
+            return "paper"
 
     def active_user_ids(self) -> List[str]:
         """Tenants eligible to trade this cycle.
@@ -165,16 +179,31 @@ class UserRegistry:
         return sorted(ids)
 
     def session(self, user_id: str, exchange: Optional[Any] = None) -> UserSession:
+        mode = self.mode_for(user_id)
         s = self._sessions.get(user_id)
-        if s is None:
-            s = UserSession(
-                user_id,
-                message_bus=self.message_bus,
-                state_manager=self.state_manager,
-                config=self._config_for(user_id),
-                exchange=exchange,
-            )
-            self._sessions[user_id] = s
+        # Reuse the cached session unless the mode changed (paper<->auto swaps the engine)
+        # or an explicit engine override was passed.
+        if s is not None and exchange is None and getattr(s, "built_mode", None) == mode:
+            return s
+        # Choose the engine: explicit override → given; auto + connected → LIVE client
+        # (from vault keys via exchange_builder); everything else → isolated paper engine.
+        live_engine = exchange
+        if live_engine is None and mode == "auto":
+            try:
+                live_engine = self._exchange_builder(user_id)
+            except Exception as e:
+                logger.error(f"[multi-user] live engine build failed for {user_id}: {e}")
+                live_engine = None
+        s = UserSession(
+            user_id,
+            message_bus=self.message_bus,
+            state_manager=self.state_manager,
+            config=self._config_for(user_id),
+            exchange=live_engine,
+        )
+        s.built_mode = mode
+        s.is_live = live_engine is not None
+        self._sessions[user_id] = s
         return s
 
 
@@ -185,15 +214,28 @@ class MultiUserExecutor:
         self.registry = registry
 
     async def book_for_all(self, setup: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Fan a single shared setup out to each active tenant. Isolated + fault-tolerant."""
+        """Fan a shared setup out to each active tenant, per their trading mode.
+
+        off → ignore; manual → suggestion only (the user places it via /api/execute-setup);
+        paper → book to their paper engine; auto → book to their connected exchange (or
+        paper if none). Isolated + fault-tolerant per tenant.
+        """
         results: List[Dict[str, Any]] = []
+        skipped = 0
         for user_id in self.registry.active_user_ids():
+            mode = self.registry.mode_for(user_id)
+            if mode in ("off", "manual"):
+                skipped += 1
+                continue
             session = self.registry.session(user_id)
-            results.append(await session.evaluate_and_book(setup))
+            r = await session.evaluate_and_book(setup)
+            r["mode"] = mode
+            r["live"] = getattr(session, "is_live", False)
+            results.append(r)
         approved = sum(1 for r in results if r.get("approved"))
         logger.info(
-            f"[multi-user] booked setup {setup.get('symbol')} {setup.get('direction')} "
-            f"for {approved}/{len(results)} active tenants"
+            f"[multi-user] setup {setup.get('symbol')} {setup.get('direction')}: "
+            f"booked {approved}/{len(results)} (skipped {skipped} off/manual)"
         )
         return results
 

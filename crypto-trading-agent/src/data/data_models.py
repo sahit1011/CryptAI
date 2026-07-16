@@ -149,6 +149,25 @@ class ExchangeCredential(Base):
         Index('idx_exchange_cred_user', 'user_id', 'exchange', unique=True),
     )
 
+class UserSettings(Base):
+    """Per-user trading preferences (multi-tenant).
+
+    trading_mode drives what the daemon does for this user each cycle:
+      off    - ignore this user (no booking)
+      paper  - book to their isolated paper engine (default; safe, no exchange needed)
+      manual - surface suggestions only; the user places orders via /api/execute-setup
+      auto   - the agents place orders on the user's connected exchange (testnet-gated)
+    active_exchange selects which connected exchange to route real orders through.
+    """
+    __tablename__ = 'user_settings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True, unique=True)  # Supabase UUID
+    trading_mode = Column(String(10), nullable=False, default='paper')
+    active_exchange = Column(String(20), nullable=False, default='bingx')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class MarketData(Base):
     """Historical market data cache"""
     __tablename__ = 'market_data'

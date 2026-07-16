@@ -140,6 +140,13 @@ class ConnectionManager:
         self.initial_state: Dict[str, Dict[str, Any]] = {}
         # Per-tenant ring buffers of recent activity, replayed on connect.
         self.recent_activity: Dict[str, deque] = {}
+        # Recent trade-setup suggestions (shared across users), replayed on connect
+        # and served by GET /api/setups for load-time hydration.
+        self.recent_signals: deque = deque(maxlen=30)
+
+    def get_recent_signals(self) -> List[Dict[str, Any]]:
+        """Newest-first list of recent setup payloads (for GET /api/setups)."""
+        return [m.get("data", m) for m in reversed(self.recent_signals)]
 
     @property
     def active_connections(self) -> List[WebSocket]:
@@ -199,6 +206,13 @@ class ConnectionManager:
                     await websocket.send_text(json.dumps(msg, default=str))
                 except Exception:
                     break
+
+            # Replay recent trade-setup suggestions (shared across users).
+            for msg in list(self.recent_signals):
+                try:
+                    await websocket.send_text(json.dumps(msg, default=str))
+                except Exception:
+                    break
         except Exception as e:
             logger.error(f"Error hydrating client state: {e}")
 
@@ -232,6 +246,10 @@ class ConnectionManager:
             if msg_type in ("agent_activity", "agent_update"):
                 self.recent_activity.setdefault(key, deque(maxlen=50)).append(message)
 
+            # Buffer trade-setup suggestions (shared) for replay + GET /api/setups.
+            if msg_type == "trade_setup":
+                self.recent_signals.append(message)
+
             dead: List[WebSocket] = []
             for connection, uid in list(self.connections.items()):
                 # Tenanted message -> only its owner's sockets. Untenanted -> everyone.
@@ -263,6 +281,8 @@ state_manager: Optional[StateManager] = None
 trade_history_manager = None
 # Per-user encrypted exchange-key vault (created once at startup, reuses the DB engine).
 credential_vault = None
+# Per-user trading settings (mode + active exchange), created once at startup.
+user_settings_store = None
 
 
 async def handle_binance_update(data: Dict[str, Any]):
@@ -309,7 +329,11 @@ async def handle_agent_message(data: Dict[str, Any]):
     # Check if this is an execution update (balance or positions)
     if data.get("type") in ["balance_update", "position_update"]:
         msg_type = "execution_status"
-    
+
+    # Trade-setup suggestion (from the daemon's analysis) -> Signals feed
+    elif data.get("type") == "trade_setup":
+        msg_type = "trade_setup"
+
     # Check if this is an activity log
     elif "action" in data and "sender" in data:
         msg_type = "agent_activity"
@@ -368,6 +392,16 @@ async def startup_event():
             )
         except Exception as e:
             logger.error(f"Failed to initialize CredentialVault: {e}")
+
+        # Per-user trading settings store (mode + active exchange).
+        global user_settings_store
+        try:
+            from src.core.user_settings import UserSettingsStore
+            user_settings_store = await asyncio.to_thread(
+                UserSettingsStore, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize UserSettingsStore: {e}")
 
         
         # Subscribe to all relevant agent channels
@@ -555,6 +589,113 @@ async def delete_exchange_keys(exchange: str = "bingx", user_id: str = Depends(r
         raise HTTPException(status_code=503, detail="Credential vault is not configured")
     removed = await asyncio.to_thread(credential_vault.delete, user_id, exchange)
     return {"connected": False, "deleted": removed}
+
+
+class SettingsBody(BaseModel):
+    trading_mode: Optional[str] = None      # off | paper | manual | auto
+    active_exchange: Optional[str] = None   # bingx | delta_india
+
+
+@app.get("/api/settings")
+async def get_settings(user_id: str = Depends(require_user)):
+    """The caller's trading settings (mode + active exchange), with safe defaults."""
+    if user_settings_store is None:
+        return {"trading_mode": "paper", "active_exchange": "bingx"}
+    return await asyncio.to_thread(user_settings_store.get, user_id)
+
+
+@app.post("/api/settings")
+async def set_settings(body: SettingsBody, user_id: str = Depends(require_user)):
+    """Update the caller's trading mode / active exchange."""
+    if user_settings_store is None:
+        raise HTTPException(status_code=503, detail="Settings store is not configured")
+    try:
+        return await asyncio.to_thread(
+            user_settings_store.set, user_id, body.trading_mode, body.active_exchange
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/setups")
+async def get_setups():
+    """Recent trade-setup suggestions (shared across users) for load-time hydration.
+
+    Not user-scoped: setups are the same for everyone; only EXECUTION is per-user.
+    Live updates arrive over the WebSocket as `trade_setup` messages.
+    """
+    return {"setups": manager.get_recent_signals()}
+
+
+class ExecuteSetupBody(BaseModel):
+    symbol: str
+    direction: str
+    entry_price: float
+    stop_loss: float
+    take_profit_levels: List[float] = []
+    confidence_score: Optional[float] = None
+    market_regime: Optional[str] = None
+    recommended_position_size: Optional[float] = None
+
+
+def _build_user_engine(user_id: str):
+    """Build the caller's execution engine: LIVE (connected exchange) or paper fallback.
+
+    Manual execution routes through the SAME per-user risk-gate + full-bracket path the
+    daemon uses (UserSession.evaluate_and_book), so a manual order behaves identically to
+    an auto one — just triggered by the user.
+    """
+    exchange = "bingx"
+    if user_settings_store is not None:
+        exchange = user_settings_store.get(user_id).get("active_exchange", "bingx")
+    if credential_vault is not None:
+        creds = credential_vault.get(user_id, exchange)
+        if creds:
+            from src.execution.live_execution_engine import LiveExecutionEngine
+            api_key, api_secret = creds
+            return LiveExecutionEngine(
+                user_id=user_id, exchange_name=exchange,
+                api_key=api_key, api_secret=api_secret,
+                message_bus=message_bus, state_manager=state_manager,
+            ), exchange, True
+    return None, exchange, False  # no connected exchange -> paper (UserSession default)
+
+
+@app.post("/api/execute-setup")
+async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_user)):
+    """Manually place a setup as a full bracket (entry + SL + TPs) for the caller.
+
+    Uses the caller's connected exchange (testnet-gated) if present, else a paper engine.
+    """
+    try:
+        from src.core.multi_user import UserSession, UserRiskConfig
+        try:
+            from src.billing import plan_config
+            config = await asyncio.to_thread(plan_config, user_id)
+        except Exception:
+            config = UserRiskConfig()
+
+        engine, exchange, is_live = await asyncio.to_thread(_build_user_engine, user_id)
+        session = UserSession(
+            user_id, message_bus=message_bus, state_manager=state_manager,
+            config=config, exchange=engine,
+        )
+        result = await session.evaluate_and_book({
+            "symbol": body.symbol,
+            "direction": body.direction,
+            "entry_price": body.entry_price,
+            "stop_loss": body.stop_loss,
+            "take_profit_levels": body.take_profit_levels,
+            "confidence_score": body.confidence_score or 0.0,
+            "market_regime": body.market_regime,
+            "recommended_position_size": body.recommended_position_size or 0.0,
+        })
+        result["exchange"] = exchange
+        result["live"] = is_live
+        return result
+    except Exception as e:
+        logger.error(f"execute-setup failed for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
 
 
 @app.post("/api/close-positions")

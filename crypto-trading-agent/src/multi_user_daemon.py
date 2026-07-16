@@ -174,6 +174,16 @@ class MultiUserTradingDaemon:
             plog.warning(f"Vault unavailable ({e}); trading seed users only", agent="daemon")
             self.vault = None
 
+        # Per-user trading mode (off/paper/manual/auto). Default paper if unavailable.
+        try:
+            from src.core.user_settings import UserSettingsStore
+            self.settings_store = UserSettingsStore(self.config.database.postgres_url)
+            mode_for = self.settings_store.mode_for
+        except Exception as e:
+            plog.warning(f"Settings store unavailable ({e}); all users default to paper", agent="daemon")
+            self.settings_store = None
+            mode_for = lambda uid: "paper"
+
         seed_ids = [s.strip() for s in os.getenv("MULTI_USER_SEED_IDS", "").split(",") if s.strip()]
 
         # Size each tenant by their SUBSCRIPTION PLAN (balance + risk limits). Falls
@@ -193,13 +203,41 @@ class MultiUserTradingDaemon:
             vault=self.vault,
             config_for=config_for,
             seed_user_ids=seed_ids,
+            mode_for=mode_for,
+            exchange_builder=self._build_live_engine,   # Phase C: vault keys -> live engine
         )
         self.coordinator = MultiUserCoordinator(self.registry)
         plog.info(
             f"  └─ ✅ Multi-user layer ready | seed_users={len(seed_ids)} | "
-            f"vault={'on' if self.vault else 'off'}",
+            f"vault={'on' if self.vault else 'off'} | settings={'on' if self.settings_store else 'off'}",
             agent="daemon",
         )
+
+    def _build_live_engine(self, user_id: str):
+        """Build a LIVE per-user trading engine from the tenant's vault keys (Phase C).
+
+        Returns a LiveExecutionEngine that satisfies the same interface the per-user
+        OrderManager calls (execute_trade_setup / get_positions / publish_*), backed by
+        the user's connected exchange (testnet-gated). Returns None → the session falls
+        back to the isolated paper engine.
+        """
+        if self.vault is None or self.settings_store is None:
+            return None
+        try:
+            exchange = self.settings_store.get(user_id).get("active_exchange", "bingx")
+            creds = self.vault.get(user_id, exchange)
+            if not creds:
+                return None
+            from src.execution.live_execution_engine import LiveExecutionEngine
+            api_key, api_secret = creds
+            return LiveExecutionEngine(
+                user_id=user_id, exchange_name=exchange,
+                api_key=api_key, api_secret=api_secret,
+                message_bus=self.message_bus, state_manager=self.state_manager,
+            )
+        except Exception as e:
+            plog.warning(f"[live] engine build failed for {user_id}: {e}", agent="daemon")
+            return None
 
     # ------------------------------------------------------------------ run
     async def start(self):
@@ -219,10 +257,50 @@ class MultiUserTradingDaemon:
             phase="startup_complete",
         )
         self.running = True
-        # analysis_provider = the orchestrator's shared, user-independent analysis cycle.
+        # analysis_provider = shared analysis cycle, wrapped to also PUBLISH each setup as
+        # a suggestion (Signals feed) before the coordinator books it per-user.
         self._loop_task = asyncio.create_task(
-            self.coordinator.run_forever(self.orchestrator.run_analysis_cycle, interval)
+            self.coordinator.run_forever(self._analysis_with_signals, interval)
         )
+
+    async def _analysis_with_signals(self):
+        """Run the shared analysis, publish the setups as suggestions, then return them."""
+        setups = await self.orchestrator.run_analysis_cycle()
+        await self._publish_setups(setups)
+        return setups
+
+    async def _publish_setups(self, setups):
+        """Broadcast each candidate setup to the Signals feed (untenanted — shared).
+
+        The API's WS bridge subscribes to `trade_signals` and forwards these to every
+        connected dashboard as `trade_setup` messages. Suggestions are identical for all
+        users; only execution is per-tenant.
+        """
+        if not setups or not self.message_bus:
+            return
+        for s in setups:
+            try:
+                await self.message_bus.publish("trade_signals", {
+                    "type": "trade_setup",
+                    "payload": {
+                        "symbol": s.get("symbol"),
+                        "direction": s.get("direction"),
+                        "entry_price": s.get("entry_price"),
+                        "stop_loss": s.get("stop_loss"),
+                        "take_profit_levels": s.get("take_profit_levels") or s.get("take_profits") or [],
+                        "confidence_score": s.get("confidence_score", s.get("confidence")),
+                        "risk_reward": s.get("risk_reward"),
+                        "market_regime": s.get("market_regime"),
+                        "strategy_type": s.get("strategy_type"),
+                        "reasoning": s.get("reasoning") or s.get("notes"),
+                        # carried through so a MANUAL execute uses the strategy's sizing
+                        "recommended_position_size": s.get("recommended_position_size"),
+                        "risk_amount": s.get("risk_amount"),
+                    },
+                }, persist=False)
+            except Exception as e:
+                plog.warning(f"[signals] publish failed: {e}", agent="daemon")
+        plog.info(f"📡 [signals] published {len(setups)} setup suggestion(s)", agent="daemon")
 
     async def stop(self):
         if not self.running:

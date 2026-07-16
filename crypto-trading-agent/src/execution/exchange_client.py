@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import hmac
 import hashlib
+import json
 import time
 from datetime import datetime
 from loguru import logger
@@ -708,9 +709,177 @@ class CoinDCXClient(ExchangeClient):
         raise NotImplementedError("CoinDCX client not yet implemented")
 
 
+class DeltaExchangeClient(ExchangeClient):
+    """Delta Exchange **India** perpetual-futures client (REST v2).
+
+    Auth: HMAC-SHA256 over `method + timestamp + path + query + body`, sent as the
+    `api-key` / `signature` / `timestamp` headers (a `User-Agent` is also required, and
+    signatures expire ~5s after creation). Orders use an integer `product_id`, so we
+    resolve and cache symbol -> product_id (and its contract size) from `/v2/products`.
+
+    Base URLs:  production-india https://api.india.delta.exchange ·
+                testnet-india   https://cdn-ind.testnet.deltaex.org
+
+    NOTE: implemented to Delta's documented v2 API but PENDING live validation against a
+    real Delta India testnet key (the exchange isn't reachable from the build network).
+    """
+
+    PROD_URL = "https://api.india.delta.exchange"
+    TESTNET_URL = "https://cdn-ind.testnet.deltaex.org"
+
+    def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
+        super().__init__(api_key, api_secret, testnet)
+        self.base_url = self.TESTNET_URL if testnet else self.PROD_URL
+        self._product_cache: Dict[str, Dict[str, Any]] = {}  # symbol -> {id, contract_value}
+
+    def _sign_request(self, params: Dict[str, Any]) -> str:
+        """Signature over the Delta prehash string (method+timestamp+path+query+body)."""
+        prehash = params["prehash"]
+        return hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).hexdigest()
+
+    async def _request(self, method: str, path: str, *, query: str = "", body: Optional[dict] = None,
+                       auth: bool = True) -> Any:
+        await self._ensure_session()
+        self._check_rate_limit()
+        body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
+        headers = {"Content-Type": "application/json", "User-Agent": "cryptai-trading-agent"}
+        if auth:
+            ts = str(int(time.time()))
+            prehash = method + ts + path + (("?" + query) if query else "") + body_str
+            headers.update({
+                "api-key": self.api_key,
+                "timestamp": ts,
+                "signature": self._sign_request({"prehash": prehash}),
+            })
+        url = self.base_url + path + (("?" + query) if query else "")
+        try:
+            async with self.session.request(method, url, data=body_str or None, headers=headers) as resp:
+                data = await resp.json()
+                if not data.get("success", True):
+                    raise ExchangeException(f"Delta error: {data.get('error') or data}")
+                return data.get("result", data)
+        except aiohttp.ClientError as e:
+            raise NetworkException(f"Delta request failed: {e}") from e
+
+    async def _resolve_product(self, symbol: str) -> Dict[str, Any]:
+        """Map a symbol (e.g. BTCUSDT/BTCUSD) to Delta's product_id + contract size."""
+        if symbol in self._product_cache:
+            return self._product_cache[symbol]
+        products = await self._request("GET", "/v2/products", auth=False)
+        candidates = {symbol, symbol.replace("USDT", "USD"), symbol.replace("USDT", "USDT")}
+        for p in products or []:
+            psym = p.get("symbol", "")
+            if psym in candidates or psym == symbol:
+                entry = {"id": p.get("id"), "contract_value": float(p.get("contract_value") or 1)}
+                self._product_cache[symbol] = entry
+                return entry
+        raise ExchangeException(f"Delta: no product for symbol {symbol}")
+
+    def _contracts(self, product: Dict[str, Any], quantity: float) -> int:
+        """Base-asset quantity -> integer number of contracts (>=1)."""
+        cv = product.get("contract_value") or 1
+        return max(1, round(float(quantity) / float(cv)))
+
+    async def _order(self, symbol: str, side: OrderSide, quantity: float, order_type: str,
+                     *, price: Optional[float] = None, stop_price: Optional[float] = None,
+                     reduce_only: bool = False, client_order_id: Optional[str] = None) -> Order:
+        product = await self._resolve_product(symbol)
+        body: Dict[str, Any] = {
+            "product_id": product["id"],
+            "size": self._contracts(product, quantity),
+            "side": "buy" if side == OrderSide.BUY else "sell",
+            "order_type": order_type,               # market_order | limit_order
+            "reduce_only": reduce_only,
+            "time_in_force": "gtc",
+        }
+        if price is not None:
+            body["limit_price"] = str(price)
+        if stop_price is not None:
+            body["stop_order_type"] = "stop_loss_order"
+            body["stop_price"] = str(stop_price)
+        if client_order_id:
+            body["client_order_id"] = client_order_id
+        res = await self._request("POST", "/v2/orders", body=body)
+        return self._to_order(res, symbol, side, order_type)
+
+    def _to_order(self, res: dict, symbol: str, side: OrderSide, order_type: str) -> Order:
+        now = datetime.now()
+        return Order(
+            order_id=str(res.get("id", "")),
+            client_order_id=str(res.get("client_order_id") or ""),
+            symbol=symbol,
+            side=side,
+            order_type=OrderType.MARKET if "market" in order_type else OrderType.LIMIT,
+            price=float(res["limit_price"]) if res.get("limit_price") else None,
+            quantity=float(res.get("size", 0) or 0),
+            status=OrderStatus.FILLED if res.get("state") == "closed" else OrderStatus.PENDING,
+            filled_quantity=float(res.get("filled_size", 0) or 0),
+            average_price=float(res.get("average_fill_price") or 0),
+            created_at=now, updated_at=now,
+        )
+
+    async def place_market_order(self, symbol, side, quantity, *, reduce_only=False,
+                                 position_side="BOTH", client_order_id=None) -> Order:
+        return await self._order(symbol, side, quantity, "market_order",
+                                 reduce_only=reduce_only, client_order_id=client_order_id)
+
+    async def place_limit_order(self, symbol, side, quantity, price, *, reduce_only=False,
+                                position_side="BOTH", client_order_id=None) -> Order:
+        return await self._order(symbol, side, quantity, "limit_order", price=price,
+                                 reduce_only=reduce_only, client_order_id=client_order_id)
+
+    async def place_stop_loss_order(self, symbol, side, quantity, stop_price, *, reduce_only=True,
+                                    position_side="BOTH", client_order_id=None) -> Order:
+        return await self._order(symbol, side, quantity, "market_order", stop_price=stop_price,
+                                 reduce_only=reduce_only, client_order_id=client_order_id)
+
+    async def cancel_order(self, symbol: str, order_id: str) -> bool:
+        product = await self._resolve_product(symbol)
+        await self._request("DELETE", "/v2/orders", body={"id": int(order_id), "product_id": product["id"]})
+        return True
+
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        product = await self._resolve_product(symbol)
+        await self._request("DELETE", "/v2/orders/all", body={"product_id": product["id"]})
+        return True
+
+    async def close_position(self, symbol, side, quantity, *, position_side="BOTH",
+                             client_order_id=None) -> Order:
+        return await self._order(symbol, side, quantity, "market_order", reduce_only=True,
+                                 client_order_id=client_order_id)
+
+    async def get_order_status(self, symbol: str, order_id: str) -> Order:
+        res = await self._request("GET", f"/v2/orders/{order_id}")
+        return self._to_order(res, symbol, OrderSide.BUY, res.get("order_type", "market_order"))
+
+    async def get_account_balance(self) -> Dict[str, float]:
+        res = await self._request("GET", "/v2/wallet/balances")
+        total = sum(float(b.get("balance", 0) or 0) for b in (res or []))
+        avail = sum(float(b.get("available_balance", 0) or 0) for b in (res or []))
+        return {"balance": total, "available": avail, "equity": total}
+
+    async def get_open_positions(self) -> List[Position]:
+        res = await self._request("GET", "/v2/positions/margined")
+        out: List[Position] = []
+        for p in (res or []):
+            size = float(p.get("size", 0) or 0)
+            if size == 0:
+                continue
+            out.append(Position(
+                symbol=(p.get("product_symbol") or p.get("symbol") or ""),
+                side="LONG" if size > 0 else "SHORT",
+                quantity=abs(size),
+                entry_price=float(p.get("entry_price") or 0),
+                mark_price=float(p.get("mark_price") or 0),
+                unrealized_pnl=float(p.get("unrealized_pnl") or 0),
+                leverage=int(float(p.get("leverage") or 1)),
+            ))
+        return out
+
+
 class ExchangeClientFactory:
     """Factory for creating exchange clients"""
-    
+
     @staticmethod
     def create_client(
         exchange_name: str,
@@ -720,21 +889,23 @@ class ExchangeClientFactory:
     ) -> ExchangeClient:
         """
         Create exchange client by name
-        
+
         Args:
-            exchange_name: 'bingx' or 'coindcx'
+            exchange_name: 'bingx', 'delta_india', or 'coindcx'
             api_key: API key
             api_secret: API secret
             testnet: Use testnet
-            
+
         Returns:
             ExchangeClient instance
         """
-        
+
         exchange_name = exchange_name.lower()
-        
+
         if exchange_name == 'bingx':
             return BingXClient(api_key, api_secret, testnet)
+        elif exchange_name in ('delta_india', 'delta'):
+            return DeltaExchangeClient(api_key, api_secret, testnet)
         elif exchange_name == 'coindcx':
             return CoinDCXClient(api_key, api_secret, testnet)
         else:
