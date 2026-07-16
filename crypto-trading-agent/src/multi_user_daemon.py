@@ -357,13 +357,9 @@ class MultiUserTradingDaemon:
 
 
 async def main():
-    logger.remove()
-    logger.add(
-        sys.stdout,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
-        "<cyan>{name}</cyan>:<cyan>{function}</cyan> | <level>{message}</level>",
-        level="INFO",
-    )
+    # Structured logging (LOG_JSON=true → JSON lines for aggregators).
+    from src.utils.logging_setup import setup_logging
+    setup_logging()
     logger.add("logs/multi_user_daemon_{time:YYYY-MM-DD}.log", rotation="1 day",
                retention="30 days", level="DEBUG")
 
