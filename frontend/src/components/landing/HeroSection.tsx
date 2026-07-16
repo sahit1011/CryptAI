@@ -140,24 +140,34 @@ export function HeroSection() {
                 aria-hidden
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ duration: 1.4, delay: 0.5 }}
-                className="pointer-events-none absolute inset-y-0 right-[-14%] z-0 hidden w-[74%] select-none lg:block"
+                transition={{ duration: 1.6, delay: 0.5 }}
+                className="pointer-events-none absolute inset-y-0 right-0 z-0 hidden w-[60%] select-none lg:block"
                 style={{
                     perspective: "1800px",
-                    maskImage: "linear-gradient(to left, black 42%, transparent 96%)",
-                    WebkitMaskImage: "linear-gradient(to left, black 42%, transparent 96%)",
+                    // Dissolve toward the claim — the demo has no edge of its own.
+                    maskImage: "linear-gradient(to left, black 45%, transparent 97%)",
+                    WebkitMaskImage: "linear-gradient(to left, black 45%, transparent 97%)",
                 }}
             >
+                {/* Second mask feathers top/bottom so no card silhouette survives. */}
                 <div
-                    className="absolute right-0 top-1/2 w-[880px] max-w-none opacity-80"
+                    className="absolute inset-0"
                     style={{
-                        transform:
-                            "translateY(-50%) rotateX(30deg) rotateY(-18deg) rotateZ(10deg) scale(1.08)",
-                        transformStyle: "preserve-3d",
+                        maskImage:
+                            "linear-gradient(to bottom, transparent 2%, black 22%, black 78%, transparent 98%)",
+                        WebkitMaskImage:
+                            "linear-gradient(to bottom, transparent 2%, black 22%, black 78%, transparent 98%)",
                     }}
                 >
-                    <div className="overflow-hidden rounded-xl border border-border bg-surface/90 shadow-[var(--shadow-elevation-high)]">
-                        <HeroDemo />
+                    <div
+                        className="absolute right-[3%] top-1/2 w-[720px] max-w-none opacity-70"
+                        style={{
+                            transform:
+                                "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg)",
+                            transformStyle: "preserve-3d",
+                        }}
+                    >
+                        <HeroDemo ghost />
                     </div>
                 </div>
             </motion.div>

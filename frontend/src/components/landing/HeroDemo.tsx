@@ -503,15 +503,25 @@ function PortfolioQuad({ reduced }: { reduced: boolean }) {
 }
 
 /* --------------------------------- Panel --------------------------------- */
-export function HeroDemo() {
+/**
+ * ghost=true renders the background/ambient variant: translucent cells and
+ * softened hairlines so the demo reads as UI living IN the page atmosphere,
+ * not a standalone card floating on it.
+ */
+export function HeroDemo({ ghost = false }: { ghost?: boolean }) {
     const reduced = useReducedMotion() ?? false;
 
+    const cell = ghost ? "overflow-hidden bg-surface/45" : "overflow-hidden bg-surface";
     return (
-        <div className="grid h-[440px] grid-cols-2 grid-rows-2 gap-px bg-border md:h-[460px]">
-            <div className="overflow-hidden bg-surface"><ChartQuad reduced={reduced} /></div>
-            <div className="overflow-hidden bg-surface"><TradeQuad reduced={reduced} /></div>
-            <div className="overflow-hidden bg-surface"><AgentsQuad reduced={reduced} /></div>
-            <div className="overflow-hidden bg-surface"><PortfolioQuad reduced={reduced} /></div>
+        <div
+            className={`grid h-[440px] grid-cols-2 grid-rows-2 gap-px md:h-[460px] ${
+                ghost ? "bg-border/50" : "bg-border"
+            }`}
+        >
+            <div className={cell}><ChartQuad reduced={reduced} /></div>
+            <div className={cell}><TradeQuad reduced={reduced} /></div>
+            <div className={cell}><AgentsQuad reduced={reduced} /></div>
+            <div className={cell}><PortfolioQuad reduced={reduced} /></div>
         </div>
     );
 }
