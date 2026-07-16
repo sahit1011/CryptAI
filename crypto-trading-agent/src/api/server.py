@@ -665,6 +665,24 @@ async def save_exchange_keys(body: ExchangeKeysBody, user_id: str = Depends(requ
         )
     if not body.api_key.strip() or not body.api_secret.strip():
         raise HTTPException(status_code=400, detail="api_key and api_secret are required")
+
+    # VERIFY before storing: "connected" must mean the exchange actually accepted the
+    # keys (read-only balance probe on testnet), not merely that we encrypted whatever
+    # was pasted. Bad keys -> 400; exchange unreachable -> 502 (not the user's fault).
+    from src.execution.credential_check import ExchangeUnreachable, verify_exchange_credentials
+    try:
+        ok, reason = await verify_exchange_credentials(
+            body.exchange, body.api_key.strip(), body.api_secret.strip()
+        )
+    except ExchangeUnreachable:
+        logger.warning(f"Exchange {body.exchange} unreachable during key verification")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach {body.exchange} to verify the keys — try again shortly.",
+        )
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+
     try:
         await asyncio.to_thread(
             credential_vault.save, user_id, body.api_key.strip(), body.api_secret.strip(),
