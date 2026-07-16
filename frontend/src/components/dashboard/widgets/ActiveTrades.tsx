@@ -197,13 +197,13 @@ export function ActiveTrades() {
                                     </Badge>
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <Value value={trade.entry} prefix="$" />
+                                    <Value value={trade.entry} money />
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <Value value={trade.current} prefix="$" />
+                                    <Value value={trade.current} money />
                                 </TableCell>
                                 <TableCell className="text-right">
-                                    <PnL value={trade.pnl} prefix="$" />
+                                    <PnL value={trade.pnl} money />
                                 </TableCell>
                                 <TableCell className="text-right">
                                     <PnL value={trade.pnlPercent} percent />

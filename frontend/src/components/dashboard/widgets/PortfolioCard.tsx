@@ -94,11 +94,11 @@ export function PortfolioCard({
                     <Value
                         value={value}
                         decimals={2}
-                        prefix="$"
+                        money
                         className="text-2xl font-semibold text-foreground"
                     />
                     <div className="mt-1 flex items-center gap-2">
-                        <PnL value={change} decimals={2} prefix="$" className="text-sm" />
+                        <PnL value={change} decimals={2} money className="text-sm" />
                         <PnL
                             value={safeChangePercent}
                             decimals={2}

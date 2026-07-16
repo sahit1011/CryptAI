@@ -106,7 +106,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                     <div className="space-y-1">
                         <PnL
                             value={live ? portfolio.totalPnl : null}
-                            prefix="$"
+                            money
                             className="text-2xl font-semibold"
                         />
                         <div>

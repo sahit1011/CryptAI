@@ -151,7 +151,7 @@ export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
                                         </div>
                                         <PnL
                                             value={trade.pnl}
-                                            prefix="$"
+                                            money
                                             className="text-sm font-medium"
                                         />
                                     </div>

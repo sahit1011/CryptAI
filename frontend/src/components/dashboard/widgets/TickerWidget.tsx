@@ -54,7 +54,7 @@ export function TickerWidget() {
                         <Value
                             value={ticker.c}
                             decimals={2}
-                            prefix="$"
+                            money
                             className="text-3xl font-semibold text-foreground tracking-tight"
                         />
                     </div>
@@ -76,7 +76,7 @@ export function TickerWidget() {
                 <div className="mt-5 grid grid-cols-2 gap-4">
                     <div>
                         <p className="label-md">24h Change</p>
-                        <PnL value={ticker.p} decimals={2} prefix="$" className="mt-1 text-sm" />
+                        <PnL value={ticker.p} decimals={2} money className="mt-1 text-sm" />
                     </div>
                     <div>
                         <p className="label-md">24h Volume (BTC)</p>

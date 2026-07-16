@@ -21,11 +21,12 @@ interface TickerEntry {
     change: string;
 }
 
-// Format a USD price with sensible precision (sub-$1 coins need more decimals).
-function formatPrice(value: number): string {
-    if (!isFinite(value)) return "--";
-    const decimals = value >= 1 ? 2 : 4;
-    return `$${value.toLocaleString("en-US", {
+// Format a USD price as ₹ (India-first) at the given USD→INR rate.
+function formatPrice(usd: number, rate: number): string {
+    if (!isFinite(usd)) return "--";
+    const inr = usd * rate;
+    const decimals = inr >= 1000 ? 0 : 2;
+    return `₹${inr.toLocaleString("en-IN", {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
     })}`;
@@ -36,6 +37,15 @@ export function LiveTicker() {
     // server-side — avoids the browser CORS/ad-blocker/region failures of calling
     // api.binance.com directly. Renders nothing until real data arrives.
     const [ticks, setTicks] = useState<TickerEntry[]>([]);
+    const [rate, setRate] = useState(87.5); // USD→INR; refined from /api/fx
+
+    // Load the live USD→INR rate (landing page doesn't mount the dashboard store).
+    useEffect(() => {
+        fetch("/api/fx", { cache: "no-store" })
+            .then((r) => r.json())
+            .then((d) => { if (d?.rate) setRate(Number(d.rate)); })
+            .catch(() => { /* keep default */ });
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -55,7 +65,7 @@ export function LiveTicker() {
                     const pct = parseFloat(d.priceChangePercent);
                     live.push({
                         symbol: coin.symbol,
-                        price: formatPrice(parseFloat(d.lastPrice)),
+                        price: formatPrice(parseFloat(d.lastPrice), rate),
                         change: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`,
                     });
                 }
@@ -71,7 +81,7 @@ export function LiveTicker() {
             cancelled = true;
             clearInterval(interval);
         };
-    }, []);
+    }, [rate]);
 
     // Until real data arrives, render nothing rather than fabricated prices.
     if (ticks.length === 0) return null;

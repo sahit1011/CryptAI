@@ -82,6 +82,10 @@ interface AppState {
     addSignal: (signal: Signal) => void
     setSignals: (signals: Signal[]) => void
 
+    // USD -> INR display rate (values are stored in USD; shown in ₹). Live via /api/fx.
+    inrRate: number
+    setInrRate: (rate: number) => void
+
     isSidebarOpen: boolean
     toggleSidebar: () => void
 }
@@ -153,6 +157,9 @@ export const useStore = create<AppState>()(
                 signals: [signal, ...state.signals.filter((s) => s.id !== signal.id)].slice(0, 30),
             })),
             setSignals: (signals) => set({ signals }),
+
+            inrRate: 87.5,
+            setInrRate: (rate) => set({ inrRate: rate }),
 
             isSidebarOpen: true,
             toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),

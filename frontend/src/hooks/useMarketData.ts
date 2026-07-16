@@ -68,6 +68,14 @@ function backoffDelay(attempt: number): number {
 export function useMarketData() {
     const wsRef = useRef<WebSocket | null>(null)
 
+    // Load the live USD->INR rate once (values are USD internally, shown in ₹).
+    useEffect(() => {
+        fetch('/api/fx', { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((d) => { if (d?.rate) useStore.getState().setInrRate(Number(d.rate)) })
+            .catch(() => { /* keep default rate */ })
+    }, [])
+
     useEffect(() => {
         let reconnectTimer: ReturnType<typeof setTimeout> | undefined
         let attempt = 0

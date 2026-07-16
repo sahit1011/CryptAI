@@ -21,6 +21,8 @@ type StatTileProps = React.ComponentProps<"div"> & {
   prefix?: string
   suffix?: string
   percent?: boolean
+  /** Treat `value` as USD and render as ₹ at the live rate. */
+  money?: boolean
   /** Secondary line under the value (e.g. a delta or context). */
   hint?: React.ReactNode
   /** Optional leading icon. */
@@ -37,6 +39,7 @@ function StatTile({
   prefix,
   suffix,
   percent = false,
+  money = false,
   hint,
   icon,
   loading = false,
@@ -69,6 +72,7 @@ function StatTile({
           prefix={prefix}
           suffix={suffix}
           percent={percent}
+          money={money}
           className="text-lg font-semibold"
         />
       ) : isRawNumber ? (
@@ -77,6 +81,7 @@ function StatTile({
           decimals={decimals}
           prefix={prefix}
           suffix={suffix}
+          money={money}
           className="text-lg font-semibold text-foreground"
         />
       ) : (

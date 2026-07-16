@@ -102,7 +102,7 @@ export function OverviewSection() {
                     {hasData ? (
                         <Value
                             value={portfolio.totalValue}
-                            prefix="$"
+                            money
                             decimals={2}
                             className="financial-lg text-foreground"
                         />
@@ -132,7 +132,7 @@ export function OverviewSection() {
                     {hasData ? (
                         <PnL
                             value={portfolio.totalPnl}
-                            prefix="$"
+                            money
                             className={cn(
                                 "financial-lg",
                                 isPnlPositive ? "text-profit" : "text-loss",
@@ -271,13 +271,13 @@ export function OverviewSection() {
                                                     <span className="inline-flex items-center gap-1.5">
                                                         <Value
                                                             value={trade.entry}
-                                                            prefix="$"
+                                                            money
                                                             className="text-xs"
                                                         />
                                                         <ArrowRight className="size-3 text-subtle-foreground" />
                                                         <Value
                                                             value={trade.current}
-                                                            prefix="$"
+                                                            money
                                                             className="text-xs"
                                                         />
                                                     </span>
@@ -298,7 +298,7 @@ export function OverviewSection() {
                                     <div className="shrink-0 text-right">
                                         <PnL
                                             value={tradePnl}
-                                            prefix="$"
+                                            money
                                             className="financial-sm block"
                                         />
                                         <PnL

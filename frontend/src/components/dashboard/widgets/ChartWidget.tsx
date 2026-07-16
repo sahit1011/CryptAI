@@ -214,6 +214,11 @@ export function ChartWidget() {
                         hour12: false,
                         timeZone: "Asia/Kolkata",
                     }),
+                // Candle data is USD; show the axis + crosshair in ₹ (India-first).
+                priceFormatter: (price: number) => {
+                    const inr = price * (useStore.getState().inrRate || 87.5)
+                    return "₹" + inr.toLocaleString("en-IN", { maximumFractionDigits: inr >= 1000 ? 0 : 2 })
+                },
             },
             crosshair: {
                 mode: CrosshairMode.Normal,
@@ -413,11 +418,11 @@ export function ChartWidget() {
                     {ohlc ? (
                         <div className="flex items-center gap-2 text-xs">
                             <span className="label-md">O</span>
-                            <Value className="text-xs" value={ohlc.open} decimals={2} />
+                            <Value className="text-xs" value={ohlc.open} decimals={2} money />
                             <span className="label-md">H</span>
-                            <Value className="text-xs text-profit" value={ohlc.high} decimals={2} />
+                            <Value className="text-xs text-profit" value={ohlc.high} decimals={2} money />
                             <span className="label-md">L</span>
-                            <Value className="text-xs text-loss" value={ohlc.low} decimals={2} />
+                            <Value className="text-xs text-loss" value={ohlc.low} decimals={2} money />
                             <span className="label-md">C</span>
                             <Value
                                 className={cn(
@@ -426,6 +431,7 @@ export function ChartWidget() {
                                 )}
                                 value={ohlc.close}
                                 decimals={2}
+                                money
                             />
                             <span className="label-md ml-1">Vol</span>
                             <Value className="text-xs text-muted-foreground" value={ohlc.volume} decimals={2} />

@@ -28,6 +28,7 @@ import {
     type TradingMode,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { formatInr } from "@/lib/currency";
 
 const MODES: { id: TradingMode; label: string; icon: typeof Bot; hint: string }[] = [
     { id: "off", label: "Off", icon: Power, hint: "Ignore setups — no trading." },
@@ -263,6 +264,7 @@ function Level({
     accent?: string;
     icon?: typeof Target;
 }) {
+    const rate = useStore((s) => s.inrRate);
     return (
         <div className="bg-card px-3 py-2.5">
             <p className="mb-0.5 flex items-center justify-center gap-1 text-[10px] font-medium uppercase tracking-wider text-subtle-foreground">
@@ -270,7 +272,7 @@ function Level({
                 {label}
             </p>
             <p className={cn("font-mono text-sm font-medium tabular-nums text-foreground", accent)}>
-                {value != null && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}
+                {value != null && Number.isFinite(value) ? formatInr(value, rate, 2) : "—"}
             </p>
         </div>
     );

@@ -70,12 +70,12 @@ export function PortfolioSection() {
                                     <div className="label-md">Total Portfolio Value</div>
                                     <Value
                                         value={portfolio.totalValue}
-                                        prefix="$"
+                                        money
                                         decimals={2}
                                         className="financial-lg text-foreground"
                                     />
                                     <div className="flex items-center gap-2">
-                                        <PnL value={portfolio.totalPnl} prefix="$" className="financial-xs" />
+                                        <PnL value={portfolio.totalPnl} money className="financial-xs" />
                                         <PnL value={portfolio.totalPnlPercent} percent chip className="text-[11px]" />
                                         <span className="body-xs text-subtle-foreground">total</span>
                                     </div>
@@ -90,7 +90,7 @@ export function PortfolioSection() {
                                     <div className="body-xs">Available Balance</div>
                                     <Value
                                         value={portfolio.balance}
-                                        prefix="$"
+                                        money
                                         decimals={2}
                                         className="financial-xs text-foreground"
                                     />
@@ -99,14 +99,14 @@ export function PortfolioSection() {
                                     <div className="body-xs">Total Invested</div>
                                     <Value
                                         value={portfolio.totalInvested}
-                                        prefix="$"
+                                        money
                                         decimals={2}
                                         className="financial-xs text-foreground"
                                     />
                                 </div>
                                 <div className="space-y-1">
                                     <div className="body-xs">Unrealized P&amp;L</div>
-                                    <PnL value={portfolio.unrealizedPnl} prefix="$" className="financial-xs" />
+                                    <PnL value={portfolio.unrealizedPnl} money className="financial-xs" />
                                 </div>
                             </div>
                         </Card>
@@ -184,7 +184,7 @@ export function PortfolioSection() {
                         <StatTile label="Realized P&L" hint="Locked in">
                             <PnL
                                 value={portfolio.realizedPnl}
-                                prefix="$"
+                                money
                                 className="text-lg font-semibold"
                             />
                         </StatTile>

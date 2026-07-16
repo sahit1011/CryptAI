@@ -9,11 +9,11 @@ import { useState, useEffect } from "react";
 
 const words = ["Crypto Quant System", "Autonomous Agent Swarm", "Algorithmic Trading Engine"];
 
-// Illustrative marketing ticker — clearly a static mockup, not a live feed.
+// Illustrative marketing ticker — clearly a static mockup, not a live feed (₹, India-first).
 const tickerRows = [
-    { symbol: "BTC", price: "43,284.50", change: "+2.41%", up: true },
-    { symbol: "ETH", price: "2,318.90", change: "+1.08%", up: true },
-    { symbol: "SOL", price: "98.42", change: "-0.74%", up: false },
+    { symbol: "BTC", price: "37,87,394", change: "+2.41%", up: true },
+    { symbol: "ETH", price: "2,02,904", change: "+1.08%", up: true },
+    { symbol: "SOL", price: "8,612", change: "-0.74%", up: false },
 ];
 
 export function HeroSection() {
@@ -153,7 +153,7 @@ export function HeroSection() {
                     {tickerRows.map((row) => (
                         <div key={row.symbol} className="flex items-center gap-2 text-sm">
                             <span className="font-semibold text-foreground">{row.symbol}</span>
-                            <span className="num text-muted-foreground">${row.price}</span>
+                            <span className="num text-muted-foreground">₹{row.price}</span>
                             <span className={`num text-xs ${row.up ? "text-profit" : "text-loss"}`}>
                                 {row.change}
                             </span>
@@ -257,8 +257,8 @@ export function HeroSection() {
                                 {/* Stat tiles */}
                                 <div className="row-span-1 grid grid-cols-3 gap-3">
                                     {[
-                                        { label: "Portfolio Value", value: "$124,582", change: "+12.4%" },
-                                        { label: "24h P&L", value: "+$4,231", change: "+3.52%" },
+                                        { label: "Portfolio Value", value: "₹1.09 Cr", change: "+12.4%" },
+                                        { label: "24h P&L", value: "+₹3.70 L", change: "+3.52%" },
                                         { label: "Win Rate", value: "68.4%", change: "14 trades" },
                                     ].map((stat, i) => (
                                         <motion.div
@@ -291,10 +291,10 @@ export function HeroSection() {
                                     <div className="absolute top-0 left-0 right-0 p-3 flex items-center justify-between z-10">
                                         <div>
                                             <div className="text-[9px] text-muted-foreground uppercase tracking-wider font-medium">
-                                                BTC/USD
+                                                BTC/INR
                                             </div>
                                             <div className="num text-sm font-bold text-foreground flex items-center gap-2">
-                                                $43,284.50
+                                                ₹37,87,394
                                                 <span className="text-[8px] text-profit font-semibold">+2.4%</span>
                                             </div>
                                         </div>
@@ -399,16 +399,16 @@ export function HeroSection() {
                                         style={{ left: "70%", top: "51%", transform: "translate(15px, -15px)" }}
                                     >
                                         <div className="bg-background/90 backdrop-blur-md border border-accent/30 rounded-lg p-2 shadow-[var(--shadow-elevation-mid)]">
-                                            <div className="text-[8px] text-accent-300 font-bold mb-1">BTC/USD</div>
+                                            <div className="text-[8px] text-accent-300 font-bold mb-1">BTC/INR</div>
                                             <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[7px]">
                                                 <div className="text-subtle-foreground">Open:</div>
-                                                <div className="num text-foreground font-semibold">$43,120.00</div>
+                                                <div className="num text-foreground font-semibold">₹37,73,000</div>
                                                 <div className="text-subtle-foreground">High:</div>
-                                                <div className="num text-profit font-semibold">$43,450.00</div>
+                                                <div className="num text-profit font-semibold">₹38,01,875</div>
                                                 <div className="text-subtle-foreground">Low:</div>
-                                                <div className="num text-loss font-semibold">$43,050.00</div>
+                                                <div className="num text-loss font-semibold">₹37,66,875</div>
                                                 <div className="text-subtle-foreground">Close:</div>
-                                                <div className="num text-foreground font-semibold">$43,284.50</div>
+                                                <div className="num text-foreground font-semibold">₹37,87,394</div>
                                             </div>
                                         </div>
                                     </motion.div>

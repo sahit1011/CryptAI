@@ -1,7 +1,11 @@
+"use client"
+
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
 import { safeNum } from "@/lib/utils"
+import { formatInr } from "@/lib/currency"
+import { useStore } from "@/store/useStore"
 
 /*
  * Numeric primitives — the terminal's typographic backbone.
@@ -10,6 +14,10 @@ import { safeNum } from "@/lib/utils"
  * <PnL>    : sign-aware profit/loss. Emerald when >= 0, red when < 0. Optional +/-
  *            sign, optional % suffix, optional colored background chip.
  *
+ * MONEY: pass `money` to treat `value` as a USD amount and render it in ₹ (converted at
+ * the live USD→INR rate, en-IN grouping). We're India-first, so every price/balance/P&L
+ * uses `money`; the raw USD is never mutated — only the display.
+ *
  * BOTH render via the `.num` utility (Geist Mono + tabular-nums) so columns align.
  * Section agents MUST use these (or the `.num` class) for every number on screen.
  */
@@ -17,7 +25,7 @@ import { safeNum } from "@/lib/utils"
 type ValueProps = React.ComponentProps<"span"> & {
   /** Fixed decimal places. If omitted, the child is rendered as-is (already formatted). */
   decimals?: number
-  /** Prefix glued to the number, e.g. "$". */
+  /** Prefix glued to the number, e.g. "$". Ignored when `money` (₹ comes from the formatter). */
   prefix?: string
   /** Suffix glued to the number, e.g. "%" or "x". */
   suffix?: string
@@ -25,6 +33,8 @@ type ValueProps = React.ComponentProps<"span"> & {
   value?: number | string | null | undefined
   /** Placeholder shown when value is non-finite / missing. */
   placeholder?: string
+  /** Treat `value` as USD and render as ₹ at the live rate. */
+  money?: boolean
 }
 
 function formatNumber(value: number, decimals?: number): string {
@@ -45,17 +55,27 @@ function Value({
   suffix,
   value,
   placeholder = "—",
+  money = false,
   children,
   ...props
 }: ValueProps) {
+  const rate = useStore((s) => s.inrRate)
   let body: React.ReactNode = children
+  let effectivePrefix = prefix
   if (value !== undefined) {
     const n = safeNum(value, NaN)
-    body = Number.isFinite(n) ? formatNumber(n, decimals) : placeholder
+    if (!Number.isFinite(n)) {
+      body = placeholder
+    } else if (money) {
+      body = formatInr(n, rate, decimals ?? 2)   // ₹ from the formatter
+      effectivePrefix = undefined
+    } else {
+      body = formatNumber(n, decimals)
+    }
   }
   return (
     <span data-slot="value" className={cn("num", className)} {...props}>
-      {prefix}
+      {effectivePrefix}
       {body}
       {suffix}
     </span>
@@ -86,8 +106,10 @@ function PnL({
   chip = false,
   neutralZero = true,
   placeholder = "—",
+  money = false,
   ...props
 }: PnLProps) {
+  const rate = useStore((s) => s.inrRate)
   const n = safeNum(value, NaN)
   const finite = Number.isFinite(n)
   const positive = finite && n > 0
@@ -111,12 +133,14 @@ function PnL({
         : "bg-profit-muted"
 
   // toLocaleString already carries the minus sign; we only prepend a "+".
-  const rendered = finite
-    ? `${positive && showSign ? "+" : ""}${prefix ?? ""}${n.toLocaleString(
-        "en-US",
-        { minimumFractionDigits: decimals, maximumFractionDigits: decimals },
-      )}${percent ? "%" : ""}${suffix ?? ""}`
-    : placeholder
+  // In money mode the value is USD -> rendered as ₹ (percent is mutually exclusive).
+  const numberPart = money && !percent
+    ? formatInr(n, rate, decimals)
+    : `${prefix ?? ""}${n.toLocaleString("en-US", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      })}${percent ? "%" : ""}${suffix ?? ""}`
+  const rendered = finite ? `${positive && showSign ? "+" : ""}${numberPart}` : placeholder
 
   return (
     <span
