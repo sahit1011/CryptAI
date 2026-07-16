@@ -1,12 +1,6 @@
 "use client";
 
-import {
-    motion,
-    useMotionValue,
-    useReducedMotion,
-    useSpring,
-    useTransform,
-} from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -133,36 +127,44 @@ function Cursor() {
 }
 
 export function HeroSection() {
-    const reduced = useReducedMotion();
-
-    // Hover tilt physics for the chart panel — springs give it weight, and the
-    // angle stays modest (±6°) so it reads as depth, not a gimmick.
-    const mx = useMotionValue(0);
-    const my = useMotionValue(0);
-    const sx = useSpring(mx, { stiffness: 140, damping: 18 });
-    const sy = useSpring(my, { stiffness: 140, damping: 18 });
-    const rotateX = useTransform(sy, [-0.5, 0.5], [6, -6]);
-    const rotateY = useTransform(sx, [-0.5, 0.5], [-6, 6]);
-
-    function handleTilt({ currentTarget, clientX, clientY }: React.MouseEvent) {
-        if (reduced) return;
-        const { left, top, width, height } = currentTarget.getBoundingClientRect();
-        mx.set((clientX - left) / width - 0.5);
-        my.set((clientY - top) / height - 0.5);
-    }
-
-    function resetTilt() {
-        mx.set(0);
-        my.set(0);
-    }
-
     return (
         <section className="relative overflow-hidden pt-36 pb-24 md:pt-44 md:pb-32">
             <BackgroundGrid />
 
-            <div className="container relative z-10 mx-auto grid max-w-6xl items-center gap-14 px-4 md:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:gap-12">
+            {/* ---- Ambient product demo — a 3D-tilted background layer ----------
+                The live quad demo lies diagonally in perspective behind the hero
+                (rotated ~30° about its horizontal axis + a diagonal twist) and
+                dissolves right→left so the claim stays perfectly readable.
+                Desktop-only ambience; decorative, so aria-hidden. */}
+            <motion.div
+                aria-hidden
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 1.4, delay: 0.5 }}
+                className="pointer-events-none absolute inset-y-0 right-[-14%] z-0 hidden w-[74%] select-none lg:block"
+                style={{
+                    perspective: "1800px",
+                    maskImage: "linear-gradient(to left, black 42%, transparent 96%)",
+                    WebkitMaskImage: "linear-gradient(to left, black 42%, transparent 96%)",
+                }}
+            >
+                <div
+                    className="absolute right-0 top-1/2 w-[880px] max-w-none opacity-80"
+                    style={{
+                        transform:
+                            "translateY(-50%) rotateX(30deg) rotateY(-18deg) rotateZ(10deg) scale(1.08)",
+                        transformStyle: "preserve-3d",
+                    }}
+                >
+                    <div className="overflow-hidden rounded-xl border border-border bg-surface/90 shadow-[var(--shadow-elevation-high)]">
+                        <HeroDemo />
+                    </div>
+                </div>
+            </motion.div>
+
+            <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
                 {/* ---- Claim ---------------------------------------------------- */}
-                <motion.div variants={container} initial="hidden" animate="visible">
+                <motion.div variants={container} initial="hidden" animate="visible" className="max-w-2xl">
                     <motion.p variants={item} className="eyebrow mb-5 text-foreground">
                         Multi-agent trading system
                     </motion.p>
@@ -195,27 +197,13 @@ export function HeroSection() {
                         </Link>
                     </motion.div>
 
-                </motion.div>
-
-                {/* ---- Chart panel (hover tilt) --------------------------------- */}
-                <motion.div
-                    initial={{ opacity: 0, y: 14 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.6, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                    className="relative"
-                    style={{ perspective: 1000 }}
-                    onMouseMove={handleTilt}
-                    onMouseLeave={resetTilt}
-                >
+                    {/* Mobile/tablet: the demo as a regular panel below the claim */}
                     <motion.div
-                        style={{ rotateX, rotateY }}
-                        className="overflow-hidden rounded-xl border border-border bg-surface"
+                        variants={item}
+                        className="mt-12 overflow-hidden rounded-xl border border-border bg-surface lg:hidden"
                     >
                         <HeroDemo />
                     </motion.div>
-
-                    {/* Single quiet accent: a hairline crimson rule under the panel. */}
-                    <div className="mx-auto mt-px h-px w-2/3 bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
                 </motion.div>
             </div>
         </section>
