@@ -30,6 +30,18 @@ test("landing page renders with USD marketing content", async () => {
     await expect(page.locator("text=/\\$/").first()).toBeVisible();
 });
 
+test("landing marketing bands render (pricing / proof / faq)", async () => {
+    await page.goto("/");
+    // Pricing ledger — real tier + honest testnet-gate line.
+    await expect(page.locator("#pricing")).toBeVisible();
+    await expect(page.locator("text=/hard-gated to testnet/i").first()).toBeVisible();
+    // Proof band — the honest standing-orders thesis (no fabricated testimonials).
+    await expect(page.locator("text=/can't show you customer logos yet/i")).toBeVisible();
+    // FAQ ledger.
+    await expect(page.locator("#faq")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /skeptic should be asking/i })).toBeVisible();
+});
+
 test("logs in with real Supabase auth and lands on the dashboard", async () => {
     await page.goto("/auth/login");
     await page.locator('input[type="email"]').fill(EMAIL);

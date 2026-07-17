@@ -39,7 +39,7 @@ const NAV_ICONS: { label: string; href: string; icon: LucideIcon }[] = [
     { label: "Features", href: "#features", icon: Layers },
     { label: "Architecture", href: "#architecture", icon: Workflow },
     { label: "Pricing", href: "#pricing", icon: Wallet },
-    { label: "Docs", href: "#docs", icon: BookOpen },
+    { label: "FAQ", href: "#faq", icon: BookOpen },
 ];
 
 const GLYPH = 21;

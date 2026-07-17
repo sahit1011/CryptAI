@@ -14,11 +14,11 @@ const columns: { heading: string; links: { label: string; href: string }[] }[] =
     {
         heading: "Product",
         links: [
-            { label: "Features", href: "#" },
-            { label: "Architecture", href: "#" },
-            { label: "Pricing", href: "#" },
-            { label: "Changelog", href: "#" },
-            { label: "Docs", href: "#" },
+            { label: "Features", href: "#features" },
+            { label: "Architecture", href: "#architecture" },
+            { label: "Pricing", href: "#pricing" },
+            { label: "FAQ", href: "#faq" },
+            { label: "Contact", href: "/contact" },
         ],
     },
     {

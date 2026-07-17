@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
  */
 export function CTASection() {
     return (
-        <section className="relative overflow-hidden py-28 md:py-36">
+        <section id="cta" className="relative overflow-hidden py-28 md:py-36">
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
                 <motion.div
                     initial={{ opacity: 0, y: 16 }}

@@ -54,7 +54,7 @@ export function Navbar() {
         { href: "#features", label: "Features" },
         { href: "#architecture", label: "Architecture" },
         { href: "#pricing", label: "Pricing" },
-        { href: "#docs", label: "Docs" },
+        { href: "#faq", label: "FAQ" },
     ];
 
     return (
