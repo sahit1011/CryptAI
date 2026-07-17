@@ -1,10 +1,10 @@
 "use client";
 
-import { motion, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion, useScroll, useTransform } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BackgroundGrid } from "./BackgroundGrid";
 import { HeroDemo } from "./HeroDemo";
 
@@ -139,8 +139,18 @@ function Cursor() {
 }
 
 export function HeroSection() {
+    const reduced = useReducedMotion();
+    // Scroll parallax: the ghost demo drifts slower than the page (depth), and
+    // eases back as the section leaves the viewport. Zero-cost under reduced motion.
+    const sectionRef = useRef<HTMLElement | null>(null);
+    const { scrollYProgress } = useScroll({
+        target: sectionRef,
+        offset: ["start start", "end start"],
+    });
+    const demoY = useTransform(scrollYProgress, [0, 1], [0, 140]);
+
     return (
-        <section className="relative overflow-hidden pt-36 pb-32 md:pt-44 md:pb-40">
+        <section ref={sectionRef} className="relative overflow-hidden pt-36 pb-32 md:pt-44 md:pb-40">
             <BackgroundGrid />
 
             {/* ---- Ambient product demo — a 3D-tilted background layer ----------
@@ -157,9 +167,10 @@ export function HeroSection() {
                 style={{ perspective: "1800px" }}
             >
                 {/* Vertical feather (wrapper-anchored) so no top/bottom silhouette. */}
-                <div
+                <motion.div
                     className="absolute inset-0"
                     style={{
+                        y: reduced ? 0 : demoY,
                         maskImage:
                             "linear-gradient(to bottom, transparent 2%, black 20%, black 94%, transparent 100%)",
                         WebkitMaskImage:
@@ -189,7 +200,7 @@ export function HeroSection() {
                     >
                         <HeroDemo ghost />
                     </div>
-                </div>
+                </motion.div>
             </motion.div>
 
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
