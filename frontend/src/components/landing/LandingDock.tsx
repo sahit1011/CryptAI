@@ -14,6 +14,7 @@ import {
     BookOpen,
     Home,
     Layers,
+    LayoutDashboard,
     LogOut,
     Wallet,
     Workflow,
@@ -87,7 +88,12 @@ export function LandingDock() {
                     onMouseLeave={() => mouseX.set(Infinity)}
                     className="absolute left-1/2 top-0 flex h-16 -translate-x-1/2 items-start gap-9 pt-4"
                 >
-                    {NAV_ICONS.map((item) => (
+                    {[
+                        ...NAV_ICONS,
+                        ...(isAuthenticated
+                            ? [{ label: "Dashboard", href: "/dashboard", icon: LayoutDashboard }]
+                            : []),
+                    ].map((item) => (
                         <DockIcon key={item.label} item={item} mouseX={mouseX} reduced={reduced} />
                     ))}
                 </nav>
@@ -96,21 +102,11 @@ export function LandingDock() {
                 <div className="flex items-center gap-3">
                     {isAuthenticated ? (
                         <>
-                            <Link href="/dashboard">
-                                <Button variant="ghost" className="text-sm font-medium">
-                                    Dashboard
-                                </Button>
-                            </Link>
-                            <span className="flex items-center gap-2 rounded-lg border border-border bg-surface/70 px-2.5 py-1.5">
-                                <Avatar className="size-6">
-                                    <AvatarFallback className="bg-accent/10 text-[11px] text-accent-300">
-                                        {userEmail?.charAt(0).toUpperCase() || "U"}
-                                    </AvatarFallback>
-                                </Avatar>
-                                <span className="max-w-[140px] truncate text-sm text-muted-foreground">
-                                    {userEmail}
-                                </span>
-                            </span>
+                            <Avatar className="size-8" title={userEmail ?? undefined}>
+                                <AvatarFallback className="bg-accent/10 text-xs text-accent-300">
+                                    {userEmail?.charAt(0).toUpperCase() || "U"}
+                                </AvatarFallback>
+                            </Avatar>
                             <Button
                                 variant="ghost"
                                 size="icon"
