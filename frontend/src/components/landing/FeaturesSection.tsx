@@ -49,9 +49,10 @@ export function FeaturesSection() {
                     transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
                     className="display-2 max-w-3xl text-balance text-foreground"
                 >
-                    Most trading bots are one model with an API key. CryptAI is a desk —{" "}
-                    <em className="font-serif text-accent-300">specialists that argue,</em>{" "}
-                    and <em className="font-serif text-accent-300">a gate that decides.</em>
+                    Most bots are one model with an API key. CryptAI is a desk —{" "}
+                    <em className="font-serif text-accent-300">
+                        specialists that argue, a gate that decides.
+                    </em>
                 </motion.h2>
 
                 <div className="mt-14 grid gap-12 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
