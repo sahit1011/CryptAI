@@ -154,15 +154,9 @@ export function HeroSection() {
                 animate={{ opacity: 1 }}
                 transition={{ duration: 1.6, delay: 0.5 }}
                 className="pointer-events-none absolute inset-y-0 right-0 z-0 hidden w-[70%] select-none lg:block"
-                style={{
-                    perspective: "1800px",
-                    // Dissolve toward the claim — the demo has no edge of its own.
-                    // A longer solid zone keeps the right side confidently present.
-                    maskImage: "linear-gradient(to left, black 52%, transparent 88%)",
-                    WebkitMaskImage: "linear-gradient(to left, black 52%, transparent 88%)",
-                }}
+                style={{ perspective: "1800px" }}
             >
-                {/* Second mask feathers top/bottom so no card silhouette survives. */}
+                {/* Vertical feather (wrapper-anchored) so no top/bottom silhouette. */}
                 <div
                     className="absolute inset-0"
                     style={{
@@ -170,14 +164,27 @@ export function HeroSection() {
                             "linear-gradient(to bottom, transparent 2%, black 20%, black 94%, transparent 100%)",
                         WebkitMaskImage:
                             "linear-gradient(to bottom, transparent 2%, black 20%, black 94%, transparent 100%)",
+                        maskRepeat: "no-repeat",
+                        WebkitMaskRepeat: "no-repeat",
                     }}
                 >
+                    {/*
+                     * Horizontal dissolve lives ON the box (not the wrapper) so the
+                     * fade always tracks the box's own left edge at every viewport —
+                     * a wrapper-relative fade only lined up at one specific width,
+                     * leaving a raw content cut-off everywhere else. Width is
+                     * viewport-aware so the rotated right edge never clips content.
+                     */}
                     <div
-                        className="absolute right-0 top-[68%] w-[1012px] max-w-none opacity-[0.88]"
+                        className="absolute right-0 top-[68%] w-[min(1012px,76vw)] max-w-none opacity-[0.88]"
                         style={{
                             transform:
                                 "translateY(-50%) rotateX(28deg) rotateY(-14deg) rotateZ(8deg) scale(1.05)",
                             transformStyle: "preserve-3d",
+                            maskImage: "linear-gradient(to left, black 55%, transparent 98%)",
+                            WebkitMaskImage: "linear-gradient(to left, black 55%, transparent 98%)",
+                            maskRepeat: "no-repeat",
+                            WebkitMaskRepeat: "no-repeat",
                         }}
                     >
                         <HeroDemo ghost />
