@@ -30,9 +30,14 @@ export default function DashboardLayout({
             // First-run users pick their preferences (mode + exchange) in onboarding
             // before seeing the dashboard. Fail-open: if the settings API is
             // unreachable (e.g. backend cold start), don't lock users out.
+            // Fail-fast too: the free-tier backend cold-starts in minutes — never
+            // hold the dashboard hostage on this call. 4s budget, then proceed.
             try {
                 const { getSettings } = await import("@/lib/api");
-                const s = await getSettings();
+                const s = await Promise.race([
+                    getSettings(),
+                    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 4000)),
+                ]);
                 if (s.onboarded === false) {
                     router.push("/onboarding");
                     return;

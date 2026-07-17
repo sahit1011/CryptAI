@@ -33,7 +33,10 @@ export default function OnboardingPage() {
                 return;
             }
             try {
-                const s = await getSettings();
+                const s = await Promise.race([
+                    getSettings(),
+                    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 4000)),
+                ]);
                 if (s.onboarded) {
                     router.replace("/dashboard");
                     return;
