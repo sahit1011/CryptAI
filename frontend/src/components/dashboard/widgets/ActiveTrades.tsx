@@ -137,15 +137,18 @@ export function ActiveTrades() {
                     <h3 className="heading-4 text-foreground">Active Positions</h3>
                     <ConnectionStatus status={status} />
                 </div>
-                <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={handleCloseAll}
-                    disabled={closing || rows.length === 0}
-                >
-                    <ShieldAlert />
-                    {closing ? "Closing…" : "Close All"}
-                </Button>
+                {/* Destructive action only exists when there is something to destroy. */}
+                {rows.length > 0 && (
+                    <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleCloseAll}
+                        disabled={closing}
+                    >
+                        <ShieldAlert />
+                        {closing ? "Closing…" : "Close All"}
+                    </Button>
+                )}
             </div>
 
             {closeError && (

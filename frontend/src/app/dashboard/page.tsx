@@ -17,9 +17,9 @@ export type DashboardSection = "overview" | "portfolio" | "markets" | "agents" |
 const SECTIONS: DashboardSection[] = ["overview", "portfolio", "markets", "agents", "settings"];
 
 const sectionVariants = {
-    hidden: { opacity: 0, y: 20 },
+    hidden: { opacity: 0, y: 8 },
     visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
-    exit: { opacity: 0, y: -20, transition: { duration: 0.2 } },
+    exit: { opacity: 0, y: -8, transition: { duration: 0.15 } },
 };
 
 function DashboardContent() {

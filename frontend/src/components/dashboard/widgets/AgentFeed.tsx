@@ -54,7 +54,7 @@ export function AgentFeed() {
     }, [agentLogs])
 
     return (
-        <div className="flex h-[500px] flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-[var(--shadow-elevation-low)]">
+        <div className="flex max-h-[500px] min-h-[280px] flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-[var(--shadow-elevation-low)]">
             {/* Header */}
             <div className="flex items-center justify-between border-b border-border bg-elevated/40 px-4 py-3">
                 <div className="flex items-center gap-2">

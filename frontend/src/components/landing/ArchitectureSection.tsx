@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 
 /*
@@ -44,6 +44,7 @@ const stages = [
 ];
 
 export function ArchitectureSection() {
+    const reduced = useReducedMotion();
     return (
         <section id="architecture" className="relative overflow-hidden py-24 md:py-32">
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
@@ -75,11 +76,11 @@ export function ArchitectureSection() {
                                     aria-hidden
                                     className="pointer-events-none absolute inset-0 bg-accent/[0.06]"
                                     initial={{ opacity: 0 }}
-                                    animate={{ opacity: [0, 1, 0] }}
+                                    animate={reduced ? { opacity: 0 } : { opacity: [0, 1, 0] }}
                                     transition={{
                                         duration: 1.4,
                                         delay: i * 1.4,
-                                        repeat: Infinity,
+                                        repeat: reduced ? 0 : Infinity,
                                         repeatDelay: (stages.length - 1) * 1.4,
                                         ease: "easeInOut",
                                     }}

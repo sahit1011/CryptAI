@@ -300,9 +300,19 @@ export function OverviewSection() {
                                                     <span className="num">{fmt(trade.exitTime)}</span>
                                                 </div>
                                                 {trade.exitReason ? (
-                                                    <div className="text-xs text-subtle-foreground">
-                                                        Reason: {trade.exitReason}
-                                                    </div>
+                                                    // Exit reason as a semantic chip — take-profits read green,
+                                                    // stops read red, at a glance instead of prose.
+                                                    <span
+                                                        className={`num inline-block w-fit rounded-sm border px-1.5 py-px text-[10px] uppercase tracking-wider ${
+                                                            /profit|tp/i.test(trade.exitReason)
+                                                                ? "border-profit/25 bg-profit/10 text-profit"
+                                                                : /stop|loss|sl/i.test(trade.exitReason)
+                                                                    ? "border-loss/25 bg-loss/10 text-loss"
+                                                                    : "border-border bg-elevated text-subtle-foreground"
+                                                        }`}
+                                                    >
+                                                        {trade.exitReason.replace(/_/g, " ")}
+                                                    </span>
                                                 ) : null}
                                             </div>
                                         </div>
