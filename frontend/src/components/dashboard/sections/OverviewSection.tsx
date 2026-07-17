@@ -26,28 +26,33 @@ export function OverviewSection() {
         (t) => (!t.status || t.status.toUpperCase() === "OPEN") && !t.exitTime,
     );
 
-    // Which data do we actually have? Live account feed wins; otherwise the
-    // settled-trade record gives an honest realized-performance view.
-    const hasLive = isConnected && (portfolio.totalValue > 0 || portfolio.balance > 0);
+    // Portfolio is seeded via REST (paper $10k or persisted/live state), so it's
+    // present without needing a live WS connection. Realized history is a further
+    // fallback if even that is unavailable.
+    const isPaper = portfolio.mode !== "live";
+    const hasPortfolio = portfolio.totalValue > 0 || portfolio.balance > 0;
     const hasRealized = stats.closedCount > 0;
-    const mode: "live" | "realized" | "empty" = hasLive ? "live" : hasRealized ? "realized" : "empty";
+    const mode: "live" | "realized" | "empty" = hasPortfolio ? "live" : hasRealized ? "realized" : "empty";
+    void isConnected;
 
     return (
         <div className="space-y-8">
             <SectionHeader
                 title="Overview"
                 description={
-                    mode === "realized"
-                        ? "Realized performance from settled paper trades — live balances appear once an exchange is connected."
-                        : "Monitor live trading performance and multi-agent system health"
+                    mode === "empty"
+                        ? "Monitor live trading performance and multi-agent system health"
+                        : isPaper
+                            ? "Your paper desk — virtual funds, real prices. Connect an exchange to trade live."
+                            : "Live trading performance and multi-agent system health"
                 }
             />
 
-            {/* KPI band — live feed when present, else realized stats from history. */}
+            {/* KPI band — the account (seeded paper or live), else realized history. */}
             <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2 lg:grid-cols-4">
                 {mode === "live" ? (
                     <>
-                        <StatCard label="Portfolio Value">
+                        <StatCard label="Portfolio Value" tag={isPaper ? "paper" : "live"}>
                             <Value value={portfolio.totalValue} money decimals={2} className="financial-lg text-foreground" />
                             {portfolio.totalPnlPercent !== 0 ? (
                                 <PnL value={portfolio.totalPnlPercent} percent className="body-sm font-medium" suffix=" total" />
@@ -117,8 +122,8 @@ export function OverviewSection() {
                 )}
             </div>
 
-            {/* Realized equity curve — the settled-P&L run, our biggest signal of life. */}
-            {mode === "realized" && stats.equityCurve.length > 1 && (
+            {/* Realized equity curve — the settled-P&L run, whenever there's history. */}
+            {stats.equityCurve.length > 1 && (
                 <Card className="gap-0 overflow-hidden py-0">
                     <div className="flex items-center justify-between border-b border-border px-4 py-3">
                         <div className="flex items-baseline gap-3">

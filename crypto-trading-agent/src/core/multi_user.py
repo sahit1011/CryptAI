@@ -140,6 +140,7 @@ class UserRegistry:
         seed_user_ids: Optional[List[str]] = None,
         mode_for: Optional[Callable[[str], str]] = None,
         exchange_builder: Optional[Callable[[str], Any]] = None,
+        users_provider: Optional[Callable[[], List[str]]] = None,
     ):
         self.message_bus = message_bus
         self.state_manager = state_manager
@@ -149,6 +150,9 @@ class UserRegistry:
         # Always-on tenants that don't need vault credentials — e.g. a demo/owner paper
         # account. Unioned with connected-key users below.
         self._seed_user_ids = list(seed_user_ids or [])
+        # Optional: every onboarded user (paper is the default), so a normal signup
+        # is a paper tenant without needing the seed list. Returns [] on failure.
+        self._users_provider = users_provider or (lambda: [])
         # Per-user trading mode (off | paper | manual | auto). Default paper.
         self._mode_for = mode_for or (lambda uid: "paper")
         # Optional: build a LIVE per-user engine (from vault keys) for auto+connected
@@ -171,6 +175,10 @@ class UserRegistry:
         here automatically on the next cycle.
         """
         ids = set(self._seed_user_ids) | set(self._sessions.keys())
+        try:
+            ids |= set(self._users_provider())  # every onboarded (mode != off) user
+        except Exception as e:
+            logger.warning(f"[multi-user] users_provider failed: {e}")
         if self.vault is not None:
             try:
                 ids |= set(self.vault.active_user_ids())  # optional convenience on the vault

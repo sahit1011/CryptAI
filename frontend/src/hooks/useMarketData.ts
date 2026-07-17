@@ -77,6 +77,34 @@ export function useMarketData() {
             .catch(() => { /* keep default rate */ })
     }, [])
 
+    // Hydrate the portfolio from REST on mount — a seeded paper account ($10k)
+    // or persisted paper/live state — so the dashboard shows real numbers
+    // immediately, without waiting for a WS balance frame that only arrives
+    // while the engine is running. A later WS frame overwrites this.
+    useEffect(() => {
+        let cancelled = false
+        import('@/lib/api').then(({ getPortfolio }) => getPortfolio()).then((p) => {
+            if (cancelled || !p) return
+            const cur = useStore.getState().portfolio
+            // Don't clobber richer state a WS frame may have already delivered.
+            if (cur.totalValue > 0 || cur.balance > 0) return
+            const totalPnl = safeNum(p.realized_pnl) + safeNum(p.unrealized_pnl)
+            useStore.getState().setPortfolio({
+                totalValue: safeNum(p.total_equity),
+                totalInvested: safeNum(p.total_equity) - safeNum(p.current_balance),
+                totalPnl,
+                totalPnlPercent: safeDiv(totalPnl, p.initial_balance) * 100,
+                balance: safeNum(p.current_balance),
+                unrealizedPnl: safeNum(p.unrealized_pnl),
+                realizedPnl: safeNum(p.realized_pnl),
+                winRate: safeNum(p.win_rate),
+                totalTrades: safeNum(p.total_trades),
+                mode: p.mode,
+            })
+        }).catch(() => { /* dashboard falls back to realized-from-trades */ })
+        return () => { cancelled = true }
+    }, [])
+
     useEffect(() => {
         let reconnectTimer: ReturnType<typeof setTimeout> | undefined
         let attempt = 0

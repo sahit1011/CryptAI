@@ -80,3 +80,23 @@ class UserSettingsStore:
     def mode_for(self, user_id: str) -> str:
         """Convenience: just the trading_mode (default 'paper')."""
         return self.get(user_id)["trading_mode"]
+
+    def active_user_ids(self) -> list:
+        """All onboarded tenants that should trade — every user whose mode isn't
+        'off'. This is what makes paper trading the default: a user completes
+        onboarding and is enrolled as a (paper) tenant automatically, no seed
+        list required."""
+        session = self.Session()
+        try:
+            rows = (
+                session.query(UserSettings.user_id)
+                .filter(UserSettings.onboarded.is_(True))
+                .filter(UserSettings.trading_mode != "off")
+                .all()
+            )
+            return [r[0] for r in rows]
+        except Exception as e:
+            logger.warning(f"active_user_ids query failed: {e}")
+            return []
+        finally:
+            session.close()

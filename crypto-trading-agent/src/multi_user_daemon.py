@@ -220,6 +220,8 @@ class MultiUserTradingDaemon:
             seed_user_ids=seed_ids,
             mode_for=mode_for,
             exchange_builder=self._build_live_engine,   # Phase C: vault keys -> live engine
+            # Every onboarded user (paper by default) is a tenant — no seed list needed.
+            users_provider=(self.settings_store.active_user_ids if self.settings_store else None),
         )
         self.coordinator = MultiUserCoordinator(self.registry)
         plog.info(

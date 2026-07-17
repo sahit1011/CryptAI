@@ -59,6 +59,8 @@ export interface PortfolioMetrics {
     realizedPnl: number
     winRate: number
     totalTrades: number
+    /** "paper" (virtual funds) or "live" (real, exchange-connected). Absent until known. */
+    mode?: "paper" | "live"
 }
 
 interface AppState {

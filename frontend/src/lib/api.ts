@@ -240,6 +240,28 @@ export async function setEngine(enabled: boolean, durationSeconds?: number | nul
     return res.json();
 }
 
+export interface PortfolioPayload {
+    mode?: "paper" | "live";
+    pending?: boolean;
+    initial_balance: number;
+    current_balance: number;
+    total_equity: number;
+    unrealized_pnl: number;
+    realized_pnl: number;
+    win_rate: number;
+    total_trades: number;
+}
+
+/** The caller's portfolio — persisted state, or a seeded paper account. */
+export async function getPortfolio(): Promise<PortfolioPayload | null> {
+    const res = await fetch(`${API_URL}/api/portfolio`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return res.json();
+}
+
 /** Recent trade-setup suggestions (shared across users) for load-time hydration. */
 export async function getSetups(): Promise<{ setups: Record<string, unknown>[] }> {
     const res = await fetch(`${API_URL}/api/setups`, { cache: "no-store" });

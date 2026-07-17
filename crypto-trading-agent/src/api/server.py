@@ -662,6 +662,98 @@ async def get_trades(
         return {"error": "Trade history is temporarily unavailable", "trades": []}
 
 
+@app.get("/api/portfolio")
+async def get_portfolio(principal: Dict[str, Any] = Depends(current_principal)):
+    """The caller's current portfolio — persisted paper/live state if present,
+    otherwise a freshly SEEDED paper account at the user's plan balance.
+
+    This is what makes paper trading the honest default: a brand-new user's
+    dashboard shows a real $10k virtual account immediately (0 trades, $0 P&L),
+    no daemon push required. Once they connect an exchange, the live engine's
+    published state takes over. Balance-update payload shape (matches the WS
+    frame) so the frontend maps it identically.
+    """
+    user_id = principal.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=403, detail="A logged-in user is required")
+    if state_manager is None:
+        raise HTTPException(status_code=503, detail="Portfolio state unavailable")
+
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+
+    # 1) Persisted state (paper engine or live engine has published for this tenant).
+    try:
+        state = await state_manager.get_portfolio_state(user_id)
+    except Exception:
+        state = None
+    if state and (state.get("current_balance") is not None or state.get("total_equity") is not None):
+        return {
+            "mode": state.get("mode", "paper"),
+            "initial_balance": _f(state.get("initial_balance")),
+            "current_balance": _f(state.get("current_balance")),
+            "total_equity": _f(state.get("total_equity", state.get("current_balance"))),
+            "unrealized_pnl": _f(state.get("unrealized_pnl")),
+            "realized_pnl": _f(state.get("realized_pnl")),
+            "win_rate": _f(state.get("win_rate")),
+            "total_trades": int(_f(state.get("total_trades"))),
+        }
+
+    # 2) No state yet. If the user has connected exchange keys, they're live-pending
+    #    (don't fabricate a paper balance); otherwise seed a paper account.
+    has_keys = False
+    try:
+        if credential_vault is not None:
+            active = "bingx"
+            if user_settings_store is not None:
+                active = user_settings_store.get(user_id).get("active_exchange", "bingx")
+            has_keys = bool(credential_vault.get(user_id, active))
+    except Exception:
+        has_keys = False
+
+    if has_keys:
+        return {"mode": "live", "pending": True, "initial_balance": 0.0, "current_balance": 0.0,
+                "total_equity": 0.0, "unrealized_pnl": 0.0, "realized_pnl": 0.0, "win_rate": 0.0,
+                "total_trades": 0}
+
+    initial = 10000.0
+    try:
+        from src.billing import plan_config
+        initial = float(plan_config(user_id).initial_balance)
+    except Exception:
+        pass
+
+    # Fold the user's settled-trade history into the seed so equity, realized P&L
+    # and win-rate reconcile with the trade list + equity curve on the dashboard
+    # (a brand-new user has none → clean $10k / $0 / 0).
+    realized, wins, total = 0.0, 0, 0
+    try:
+        if trade_history_manager is not None:
+            hist = await asyncio.to_thread(trade_history_manager.get_recent_trades, 500, None, user_id)
+            closed = [t for t in hist if getattr(t, "exit_price", None)]
+            total = len(closed)
+            realized = sum(float(getattr(t, "pnl", 0) or 0) for t in closed)
+            wins = sum(1 for t in closed if float(getattr(t, "pnl", 0) or 0) >= 0)
+    except Exception:
+        realized, wins, total = 0.0, 0, 0
+    win_rate = (wins / total * 100.0) if total else 0.0
+
+    baseline = {
+        "initial_balance": initial, "current_balance": initial + realized,
+        "total_equity": initial + realized, "unrealized_pnl": 0.0,
+        "realized_pnl": realized, "win_rate": win_rate, "total_trades": total,
+    }
+    # Persist the seed so it's stable across loads (idempotent — only when empty).
+    try:
+        await state_manager.update_portfolio({**baseline, "mode": "paper"}, user_id=user_id)
+    except Exception:
+        logger.warning("Failed to persist seeded paper portfolio")
+    return {"mode": "paper", **baseline}
+
+
 # --- Per-user exchange-key vault endpoints -------------------------------------
 def require_user(principal: Dict[str, Any] = Depends(current_principal)) -> str:
     """Require an authenticated end-user (not the service token). Returns user_id."""
