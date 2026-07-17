@@ -26,8 +26,8 @@ class LLMConfig(BaseModel):
     # premium key is set, so the whole system runs on an OpenRouter key alone (see
     # src/utils/llm_router.py). OpenRouter's free catalog ROTATES — override with the
     # OPENROUTER_MODEL env var when the default disappears (verified live 2026-07-16).
-    deepseek_model: str = "google/gemma-4-31b-it:free"
-    openrouter_fallback_model: str = "google/gemma-4-31b-it:free"
+    deepseek_model: str = "nvidia/nemotron-3-nano-30b-a3b:free"
+    openrouter_fallback_model: str = "nvidia/nemotron-3-nano-30b-a3b:free"
     max_retries: int = 3
     timeout: int = 60
 

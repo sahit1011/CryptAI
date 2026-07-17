@@ -124,7 +124,7 @@ class UserSession:
                 "size": size,
             }
         except Exception as e:
-            logger.error(f"[multi-user] booking failed for {self.user_id}: {e}")
+            logger.exception(f"[multi-user] booking failed for {self.user_id}: {e}")
             return {"user_id": self.user_id, "approved": False, "error": str(e)}
 
 
@@ -228,6 +228,10 @@ class MultiUserExecutor:
         paper → book to their paper engine; auto → book to their connected exchange (or
         paper if none). Isolated + fault-tolerant per tenant.
         """
+        # Defensive: never let a malformed setup abort the fan-out.
+        if not isinstance(setup, dict) or not setup.get("symbol"):
+            logger.warning(f"[multi-user] skipping invalid setup: {setup!r}")
+            return []
         results: List[Dict[str, Any]] = []
         skipped = 0
         for user_id in self.registry.active_user_ids():

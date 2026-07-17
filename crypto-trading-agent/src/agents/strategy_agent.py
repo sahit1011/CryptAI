@@ -135,10 +135,19 @@ class StrategyGenerationAgent(BaseAgent):
                 if isinstance(result, dict) and 'success' not in result:
                     result['success'] = result.get('status') == 'success'
                 
-                # For strategy generation, ensure 'setups' key exists if successful
+                # For strategy generation, expose the trade setup as `setups` — but
+                # ONLY when it's a real, well-formed setup. The LLM path can return
+                # success with trade_setup=None (no valid setup this cycle); wrapping
+                # that as [None] used to flow a null downstream (crashed per-tenant
+                # booking with "NoneType not subscriptable"). Emit [] instead → an
+                # honest "0 setups" cycle.
                 if message.type == "generate_setups" and result.get('success'):
-                    if 'strategy' in result and 'trade_setup' in result['strategy']:
-                        result['setups'] = [result['strategy']['trade_setup']]
+                    strat = result.get('strategy') if isinstance(result.get('strategy'), dict) else None
+                    ts = strat.get('trade_setup') if strat else None
+                    result['setups'] = [ts] if (isinstance(ts, dict) and ts.get('symbol')) else []
+                    if not result['setups']:
+                        # success but no actual setup → report it as no-opportunity
+                        result['success'] = bool(result.get('setups'))
                 
                 await self.send_response(result, correlation_id=correlation_id)
                 plog.debug(

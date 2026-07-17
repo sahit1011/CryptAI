@@ -313,9 +313,13 @@ class MultiUserTradingDaemon:
             except Exception as e:
                 plog.warning(f"[analysis] {sym} cycle failed: {e}", agent="daemon")
                 continue
-            if setups:
-                await self._publish_setups(setups)
-                all_setups.extend(setups)
+            # The analysis pipeline can return None / None-entries when a cycle yields
+            # no valid setup. Drop those here so they never reach publish or booking
+            # (a None setup crashed evaluate_and_book: "NoneType not subscriptable").
+            valid = [s for s in (setups or []) if isinstance(s, dict) and s.get("symbol")]
+            if valid:
+                await self._publish_setups(valid)
+                all_setups.extend(valid)
         return all_setups
 
     async def _publish_setups(self, setups):
