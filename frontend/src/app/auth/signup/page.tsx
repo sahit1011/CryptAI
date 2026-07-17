@@ -99,7 +99,7 @@ export default function SignupPage() {
 
                 <div className="rounded-xl border border-border bg-surface p-8">
                     <h1 className="heading-2 text-foreground">
-                        Open your <em className="font-serif text-accent-300">desk.</em>
+                        Open your <em className="font-serif text-accent-300">account.</em>
                     </h1>
                     <p className="body-sm mt-1.5">
                         Free to start — paper trading with virtual money.

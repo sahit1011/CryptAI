@@ -23,7 +23,7 @@ export function CTASection() {
                     className="max-w-3xl"
                 >
                     <h2 className="display-2 text-balance">
-                        Put a whole desk{" "}
+                        The whole pipeline,{" "}
                         <em className="font-serif text-accent-300">behind your account.</em>
                     </h2>
 

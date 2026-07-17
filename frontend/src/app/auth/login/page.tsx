@@ -81,7 +81,7 @@ export default function LoginPage() {
                         Welcome <em className="font-serif text-accent-300">back.</em>
                     </h1>
                     <p className="body-sm mt-1.5">
-                        Sign in to your desk.
+                        Sign in to continue.
                     </p>
 
                     {error && (
