@@ -48,9 +48,9 @@ export function ArchitectureSection() {
         <section id="architecture" className="relative overflow-hidden py-24 md:py-32">
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
                 <div className="mb-12 max-w-2xl">
-                    <span className="eyebrow text-accent-300">Architecture</span>
-                    <h2 className="display-3 mt-3 text-balance">
-                        Modeled on an institutional trading desk
+                    <h2 className="display-3 text-balance">
+                        Modeled on an{" "}
+                        <em className="font-serif text-accent-300">institutional trading desk</em>
                     </h2>
                     <p className="body-md mt-4 text-pretty text-muted-foreground">
                         Five specialists pass work down a pipeline — every trade idea is
@@ -68,7 +68,22 @@ export function ArchitectureSection() {
                 >
                     <div className="grid divide-y divide-border md:grid-cols-5 md:divide-x md:divide-y-0">
                         {stages.map((stage, i) => (
-                            <div key={stage.id} className="flex flex-col p-6">
+                            <div key={stage.id} className="relative flex flex-col p-6">
+                                {/* Work traveling down the pipeline — a quiet pulse visits
+                                    each stage in order, forever. */}
+                                <motion.div
+                                    aria-hidden
+                                    className="pointer-events-none absolute inset-0 bg-accent/[0.06]"
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: [0, 1, 0] }}
+                                    transition={{
+                                        duration: 1.4,
+                                        delay: i * 1.4,
+                                        repeat: Infinity,
+                                        repeatDelay: (stages.length - 1) * 1.4,
+                                        ease: "easeInOut",
+                                    }}
+                                />
                                 <div className="mb-3 flex items-center justify-between">
                                     <span className="num text-xs text-accent-300">{stage.id}</span>
                                     {i < stages.length - 1 && (

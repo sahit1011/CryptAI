@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowRight, Activity, Mail, Lock, User, Loader2 } from "lucide-react";
+import { ArrowRight, Activity, Loader2 } from "lucide-react";
 import { BackgroundGrid } from "@/components/landing/BackgroundGrid";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -85,115 +85,79 @@ export default function SignupPage() {
     };
 
     return (
-        <div className="flex min-h-screen items-center justify-center bg-background text-foreground relative overflow-hidden py-12">
-            {/* Background Grid */}
+        <div className="grain relative flex min-h-screen items-center justify-center overflow-hidden bg-background py-12 text-foreground">
             <BackgroundGrid />
 
-            {/* Additional Emerald-Cyan Glow */}
-            <div className="absolute inset-0 z-0 pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-accent/10 blur-[120px]" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-accent/10 blur-[120px]" />
-            </div>
-
-            <div className="w-full max-w-md p-8 relative z-10">
-                {/* Logo */}
-                <Link href="/" className="flex justify-center mb-8 group">
-                    <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center border border-border backdrop-blur-md shadow-xl group-hover:bg-accent/15 group-hover:scale-105 transition-all">
-                            <Activity className="w-6 h-6 text-foreground" />
-                        </div>
-                        <span className="text-2xl font-bold tracking-tight text-foreground group-hover:text-accent-300 transition-colors">
-                            CryptAI
-                        </span>
+            <div className="relative z-10 w-full max-w-md px-6">
+                {/* Wordmark */}
+                <Link href="/" className="mb-10 flex items-center justify-center gap-2.5">
+                    <div className="chip-brand size-8">
+                        <Activity className="size-4.5 text-accent-300" />
                     </div>
+                    <span className="text-lg font-semibold tracking-tight text-foreground">CryptAI</span>
                 </Link>
 
-                {/* Auth Card */}
-                <div className="glass-card rounded-2xl p-8 space-y-6 relative overflow-hidden">
-                    {/* Gradient Border Effect */}
-                    <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent/20 via-accent/10 to-accent/20 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-
-                    <div className="text-center space-y-2 relative z-10">
-                        <h1 className="text-3xl font-bold tracking-tight text-gradient-brand">
-                            Create an account
-                        </h1>
-                        <p className="text-sm text-muted-foreground">
-                            Join the future of algorithmic trading
-                        </p>
-                    </div>
+                <div className="rounded-xl border border-border bg-surface p-8">
+                    <h1 className="heading-2 text-foreground">
+                        Open your <em className="font-serif text-accent-300">desk.</em>
+                    </h1>
+                    <p className="body-sm mt-1.5">
+                        Free to start — paper trading with virtual money.
+                    </p>
 
                     {error && (
-                        <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2 rounded-lg text-sm text-center">
+                        <div className="mt-5 rounded-md border border-loss/25 bg-loss/10 px-3.5 py-2.5 text-sm text-loss">
                             {error}
                         </div>
                     )}
 
-                    <form onSubmit={handleSignup} className="space-y-4 relative z-10">
-                        <div className="space-y-2">
-                            <Label htmlFor="name" className="text-sm font-medium text-muted-foreground">
-                                Full Name
-                            </Label>
-                            <div className="relative group">
-                                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subtle-foreground group-focus-within:text-accent transition-colors" />
-                                <Input
-                                    id="name"
-                                    type="text"
-                                    placeholder="John Doe"
-                                    className="pl-10 h-11 bg-elevated border-border focus:border-accent/50 focus:ring-2 focus:ring-accent/20 placeholder:text-muted-foreground/50 transition-all"
-                                    value={name}
-                                    onChange={(e) => setName(e.target.value)}
-                                    required
-                                />
-                            </div>
+                    <form onSubmit={handleSignup} className="mt-6 space-y-4">
+                        <div className="space-y-1.5">
+                            <Label htmlFor="name" className="text-sm text-muted-foreground">Name</Label>
+                            <Input
+                                id="name"
+                                type="text"
+                                placeholder="Your name"
+                                className="h-11 border-border bg-elevated/50"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                required
+                            />
                         </div>
 
-                        <div className="space-y-2">
-                            <Label htmlFor="email" className="text-sm font-medium text-muted-foreground">
-                                Email
-                            </Label>
-                            <div className="relative group">
-                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subtle-foreground group-focus-within:text-accent transition-colors" />
-                                <Input
-                                    id="email"
-                                    type="email"
-                                    placeholder="name@example.com"
-                                    className="pl-10 h-11 bg-elevated border-border focus:border-accent/50 focus:ring-2 focus:ring-accent/20 placeholder:text-muted-foreground/50 transition-all"
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    required
-                                />
-                            </div>
+                        <div className="space-y-1.5">
+                            <Label htmlFor="email" className="text-sm text-muted-foreground">Email</Label>
+                            <Input
+                                id="email"
+                                type="email"
+                                placeholder="name@example.com"
+                                className="h-11 border-border bg-elevated/50"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                required
+                            />
                         </div>
 
-                        <div className="space-y-2">
-                            <Label htmlFor="password" className="text-sm font-medium text-muted-foreground">
-                                Password
-                            </Label>
-                            <div className="relative group">
-                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subtle-foreground group-focus-within:text-accent transition-colors" />
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="space-y-1.5">
+                                <Label htmlFor="password" className="text-sm text-muted-foreground">Password</Label>
                                 <Input
                                     id="password"
                                     type="password"
                                     placeholder="••••••••"
-                                    className="pl-10 h-11 bg-elevated border-border focus:border-accent/50 focus:ring-2 focus:ring-accent/20 placeholder:text-muted-foreground/50 transition-all"
+                                    className="h-11 border-border bg-elevated/50"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                     required
                                 />
                             </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label htmlFor="confirmPassword" className="text-sm font-medium text-muted-foreground">
-                                Confirm Password
-                            </Label>
-                            <div className="relative group">
-                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subtle-foreground group-focus-within:text-accent transition-colors" />
+                            <div className="space-y-1.5">
+                                <Label htmlFor="confirmPassword" className="text-sm text-muted-foreground">Confirm</Label>
                                 <Input
                                     id="confirmPassword"
                                     type="password"
                                     placeholder="••••••••"
-                                    className="pl-10 h-11 bg-elevated border-border focus:border-accent/50 focus:ring-2 focus:ring-accent/20 placeholder:text-muted-foreground/50 transition-all"
+                                    className="h-11 border-border bg-elevated/50"
                                     value={confirmPassword}
                                     onChange={(e) => setConfirmPassword(e.target.value)}
                                     required
@@ -201,32 +165,24 @@ export default function SignupPage() {
                             </div>
                         </div>
 
-                        <Button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full h-11 bg-primary text-primary-foreground hover:bg-primary-hover font-medium transition-all hover:scale-[1.02] brand-glow relative z-10 group overflow-hidden"
-                        >
-                            <span className="relative z-10 flex items-center justify-center">
-                                {loading ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                    <>
-                                        Create Account <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                                    </>
-                                )}
-                            </span>
-                            {/* Shine effect */}
-                            <div className="absolute inset-0 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 bg-gradient-to-r from-transparent via-white/30 to-transparent skew-x-12" />
+                        <Button type="submit" disabled={loading} className="h-11 w-full">
+                            {loading ? (
+                                <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                                <>
+                                    Create account <ArrowRight className="size-4" />
+                                </>
+                            )}
                         </Button>
                     </form>
 
-                    <div className="relative z-10">
+                    <div className="relative my-6">
                         <div className="absolute inset-0 flex items-center">
                             <span className="w-full border-t border-border" />
                         </div>
-                        <div className="relative flex justify-center text-xs uppercase">
-                            <span className="bg-background px-2 text-muted-foreground">
-                                Or continue with
+                        <div className="relative flex justify-center">
+                            <span className="num bg-surface px-3 text-[11px] uppercase tracking-wider text-subtle-foreground">
+                                or
                             </span>
                         </div>
                     </div>
@@ -235,18 +191,18 @@ export default function SignupPage() {
                         variant="outline"
                         onClick={handleGoogleSignup}
                         disabled={loading}
-                        className="w-full h-11 border-border bg-elevated hover:bg-muted hover:text-foreground hover:border-accent/30 transition-all relative z-10 group"
+                        className="h-11 w-full"
                     >
                         <GoogleIcon />
-                        Google
+                        Continue with Google
                     </Button>
                 </div>
 
-                <p className="mt-6 text-center text-sm text-muted-foreground relative z-10">
+                <p className="mt-6 text-center text-sm text-muted-foreground">
                     Already have an account?{" "}
                     <Link
                         href="/auth/login"
-                        className="text-accent hover:text-accent-300 font-medium transition-colors hover:underline"
+                        className="font-medium text-accent-300 transition-colors duration-150 hover:text-accent-200"
                     >
                         Sign in
                     </Link>

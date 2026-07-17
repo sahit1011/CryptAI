@@ -1,68 +1,114 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { Check } from "lucide-react";
 
 /*
- * FeaturesSection — "why CryptAI" as a numbered capability index (01–04) inside
- * one bordered grid with hairline dividers. No floating icon-chip cards (the
- * most recognizable template pattern); the numbering is real information — it
- * mirrors the order the pipeline works in.
+ * "Why CryptAI" — a manifesto statement followed by an asymmetric split:
+ * the risk gate (the actual differentiator) gets a spec-sheet treatment on the
+ * left; the supporting capabilities read as a quiet hairline list on the
+ * right. Deliberately NOT four identical cards with numbered eyebrows — each
+ * idea gets the weight it deserves.
  */
 
-const features = [
+const GATE_RULES = [
+    { rule: "max risk per trade", value: "2%" },
+    { rule: "max portfolio heat", value: "6%" },
+    { rule: "max daily loss", value: "5%" },
+    { rule: "max concurrent positions", value: "3" },
+];
+
+const CAPABILITIES = [
     {
-        n: "01",
         title: "Autonomous agents",
-        body: "Specialist agents own data, analysis, memory and strategy — each argues its part of a trade, so setups survive scrutiny before they reach you.",
+        body: "Data, analysis, memory and strategy each argue their part of a trade — setups survive scrutiny before they reach you.",
     },
     {
-        n: "02",
-        title: "A deterministic risk gate",
-        body: "Every AI-drafted setup passes a rule-based gate — position sizing, portfolio heat, daily loss limits — that no model can talk its way around.",
-    },
-    {
-        n: "03",
         title: "Real-time execution",
-        body: "Live market data streams into the engine; approved setups become full bracket orders — entry, stop, targets — in milliseconds.",
+        body: "Approved setups become full bracket orders — entry, stop, targets — in milliseconds.",
     },
     {
-        n: "04",
-        title: "Testnet-first & non-custodial",
-        body: "Start on paper trading, graduate to testnet keys you control. CryptAI never takes custody of funds — your keys stay encrypted and yours.",
+        title: "Non-custodial, testnet-first",
+        body: "Start on paper trading; your exchange keys stay encrypted and yours. CryptAI never takes custody.",
     },
 ];
+
+const reveal = {
+    initial: { opacity: 0, y: 14 },
+    whileInView: { opacity: 1, y: 0 },
+    viewport: { once: true, margin: "-80px" },
+};
 
 export function FeaturesSection() {
     return (
         <section id="features" className="relative pt-14 pb-24 md:pt-16 md:pb-32">
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
-                <div className="mb-12 max-w-2xl">
-                    <span className="eyebrow text-accent-300">Why CryptAI</span>
-                    <h2 className="display-3 mt-3 text-balance">A quant desk that runs itself</h2>
-                    <p className="body-md mt-4 text-pretty text-muted-foreground">
-                        Everything you need to research, validate, and deploy algorithmic
-                        strategies — in one cohesive terminal.
-                    </p>
-                </div>
-
-                <motion.div
-                    initial={{ opacity: 0, y: 12 }}
-                    whileInView={{ opacity: 1, y: 0 }}
-                    viewport={{ once: true, margin: "-80px" }}
-                    transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                    className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2"
+                {/* Manifesto — the section IS the statement. */}
+                <motion.h2
+                    {...reveal}
+                    transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+                    className="display-2 max-w-3xl text-balance text-foreground"
                 >
-                    {features.map((feature) => (
-                        <div
-                            key={feature.n}
-                            className="group bg-surface p-7 transition-colors duration-150 hover:bg-elevated/60 md:p-8"
-                        >
-                            <span className="num text-xs text-accent-300">{feature.n}</span>
-                            <h3 className="heading-4 mt-4 mb-2 text-[17px]">{feature.title}</h3>
-                            <p className="body-sm max-w-md">{feature.body}</p>
+                    Most trading bots are one model with an API key. CryptAI is a desk —{" "}
+                    <em className="font-serif text-accent-300">specialists that argue,</em>{" "}
+                    and <em className="font-serif text-accent-300">a gate that decides.</em>
+                </motion.h2>
+
+                <div className="mt-14 grid gap-12 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
+                    {/* The risk gate — spec sheet, not marketing card. */}
+                    <motion.div
+                        {...reveal}
+                        transition={{ duration: 0.55, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+                    >
+                        <h3 className="heading-2 text-foreground">The risk gate</h3>
+                        <p className="body-md mt-3 max-w-lg text-muted-foreground">
+                            Every AI-drafted setup passes a deterministic rule set before an
+                            order exists. The models can argue all they want — none of them
+                            can talk past it.
+                        </p>
+
+                        <div className="mt-6 overflow-hidden rounded-lg border border-border">
+                            {GATE_RULES.map((r, i) => (
+                                <div
+                                    key={r.rule}
+                                    className={`flex items-center justify-between px-4 py-3 ${
+                                        i > 0 ? "border-t border-border" : ""
+                                    }`}
+                                >
+                                    <span className="num text-sm text-muted-foreground">{r.rule}</span>
+                                    <span className="flex items-center gap-2.5">
+                                        <span className="num text-sm font-semibold text-foreground">{r.value}</span>
+                                        <Check className="size-3.5 text-profit" />
+                                    </span>
+                                </div>
+                            ))}
+                            <div className="border-t border-border bg-elevated/40 px-4 py-2.5">
+                                <span className="num text-xs text-subtle-foreground">
+                                    enforced in code · not a model output
+                                </span>
+                            </div>
                         </div>
-                    ))}
-                </motion.div>
+                    </motion.div>
+
+                    {/* Supporting capabilities — a quiet list, not cards. */}
+                    <motion.div
+                        {...reveal}
+                        transition={{ duration: 0.55, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                        className="lg:pt-2"
+                    >
+                        {CAPABILITIES.map((c, i) => (
+                            <div
+                                key={c.title}
+                                className={`py-6 ${i > 0 ? "border-t border-border" : "lg:pt-0"}`}
+                            >
+                                <h3 className="text-[17px] font-semibold tracking-tight text-foreground">
+                                    {c.title}
+                                </h3>
+                                <p className="body-sm mt-2 max-w-md">{c.body}</p>
+                            </div>
+                        ))}
+                    </motion.div>
+                </div>
             </div>
         </section>
     );

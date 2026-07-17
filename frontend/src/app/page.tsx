@@ -13,7 +13,7 @@ import { Footer } from "@/components/landing/Footer";
  */
 export default function LandingPage() {
     return (
-        <div className="min-h-screen bg-background text-foreground overflow-x-hidden font-sans selection:bg-accent/30 selection:text-foreground">
+        <div className="grain min-h-screen bg-background text-foreground overflow-x-hidden font-sans selection:bg-accent/30 selection:text-foreground">
             <Navbar />
 
             <main>
