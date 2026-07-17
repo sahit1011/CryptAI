@@ -1,14 +1,6 @@
 "use client";
 
-import {
-    AnimatePresence,
-    motion,
-    MotionValue,
-    useMotionValue,
-    useReducedMotion,
-    useSpring,
-    useTransform,
-} from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
     Activity,
     BookOpen,
@@ -22,47 +14,36 @@ import {
     type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { cn } from "@/lib/utils";
 
 /*
- * LandingDock — the desktop header as a macOS-style dock (mechanics adapted
- * from 21st.dev's Floating Dock, rebuilt in the house system): squircle
- * app-icon cells that magnify toward the cursor with spring physics, tooltips
- * beneath (it hangs from the top edge, so growth and labels go downward).
- * Auth-aware: signed-out gets Log in / Start free; signed-in gets Dashboard /
- * Sign out. Reduced motion renders the dock static. Desktop only — the mobile
- * bar + drawer in Navbar stays.
+ * LandingDock v2 — a floating command-bar dock: every item is icon + LABEL
+ * (readable, not symbol-guessing), with a shared highlight that MORPHS between
+ * items on hover (layoutId spring) — the cinematic touch is the movement of
+ * the light, not icon magnification. One accent item (Start free / Dashboard).
+ * Auth-aware; reduced motion swaps the morph for a plain hover fill.
  */
 
-type DockLink = {
-    title: string;
+type DockItem = {
+    label: string;
     href: string;
     icon: LucideIcon;
-    /** The one accent moment in the dock (Start free / Dashboard). */
     accent?: boolean;
     onClick?: () => void;
 };
 
-const NAV_LINKS: DockLink[] = [
-    { title: "CryptAI — Home", href: "/", icon: Activity },
-    { title: "Features", href: "#features", icon: Layers },
-    { title: "Architecture", href: "#architecture", icon: Workflow },
-    { title: "Pricing", href: "#pricing", icon: Wallet },
-    { title: "Docs", href: "#docs", icon: BookOpen },
+const NAV_ITEMS: DockItem[] = [
+    { label: "Features", href: "#features", icon: Layers },
+    { label: "Architecture", href: "#architecture", icon: Workflow },
+    { label: "Pricing", href: "#pricing", icon: Wallet },
+    { label: "Docs", href: "#docs", icon: BookOpen },
 ];
-
-// Cell + glyph sizes at rest and at the cursor peak.
-const CELL = 38;
-const CELL_PEAK = 58;
-const GLYPH = 17;
-const GLYPH_PEAK = 26;
-const REACH = 130; // px of cursor influence to either side
 
 export function LandingDock() {
     const reduced = useReducedMotion() ?? false;
-    const mouseX = useMotionValue(Infinity);
+    const [hovered, setHovered] = useState<string | null>(null);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const supabase = createClient();
 
@@ -76,11 +57,11 @@ export function LandingDock() {
         return () => subscription.unsubscribe();
     }, [supabase]);
 
-    const authLinks: DockLink[] = isAuthenticated
+    const authItems: DockItem[] = isAuthenticated
         ? [
-            { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard, accent: true },
+            { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, accent: true },
             {
-                title: "Sign out",
+                label: "Sign out",
                 href: "/",
                 icon: LogOut,
                 onClick: () => {
@@ -91,8 +72,8 @@ export function LandingDock() {
             },
         ]
         : [
-            { title: "Log in", href: "/auth/login", icon: LogIn },
-            { title: "Start free", href: "/auth/signup", icon: UserPlus, accent: true },
+            { label: "Log in", href: "/auth/login", icon: LogIn },
+            { label: "Start free", href: "/auth/signup", icon: UserPlus, accent: true },
         ];
 
     return (
@@ -101,99 +82,111 @@ export function LandingDock() {
             initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            onMouseMove={(e) => !reduced && mouseX.set(e.clientX)}
-            onMouseLeave={() => mouseX.set(Infinity)}
-            className="fixed left-1/2 top-4 z-50 hidden -translate-x-1/2 items-start gap-1.5 rounded-xl border border-border bg-background/80 px-2.5 pb-2 pt-2 backdrop-blur-md lg:flex"
+            onMouseLeave={() => setHovered(null)}
+            className="fixed left-1/2 top-4 z-50 hidden -translate-x-1/2 items-center gap-1 rounded-xl border border-border bg-background/85 p-1.5 backdrop-blur-md md:flex"
         >
-            {NAV_LINKS.map((link) => (
-                <DockCell key={link.title} link={link} mouseX={mouseX} reduced={reduced} />
+            {/* Brand — part of the dock, not a separate bar. */}
+            <Link
+                href="/"
+                className="mr-1 flex items-center gap-2 rounded-lg px-2.5 py-1.5 transition-colors duration-150 hover:bg-elevated"
+            >
+                <span className="chip-brand size-6">
+                    <Activity className="size-3.5 text-accent-300" />
+                </span>
+                <span className="text-sm font-semibold tracking-tight text-foreground">CryptAI</span>
+            </Link>
+
+            <span aria-hidden className="mx-0.5 h-5 w-px bg-border" />
+
+            {NAV_ITEMS.map((item) => (
+                <DockButton
+                    key={item.label}
+                    item={item}
+                    hovered={hovered}
+                    setHovered={setHovered}
+                    reduced={reduced}
+                />
             ))}
 
-            {/* Hairline divider between navigation and account actions. */}
-            <span aria-hidden className="mx-1 h-[38px] w-px self-start bg-border" />
+            <span aria-hidden className="mx-0.5 h-5 w-px bg-border" />
 
-            {authLinks.map((link) => (
-                <DockCell key={link.title} link={link} mouseX={mouseX} reduced={reduced} />
+            {authItems.map((item) => (
+                <DockButton
+                    key={item.label}
+                    item={item}
+                    hovered={hovered}
+                    setHovered={setHovered}
+                    reduced={reduced}
+                />
             ))}
         </motion.nav>
     );
 }
 
-function DockCell({
-    link,
-    mouseX,
+function DockButton({
+    item,
+    hovered,
+    setHovered,
     reduced,
 }: {
-    link: DockLink;
-    mouseX: MotionValue<number>;
+    item: DockItem;
+    hovered: string | null;
+    setHovered: (l: string | null) => void;
     reduced: boolean;
 }) {
-    // React-compiler opt-out: reading ref.current inside the useTransform
-    // callback is the canonical dock-magnification pattern — the callback runs
-    // on motion frames, not during render.
-    "use no memo";
-    const ref = useRef<HTMLDivElement>(null);
-    const [hovered, setHovered] = useState(false);
-    const Icon = link.icon;
+    const Icon = item.icon;
 
-    const distance = useTransform(mouseX, (val) => {
-        const bounds = ref.current?.getBoundingClientRect() ?? { x: 0, width: 0 };
-        return val - bounds.x - bounds.width / 2;
-    });
-
-    const cellSize = useSpring(
-        useTransform(distance, [-REACH, 0, REACH], [CELL, CELL_PEAK, CELL]),
-        { mass: 0.1, stiffness: 160, damping: 13 },
-    );
-    const glyphSize = useSpring(
-        useTransform(distance, [-REACH, 0, REACH], [GLYPH, GLYPH_PEAK, GLYPH]),
-        { mass: 0.1, stiffness: 160, damping: 13 },
-    );
+    if (item.accent) {
+        return (
+            <Link
+                href={item.href}
+                onClick={(e) => {
+                    if (item.onClick) {
+                        e.preventDefault();
+                        item.onClick();
+                    }
+                }}
+                className="ml-0.5 flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-accent/25 bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors duration-150 hover:bg-primary-hover"
+            >
+                <Icon className="size-3.5" />
+                {item.label}
+            </Link>
+        );
+    }
 
     return (
         <Link
-            href={link.href}
-            aria-label={link.title}
+            href={item.href}
             onClick={(e) => {
-                if (link.onClick) {
+                if (item.onClick) {
                     e.preventDefault();
-                    link.onClick();
+                    item.onClick();
                 }
             }}
+            onMouseEnter={() => setHovered(item.label)}
+            className={cn(
+                "relative flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition-colors duration-150",
+                hovered === item.label ? "text-foreground" : "text-muted-foreground",
+                reduced && "hover:bg-elevated hover:text-foreground",
+            )}
         >
-            <motion.div
-                ref={ref}
-                style={reduced ? { width: CELL, height: CELL } : { width: cellSize, height: cellSize }}
-                onMouseEnter={() => setHovered(true)}
-                onMouseLeave={() => setHovered(false)}
-                className={cn(
-                    "relative flex items-center justify-center rounded-lg border transition-colors duration-150",
-                    link.accent
-                        ? "border-accent/30 bg-primary text-primary-foreground"
-                        : "border-transparent bg-elevated/60 text-muted-foreground hover:border-border hover:text-foreground",
-                )}
-            >
+            {/* The moving light: one shared highlight morphs between items. */}
+            {!reduced && (
                 <AnimatePresence>
-                    {hovered && (
+                    {hovered === item.label && (
                         <motion.span
-                            initial={{ opacity: 0, y: -6, x: "-50%" }}
-                            animate={{ opacity: 1, y: 0, x: "-50%" }}
-                            exit={{ opacity: 0, y: -4, x: "-50%" }}
-                            transition={{ duration: 0.15 }}
-                            className="absolute left-1/2 top-full mt-2 w-fit whitespace-pre rounded-md border border-border bg-elevated px-2 py-0.5 text-xs text-foreground"
-                        >
-                            {link.title}
-                        </motion.span>
+                            layoutId="dock-highlight"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ type: "spring", stiffness: 320, damping: 28 }}
+                            className="absolute inset-0 rounded-lg bg-elevated"
+                        />
                     )}
                 </AnimatePresence>
-                {reduced ? (
-                    <Icon style={{ width: GLYPH, height: GLYPH }} />
-                ) : (
-                    <motion.span style={{ width: glyphSize, height: glyphSize }} className="flex items-center justify-center">
-                        <Icon className="h-full w-full" />
-                    </motion.span>
-                )}
-            </motion.div>
+            )}
+            <Icon className="relative z-10 size-3.5" />
+            <span className="relative z-10">{item.label}</span>
         </Link>
     );
 }

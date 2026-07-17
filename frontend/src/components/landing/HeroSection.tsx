@@ -148,6 +148,8 @@ export function HeroSection() {
         offset: ["start start", "end start"],
     });
     const demoY = useTransform(scrollYProgress, [0, 1], [0, 140]);
+    // Depth on scroll: the demo leans further back as it recedes.
+    const demoRotateX = useTransform(scrollYProgress, [0, 1], [0, 12]);
 
     return (
         <section ref={sectionRef} className="relative overflow-hidden pt-36 pb-32 md:pt-44 md:pb-40">
@@ -171,6 +173,8 @@ export function HeroSection() {
                     className="absolute inset-0"
                     style={{
                         y: reduced ? 0 : demoY,
+                        rotateX: reduced ? 0 : demoRotateX,
+                        transformPerspective: 1800,
                         maskImage:
                             "linear-gradient(to bottom, transparent 2%, black 20%, black 94%, transparent 100%)",
                         WebkitMaskImage:

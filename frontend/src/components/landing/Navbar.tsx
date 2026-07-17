@@ -60,7 +60,7 @@ export function Navbar() {
     return (
         <>
             <nav
-                className={`lg:hidden fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${isScrolled
+                className={`md:hidden fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${isScrolled
                     ? "py-3 bg-background/85 backdrop-blur-xl border-b border-border shadow-[var(--shadow-elevation-mid)]"
                     : "py-5 bg-background/50 backdrop-blur-md border-b border-transparent"
                     }`}

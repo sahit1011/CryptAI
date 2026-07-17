@@ -1,15 +1,26 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion, useReducedMotion, useScroll, useTransform, type MotionValue } from "framer-motion";
 import { Check } from "lucide-react";
+import { useRef } from "react";
 
 /*
- * "Why CryptAI" — a manifesto statement followed by an asymmetric split:
- * the risk gate (the actual differentiator) gets a spec-sheet treatment on the
- * left; the supporting capabilities read as a quiet hairline list on the
- * right. Deliberately NOT four identical cards with numbered eyebrows — each
- * idea gets the weight it deserves.
+ * "Why CryptAI" — the manifesto is scroll-scrubbed: each word illuminates as
+ * the reader scrolls through the section (responds to input, not a timer;
+ * scrolling back dims them again). Below, the asymmetric split: the risk gate
+ * as a spec sheet, supporting capabilities as a quiet hairline list.
  */
+
+// Manifesto tokens; `serif` marks the crimson italic voice. `br` breaks the line.
+const TOKENS: { text: string; serif?: boolean; br?: boolean }[] = [
+    { text: "Most" }, { text: "bots:" }, { text: "one" }, { text: "model," },
+    { text: "one" }, { text: "API" }, { text: "key.", br: true },
+    { text: "CryptAI:" },
+    { text: "specialists", serif: true }, { text: "that", serif: true },
+    { text: "argue,", serif: true }, { text: "a", serif: true },
+    { text: "gate", serif: true }, { text: "that", serif: true },
+    { text: "decides.", serif: true },
+];
 
 const GATE_RULES = [
     { rule: "max risk per trade", value: "2%" },
@@ -39,23 +50,54 @@ const reveal = {
     viewport: { once: true, margin: "-80px" },
 };
 
+function Word({
+    token,
+    index,
+    progress,
+    reduced,
+}: {
+    token: (typeof TOKENS)[number];
+    index: number;
+    progress: MotionValue<number>;
+    reduced: boolean;
+}) {
+    // Each word owns a slice of the scrub range and fades up within it.
+    const start = index / TOKENS.length;
+    const end = (index + 1) / TOKENS.length;
+    const opacity = useTransform(progress, [start, end], [0.12, 1]);
+
+    return (
+        <>
+            <motion.span
+                style={reduced ? undefined : { opacity }}
+                className={token.serif ? "font-serif italic text-accent-300" : undefined}
+            >
+                {token.text}
+            </motion.span>{" "}
+            {token.br && <br />}
+        </>
+    );
+}
+
 export function FeaturesSection() {
+    const reduced = useReducedMotion() ?? false;
+    const headlineRef = useRef<HTMLHeadingElement | null>(null);
+    // Scrub window: starts when the headline enters the lower viewport, done
+    // by the time it reaches the upper third.
+    const { scrollYProgress } = useScroll({
+        target: headlineRef,
+        offset: ["start 0.92", "start 0.38"],
+    });
+
     return (
         <section id="features" className="relative pt-14 pb-24 md:pt-16 md:pb-32">
             <div className="container relative z-10 mx-auto max-w-6xl px-4 md:px-6">
-                {/* Manifesto — the section IS the statement. */}
-                <motion.h2
-                    {...reveal}
-                    transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
-                    className="display-2 max-w-3xl text-balance text-foreground"
-                >
-                    Most bots: one model, one API key.
-                    <br />
-                    CryptAI:{" "}
-                    <em className="font-serif text-accent-300">
-                        specialists that argue, a gate that decides.
-                    </em>
-                </motion.h2>
+                {/* Manifesto — illuminated by the reader's own scroll. */}
+                <h2 ref={headlineRef} className="display-2 max-w-3xl text-balance text-foreground">
+                    {TOKENS.map((token, i) => (
+                        <Word key={i} token={token} index={i} progress={scrollYProgress} reduced={reduced} />
+                    ))}
+                </h2>
 
                 <div className="mt-14 grid gap-12 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
                     {/* The risk gate — spec sheet, not marketing card. */}
