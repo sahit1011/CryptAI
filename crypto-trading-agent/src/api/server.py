@@ -516,10 +516,23 @@ async def startup_event():
         try:
             from src.multi_user_daemon import MultiUserTradingDaemon
             embedded_daemon = MultiUserTradingDaemon()
-            await embedded_daemon.start()
-            logger.info("Embedded trading daemon started in the API process")
+
+            # Start in the BACKGROUND — daemon init backfills ~500 candles x 5
+            # timeframes x 3 symbols (minutes). Awaiting it here blocks uvicorn's
+            # startup, so the service serves nothing during a cold start and
+            # health checks fail — on free tiers that reads as "never wakes up".
+            async def _start_daemon_bg(d: "MultiUserTradingDaemon") -> None:
+                global embedded_daemon
+                try:
+                    await d.start()
+                    logger.info("Embedded trading daemon started in the API process")
+                except Exception as e:
+                    logger.error(f"Embedded daemon failed to start (API continues without it): {e}")
+                    embedded_daemon = None
+
+            asyncio.get_running_loop().create_task(_start_daemon_bg(embedded_daemon))
         except Exception as e:
-            logger.error(f"Embedded daemon failed to start (API continues without it): {e}")
+            logger.error(f"Embedded daemon setup failed (API continues without it): {e}")
             embedded_daemon = None
 
 
