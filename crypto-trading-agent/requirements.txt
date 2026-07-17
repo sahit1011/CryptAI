@@ -8,6 +8,10 @@ langgraph==0.2.0
 # LLM Clients
 anthropic==0.28.0
 openai==1.35.0
+# httpx MUST stay <0.28: 0.28 removed the `proxies` kwarg that these SDK versions
+# still pass to httpx.Client, which raises "Client.__init__() got an unexpected
+# keyword argument 'proxies'" and silently disables the Analysis/Strategy agents.
+httpx==0.27.2
 
 # Web API (src/api/server.py — was missing, so the API image couldn't run)
 fastapi==0.111.0
