@@ -154,9 +154,9 @@ export function FaqSection() {
                                 whileInView={{ opacity: 1, y: 0 }}
                                 viewport={{ once: true, margin: "-60px" }}
                                 transition={{ duration: 0.45, delay: i * 0.05, ease }}
-                                className="grid gap-y-3 border-t border-border px-6 py-8 md:grid-cols-[38%_1px_62%] md:gap-x-6 md:py-9"
+                                className="grid gap-y-3 border-t border-border px-6 py-8 md:grid-cols-[minmax(0,0.9fr)_1px_minmax(0,1.4fr)] md:gap-x-8 md:py-9"
                             >
-                                <dt>
+                                <dt className="min-w-0">
                                     <div className="num mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-subtle-foreground">
                                         <span>Q.0{i + 1}</span>
                                         <span className="text-muted-foreground">· {row.tag}</span>
@@ -164,7 +164,7 @@ export function FaqSection() {
                                     <p className="text-lg font-medium leading-snug text-foreground">{row.q}</p>
                                 </dt>
                                 <span aria-hidden className="hidden bg-border md:block" />
-                                <dd className="md:pl-2">
+                                <dd className="min-w-0 md:pl-2">
                                     <div className="mb-2">
                                         <ReceiptTag receipt={row.receipt} index={i} />
                                     </div>

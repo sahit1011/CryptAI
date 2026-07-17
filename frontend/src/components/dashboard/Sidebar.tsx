@@ -9,7 +9,9 @@ import { PnL } from "@/components/ui/value"
 import { createClient } from "@/utils/supabase/client"
 import { useState } from "react"
 import { useStore } from "@/store/useStore"
-import { useMarketStore } from "@/hooks/useMarketData"
+import { useMarketStore } from "@/hooks/useMarketData";
+import { useClosedTrades } from "@/hooks/useClosedTrades";
+import { computeTradeStats } from "@/lib/tradeStats"
 
 // Nav maps to the real dashboard sections (URL-driven via ?section=), so nothing
 // points at a route that doesn't exist. `section` is matched against ?section=.
@@ -30,10 +32,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     const [isLoggingOut, setIsLoggingOut] = useState(false)
     const { portfolio } = useStore()
     const { status } = useMarketStore()
+    const { trades } = useClosedTrades()
+    const stats = computeTradeStats(trades)
 
-    // Only trust P&L once the live feed is open; otherwise show honest dashes.
-    const live = status === "open"
-    const gain = portfolio.totalPnl >= 0
+    // Live feed wins; otherwise fall back to realized P&L from settled trades
+    // (paper), so the sidebar never contradicts the pages showing that history.
+    const live = status === "open" && (portfolio.totalValue > 0 || portfolio.balance > 0)
+    const hasRealized = stats.closedCount > 0
+    const shownPnl = live ? portfolio.totalPnl : hasRealized ? stats.realizedPnl : null
+    const gain = (shownPnl ?? 0) >= 0
 
     const handleLogout = async () => {
         setIsLoggingOut(true)
@@ -90,9 +97,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 <div className="space-y-3 rounded-xl border border-border bg-surface p-4">
                     <div className="flex items-center justify-between">
                         <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                            Total P&L
+                            {live ? "Total P&L" : hasRealized ? "Realized P&L" : "Total P&L"}
                         </span>
-                        {live ? (
+                        {shownPnl !== null ? (
                             gain ? (
                                 <TrendingUp className="size-3.5 text-profit" />
                             ) : (
@@ -103,17 +110,15 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                         )}
                     </div>
                     <div className="space-y-1">
-                        <PnL
-                            value={live ? portfolio.totalPnl : null}
-                            money
-                            className="text-2xl font-semibold"
-                        />
+                        <PnL value={shownPnl} money className="text-2xl font-semibold" />
                         <div>
-                            <PnL
-                                value={live ? portfolio.totalPnlPercent : null}
-                                percent
-                                className="text-xs font-medium"
-                            />
+                            {live ? (
+                                <PnL value={portfolio.totalPnlPercent} percent className="text-xs font-medium" />
+                            ) : (
+                                <span className="num text-xs text-subtle-foreground">
+                                    {hasRealized ? `${stats.closedCount} closed · paper` : "Waiting for data…"}
+                                </span>
+                            )}
                         </div>
                     </div>
                 </div>

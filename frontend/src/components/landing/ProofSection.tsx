@@ -101,7 +101,7 @@ function OrderRow({ order, index }: { order: Order; index: number }) {
                         {order.promise}
                     </p>
                 </div>
-                <div className="mt-3.5 flex flex-wrap gap-2 md:ml-8">
+                <div className="mt-3.5 flex min-w-0 flex-wrap gap-2 md:ml-8">
                     {order.tokens.map((t, i) => (
                         <Token key={i}>{t}</Token>
                     ))}
