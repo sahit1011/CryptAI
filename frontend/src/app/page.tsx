@@ -1,4 +1,5 @@
 import { Navbar } from "@/components/landing/Navbar";
+import { LandingDock } from "@/components/landing/LandingDock";
 import { HeroSection } from "@/components/landing/HeroSection";
 import { FeaturesSection } from "@/components/landing/FeaturesSection";
 import { StatsSection } from "@/components/landing/StatsSection";
@@ -15,6 +16,7 @@ export default function LandingPage() {
     return (
         <div className="grain min-h-screen bg-background text-foreground overflow-x-hidden font-sans selection:bg-accent/30 selection:text-foreground">
             <Navbar />
+            <LandingDock />
 
             <main>
                 <HeroSection />

@@ -60,7 +60,7 @@ export function Navbar() {
     return (
         <>
             <nav
-                className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${isScrolled
+                className={`lg:hidden fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${isScrolled
                     ? "py-3 bg-background/85 backdrop-blur-xl border-b border-border shadow-[var(--shadow-elevation-mid)]"
                     : "py-5 bg-background/50 backdrop-blur-md border-b border-transparent"
                     }`}
@@ -78,7 +78,7 @@ export function Navbar() {
                         </Link>
 
                         {/* Center - Navigation Links (quiet: color shift only, 150ms) */}
-                        <div className="hidden md:flex items-center gap-1 absolute left-1/2 -translate-x-1/2">
+                        <div className="hidden md:flex lg:hidden items-center gap-1 absolute left-1/2 -translate-x-1/2">
                             {navLinks.map((link) => (
                                 <Link
                                     key={link.href}
@@ -91,7 +91,7 @@ export function Navbar() {
                         </div>
 
                         {/* Right Side - CTA Buttons or Profile */}
-                        <div className="hidden md:flex items-center gap-3 z-10">
+                        <div className="hidden md:flex lg:hidden items-center gap-3 z-10">
                             {isAuthenticated ? (
                                 <>
                                     <Link href="/dashboard">
