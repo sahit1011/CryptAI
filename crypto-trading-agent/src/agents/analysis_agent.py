@@ -1442,18 +1442,28 @@ Analyze the following market data:
             # each in order and use the first usable (JSON-shaped) reply. See
             # src/utils/openrouter_rotation.py.
             from src.utils.openrouter_rotation import complete_with_rotation, looks_like_json_object
-            response_text, used_model = complete_with_rotation(
-                self.openrouter_client,
-                self.config.llm.openrouter_free_models,
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                max_tokens=20000,
-                temperature=0.3,
-                validate=looks_like_json_object,
-                on_attempt=lambda m, s: plog.debug(
-                    f"OpenRouter[{m}]: {s}", agent="analysis_agent", phase="llm_analysis"
+            # The OpenRouter client is SYNC, and this analysis context is large
+            # (~40k tokens) so the call can run 60-120s — rotating models can extend
+            # it further. Run it OFF the event loop: a blocking call this long freezes
+            # the HTTP server and the WS reader, which makes Render's health check time
+            # out and RESTART the container mid-analysis (the cycle then never
+            # completes). run_in_executor keeps the loop responsive during the call.
+            loop = asyncio.get_event_loop()
+            response_text, used_model = await loop.run_in_executor(
+                None,
+                lambda: complete_with_rotation(
+                    self.openrouter_client,
+                    self.config.llm.openrouter_free_models,
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message}
+                    ],
+                    max_tokens=20000,
+                    temperature=0.3,
+                    validate=looks_like_json_object,
+                    on_attempt=lambda m, s: plog.debug(
+                        f"OpenRouter[{m}]: {s}", agent="analysis_agent", phase="llm_analysis"
+                    ),
                 ),
             )
 
