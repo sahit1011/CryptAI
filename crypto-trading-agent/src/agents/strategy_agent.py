@@ -94,8 +94,10 @@ class StrategyGenerationAgent(BaseAgent):
         # OpenRouter (free-tier DeepSeek, primary) → Groq → OpenAI (final).
         # (The old log claimed a Claude-primary chain that no longer runs — see the
         # dead _call_llm_strategy method annotation below.)
+        _free_list = self.config.llm.openrouter_free_models or [self.config.llm.deepseek_model]
         plog.info(
-            f"Strategy Agent initialized with LLM chain: OpenRouter/{self.config.llm.deepseek_model} (primary) "
+            f"Strategy Agent initialized with LLM chain: OpenRouter free-tier rotation "
+            f"[{len(_free_list)} models, primary={_free_list[0]}] "
             f"→ Groq/{self.config.llm.groq_model} (fallback) → OpenAI/{self.config.llm.gpt_model} (final)",
             agent="strategy_agent", phase="setup"
         )
@@ -1515,40 +1517,41 @@ class StrategyGenerationAgent(BaseAgent):
                 target_rr=target_rr
             )
             
-            # Try OpenRouter DeepSeek first (primary)
+            # Try OpenRouter free tier first (primary). Rotate through the free-model
+            # list rather than pinning ONE model: any single ':free' model can be
+            # pulled or 429'd at any moment, so try each in order and use the first
+            # that returns a JSON-shaped reply. See src/utils/openrouter_rotation.py.
             if self.openrouter_client and self.config.llm.openrouter_api_key:
                 try:
-                    plog.info("🤖 Attempting OpenRouter DeepSeek for strategy creation", agent="strategy_agent")
-                    
-                    # Use sync client with executor (as per our fix)
+                    from src.utils.openrouter_rotation import complete_with_rotation, looks_like_json_object
+                    plog.info("🤖 Attempting OpenRouter free-tier rotation for strategy creation", agent="strategy_agent")
+
+                    # Sync client → run the (rotating) call off the event loop.
                     loop = asyncio.get_event_loop()
-                    response = await loop.run_in_executor(
+                    content, used_model = await loop.run_in_executor(
                         None,
-                        lambda: self.openrouter_client.chat.completions.create(
-                            model=self.config.llm.deepseek_model,
-                            messages=[
+                        lambda: complete_with_rotation(
+                            self.openrouter_client,
+                            self.config.llm.openrouter_free_models,
+                            [
                                 {"role": "system", "content": "You are an expert crypto trader who creates optimal trade setups."},
                                 {"role": "user", "content": prompt}
                             ],
                             temperature=0.3,
-                            max_tokens=2000
+                            max_tokens=2000,
+                            validate=looks_like_json_object,
+                            on_attempt=lambda m, s: plog.debug(f"OpenRouter[{m}]: {s}", agent="strategy_agent"),
                         )
                     )
-                    
-                    if response and response.choices and len(response.choices) > 0:
-                        content = response.choices[0].message.content
-                        if content and content.strip():
-                            result = self._parse_llm_creator_response(content)
-                            if result:
-                                plog.success("✅ OpenRouter DeepSeek created setup successfully", agent="strategy_agent")
-                                return result
-                        else:
-                            plog.warning("OpenRouter DeepSeek returned empty response", agent="strategy_agent")
-                    else:
-                        plog.warning("OpenRouter DeepSeek returned no choices", agent="strategy_agent")
-                        
+
+                    result = self._parse_llm_creator_response(content)
+                    if result:
+                        plog.success(f"✅ OpenRouter {used_model} created setup successfully", agent="strategy_agent")
+                        return result
+                    plog.warning(f"OpenRouter {used_model} response unparseable after rotation", agent="strategy_agent")
+
                 except Exception as e:
-                    plog.warning(f"OpenRouter DeepSeek failed: {e}", agent="strategy_agent")
+                    plog.warning(f"OpenRouter free-tier rotation failed: {e}", agent="strategy_agent")
             
             # Fallback to Groq if available
             if self.groq_client and self.config.llm.groq_api_key:

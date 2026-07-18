@@ -1437,21 +1437,28 @@ Analyze the following market data:
         )
 
         try:
-            response = self.openrouter_client.chat.completions.create(
-                model=self.config.llm.deepseek_model,
-                messages=[
+            # Rotate through the free-tier model list rather than pinning ONE model:
+            # any single ':free' model can be pulled or 429'd at any moment, so try
+            # each in order and use the first usable (JSON-shaped) reply. See
+            # src/utils/openrouter_rotation.py.
+            from src.utils.openrouter_rotation import complete_with_rotation, looks_like_json_object
+            response_text, used_model = complete_with_rotation(
+                self.openrouter_client,
+                self.config.llm.openrouter_free_models,
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
                 max_tokens=20000,
-                temperature=0.3
+                temperature=0.3,
+                validate=looks_like_json_object,
+                on_attempt=lambda m, s: plog.debug(
+                    f"OpenRouter[{m}]: {s}", agent="analysis_agent", phase="llm_analysis"
+                ),
             )
 
-            # Extract response
-            response_text = response.choices[0].message.content
-
             plog.debug(
-                f"Received response from OpenRouter DeepSeek (length: {len(response_text)} chars)",
+                f"Received response from OpenRouter {used_model} (length: {len(response_text)} chars)",
                 agent="analysis_agent",
                 phase="llm_analysis"
             )
@@ -1463,7 +1470,7 @@ Analyze the following market data:
             input_tokens = len(user_message.split()) + len(system_prompt.split())
             output_tokens = len(response_text.split())
             plog.info(
-                f"OpenRouter DeepSeek - ~{input_tokens:,} input + ~{output_tokens:,} output tokens",
+                f"OpenRouter {used_model} - ~{input_tokens:,} input + ~{output_tokens:,} output tokens",
                 agent="analysis_agent",
                 phase="llm_analysis"
             )
