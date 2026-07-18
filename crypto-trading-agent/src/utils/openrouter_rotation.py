@@ -62,6 +62,13 @@ def complete_with_rotation(
     if not models:
         raise RuntimeError("no OpenRouter free models configured")
 
+    def _safe(text: str) -> str:
+        # Provider error bodies embed raw JSON with { } braces. These strings flow
+        # into loguru, which treats { } as format placeholders and raises
+        # "Single '}' encountered in format string" — masking the real cause. Strip
+        # braces so error messages stay log-safe.
+        return text.replace("{", "(").replace("}", ")")
+
     last = "no attempts made"
     for model in models:
         status = "ok"
@@ -85,7 +92,7 @@ def complete_with_rotation(
                     on_attempt(model, "ok")
                 return content, model
         except Exception as e:  # per-model failure (429, provider error, timeout)
-            status = last = f"{model}: {type(e).__name__}: {str(e)[:120]}"
+            status = last = f"{model}: {type(e).__name__}: {_safe(str(e)[:160])}"
 
         if on_attempt:
             on_attempt(model, status)

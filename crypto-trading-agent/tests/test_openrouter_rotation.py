@@ -103,6 +103,38 @@ def test_empty_model_list_raises():
         complete_with_rotation(client, [], [{"role": "user", "content": "x"}])
 
 
+def test_error_message_is_brace_safe():
+    # Arrange: a 429 whose body contains raw JSON braces (real OpenRouter shape).
+    braced = "Error code: 429 - {'error': {'message': 'Rate limit exceeded: free-models-per-day'}}"
+    client = _FakeClient({"a": Exception(braced), "b": Exception(braced)})
+
+    # Act
+    try:
+        complete_with_rotation(client, ["a", "b"], [{"role": "user", "content": "x"}])
+        assert False, "should have raised"
+    except RuntimeError as e:
+        msg = str(e)
+
+    # Assert: no raw braces leak into the message (they break loguru's formatter).
+    assert "{" not in msg and "}" not in msg
+    assert "429" in msg  # the useful signal is preserved
+
+
+def test_on_attempt_status_is_brace_safe():
+    # Arrange
+    client = _FakeClient({"a": Exception("boom {'x': 1}"), "b": '{"ok": 1}'})
+    seen = []
+
+    # Act
+    complete_with_rotation(
+        client, ["a", "b"], [{"role": "user", "content": "x"}],
+        on_attempt=lambda m, s: seen.append(s),
+    )
+
+    # Assert: the failure status reported for "a" carries no raw braces.
+    assert "{" not in seen[0] and "}" not in seen[0]
+
+
 def test_on_attempt_callback_receives_status_per_model():
     # Arrange
     client = _FakeClient({"a": Exception("429"), "b": '{"x": 1}'})
