@@ -384,46 +384,69 @@ class HistoricalDataFetcher:
             return None
 
     async def _cache_data(self, df: pd.DataFrame):
-        """Cache data to PostgreSQL"""
+        """Cache candles to PostgreSQL in a SINGLE bulk upsert.
+
+        The previous implementation ran one SELECT existence-check PER candle —
+        ~500 sequential round-trips to a remote Postgres (Supabase) per fetch,
+        i.e. ~30s of pure network latency each, which made cold-start hydration
+        take minutes and starved the analysis pipeline. The unique index
+        idx_symbol_timeframe_timestamp lets us push every row in one statement:
+        INSERT ... ON CONFLICT DO NOTHING (idempotent + race-safe). Falls back to
+        a portable "select-existing + bulk insert" for non-Postgres backends.
+        """
         if df.empty:
             return
-            
+
+        # Build plain row dicts once (naive timestamps for the DB column).
+        records = []
+        for _, row in df.iterrows():
+            ts = row['timestamp']
+            ts_naive = ts.replace(tzinfo=None) if getattr(ts, 'tzinfo', None) else ts
+            records.append({
+                'symbol': row['symbol'],
+                'timeframe': row['timeframe'],
+                'timestamp': ts_naive,
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['volume']),
+            })
+        if not records:
+            return
+
         try:
             async with self.state_manager.async_session() as session:
-                cached_count = 0
-                for _, row in df.iterrows():
-                    # Convert timezone-aware timestamp to naive for database
-                    timestamp_naive = row['timestamp'].replace(tzinfo=None) if row['timestamp'].tzinfo else row['timestamp']
-                    
-                    # Check if exists first to avoid duplicates
-                    existing = await session.execute(
-                        select(MarketData).where(
+                try:
+                    dialect = session.bind.dialect.name
+                except Exception:
+                    dialect = 'postgresql'
+
+                if dialect == 'postgresql':
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+                    stmt = pg_insert(MarketData.__table__).values(records)
+                    stmt = stmt.on_conflict_do_nothing(
+                        index_elements=['symbol', 'timeframe', 'timestamp']
+                    )
+                    await session.execute(stmt)
+                else:
+                    # Portable path: one query for existing timestamps, bulk-insert the rest.
+                    existing_rows = await session.execute(
+                        select(MarketData.timestamp).where(
                             and_(
-                                MarketData.symbol == row['symbol'],
-                                MarketData.timeframe == row['timeframe'],
-                                MarketData.timestamp == timestamp_naive
+                                MarketData.symbol == records[0]['symbol'],
+                                MarketData.timeframe == records[0]['timeframe'],
+                                MarketData.timestamp.in_([r['timestamp'] for r in records]),
                             )
                         )
                     )
-
-                    if existing.scalar_one_or_none() is None:
-                        # Create new record
-                        market_data = MarketData(
-                            symbol=row['symbol'],
-                            timeframe=row['timeframe'],
-                            timestamp=timestamp_naive,
-                            open=float(row['open']),
-                            high=float(row['high']),
-                            low=float(row['low']),
-                            close=float(row['close']),
-                            volume=float(row['volume'])
-                        )
-                        session.add(market_data)
-                        cached_count += 1
+                    have = {r[0] for r in existing_rows}
+                    new_records = [r for r in records if r['timestamp'] not in have]
+                    if new_records:
+                        await session.execute(MarketData.__table__.insert(), new_records)
 
                 await session.commit()
-                if cached_count > 0:
-                    logger.debug(f"Cached {cached_count} new records")
+                logger.debug(f"Cached {len(records)} candles (bulk upsert)")
 
         except Exception as e:
             logger.warning(f"Failed to cache data: {e}")
