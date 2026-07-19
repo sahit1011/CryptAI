@@ -47,7 +47,7 @@ export function lifecycleOf(signal: Signal, signals: Signal[], openTrades: Trade
     return "proposed"
 }
 
-export function SetupCards() {
+export function SetupCards({ compact = false }: { compact?: boolean }) {
     const signals = useStore((s) => s.signals)
     const addSignal = useStore((s) => s.addSignal)
     const activeTrades = useStore((s) => s.activeTrades)
@@ -110,7 +110,9 @@ export function SetupCards() {
     }
 
     return (
-        <div className="grid grid-cols-1 gap-px bg-border md:grid-cols-2 xl:grid-cols-3">
+        // compact = the wide layout's 344px command rail: always one column
+        // (the viewport-based md/xl breakpoints would wrongly split it).
+        <div className={cn("grid gap-px bg-border", compact ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3")}>
             {cards.map((signal) => {
                 const state = lifecycleOf(signal, signals, activeTrades, now)
                 const info = symbolInfo(signal.symbol)

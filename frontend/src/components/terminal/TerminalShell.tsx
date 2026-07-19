@@ -4,11 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useTerminalStore, DOCK_MAX, DOCK_DEFAULT, type DockTab } from "@/store/useTerminalStore"
 import { useStore } from "@/store/useStore"
 import { INTERVALS } from "@/lib/chart/klines"
+import { setMarketSubscriptions, channelsForSymbol } from "@/lib/wsCommand"
 import { HeaderBar } from "./HeaderBar"
 import { DrawingRail } from "./DrawingRail"
 import { ChartPanel } from "./ChartPanel"
 import { OrderBookPanel } from "./OrderBookPanel"
 import { TradeTicket } from "./TradeTicket"
+import { SetupCards } from "./SetupCards"
 import { Dock } from "./Dock"
 import { WireStrip } from "./WireStrip"
 import { FooterStrip } from "./FooterStrip"
@@ -36,22 +38,35 @@ const MOBILE_TABS: { id: DockTab | "ticket" | "book"; label: string }[] = [
     { id: "wire", label: "Wire" },
 ]
 
-function useIsDesktop(): boolean | null {
-    const [isDesktop, setIsDesktop] = useState<boolean | null>(null)
+function useMediaFlag(query: string): boolean | null {
+    const [matches, setMatches] = useState<boolean | null>(null)
     useEffect(() => {
-        const mq = window.matchMedia("(min-width: 1024px)")
-        const update = () => setIsDesktop(mq.matches)
+        const mq = window.matchMedia(query)
+        const update = () => setMatches(mq.matches)
         update()
         mq.addEventListener("change", update)
         return () => mq.removeEventListener("change", update)
-    }, [])
-    return isDesktop
+    }, [query])
+    return matches
 }
+
+const useIsDesktop = () => useMediaFlag("(min-width: 1024px)")
+// The four-column desk (dedicated book column + command rail) needs real width;
+// below this it collapses back to the 1440 three-column layout.
+const useIsWide = () => useMediaFlag("(min-width: 1700px)")
 
 export function TerminalShell() {
     const isDesktop = useIsDesktop()
     const [isShortcutsOpen, setShortcutsOpen] = useState(false)
     const [mobileTab, setMobileTab] = useState<(typeof MOBILE_TABS)[number]["id"]>("ticket")
+    const symbol = useTerminalStore((s) => s.symbol)
+
+    // Ask the backend to stream the active symbol (ticker + depth + 1m klines).
+    // BTC is always-on server-side; leaving the terminal clears the extras.
+    useEffect(() => {
+        setMarketSubscriptions(channelsForSymbol(symbol))
+        return () => setMarketSubscriptions([])
+    }, [symbol])
 
     // --- Keyboard map (desktop; suppressed while typing / dialogs open) ------
     useEffect(() => {
@@ -120,6 +135,7 @@ export function TerminalShell() {
 /* ---------------------------------- Desktop -------------------------------- */
 
 function DesktopWorkspace() {
+    const isWide = useIsWide()
     const dockHeight = useTerminalStore((s) => s.dockHeight)
     const isDockCollapsed = useTerminalStore((s) => s.isDockCollapsed)
     const setDockHeight = useTerminalStore((s) => s.setDockHeight)
@@ -148,6 +164,63 @@ function DesktopWorkspace() {
         setDockHeight(h >= DOCK_MAX - 8 ? DOCK_DEFAULT : DOCK_MAX)
     }, [setDockHeight])
 
+    const dockSeam = (
+        <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize dock"
+            onPointerDown={onSeamPointerDown}
+            onDoubleClick={onSeamDoubleClick}
+            className="h-1 shrink-0 cursor-row-resize border-t border-border transition-colors duration-150 hover:border-border-strong hover:bg-elevated"
+        />
+    )
+    const dockBox = (hideSetups: boolean) => (
+        <div
+            style={{ height: isDockCollapsed ? 28 : dockHeight }}
+            className={cn("shrink-0", isDockCollapsed && "overflow-hidden")}
+        >
+            <Dock collapsed={isDockCollapsed} hideSetups={hideSetups} />
+        </div>
+    )
+
+    if (isWide) {
+        // ≥1700px — the four-column desk: the book gets its own full-height
+        // column, the command rail holds ticket + always-visible AI setups,
+        // and the dock spans chart+book. The Wire strip retires (AI setups are
+        // permanently on screen; the Wire lives in the dock).
+        return (
+            <div className="flex min-h-0 flex-1 border-t border-border">
+                <DrawingRail />
+
+                <div className="flex min-w-0 flex-1 flex-col border-l border-border">
+                    <div className="flex min-h-0 flex-1">
+                        <div className="min-w-0 flex-1">
+                            <ChartPanel />
+                        </div>
+                        <div className="w-[300px] shrink-0 border-l border-border bg-surface">
+                            <OrderBookPanel />
+                        </div>
+                    </div>
+                    {dockSeam}
+                    {dockBox(true)}
+                </div>
+
+                {/* Command rail: the ticket on top, the desk's proposals always visible. */}
+                <aside className="flex w-[344px] shrink-0 flex-col border-l border-border bg-surface">
+                    <div className="shrink-0 border-b border-border">
+                        <TradeTicket />
+                    </div>
+                    <div className="flex h-6 shrink-0 items-center border-b border-border px-3">
+                        <span className="label-md text-subtle-foreground">AI setups</span>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-y-auto scroll-terminal">
+                        <SetupCards compact />
+                    </div>
+                </aside>
+            </div>
+        )
+    }
+
     return (
         <div className="flex min-h-0 flex-1 border-t border-border">
             <DrawingRail />
@@ -159,23 +232,8 @@ function DesktopWorkspace() {
                 </div>
 
                 <WireStrip />
-
-                {/* Dock resize seam — hairline that strengthens on hover. */}
-                <div
-                    role="separator"
-                    aria-orientation="horizontal"
-                    aria-label="Resize dock"
-                    onPointerDown={onSeamPointerDown}
-                    onDoubleClick={onSeamDoubleClick}
-                    className="h-1 shrink-0 cursor-row-resize border-t border-border transition-colors duration-150 hover:border-border-strong hover:bg-elevated"
-                />
-
-                <div
-                    style={{ height: isDockCollapsed ? 28 : dockHeight }}
-                    className={cn("shrink-0", isDockCollapsed && "overflow-hidden")}
-                >
-                    <Dock collapsed={isDockCollapsed} />
-                </div>
+                {dockSeam}
+                {dockBox(false)}
             </div>
 
             {/* Right rail: order book over trade ticket — always simultaneously visible. */}

@@ -7,6 +7,7 @@ import { buildWsUrl } from '@/lib/api'
 import { payloadToSignal } from '@/lib/signals'
 import { publishKline } from '@/lib/chart/klineBus'
 import { parseWsKline } from '@/lib/chart/klines'
+import { registerWsSender } from '@/lib/wsCommand'
 import { safeNum, safeDiv } from '@/lib/utils'
 import type { Trade } from '@/store/useStore'
 import type { ConnState } from '@/components/ui/connection-status'
@@ -28,11 +29,15 @@ interface TickerData {
 interface OrderBookData {
     b: [string, string][] // Bids [price, qty]
     a: [string, string][] // Asks [price, qty]
+    /** Symbol (raw Binance event field) — present on futures depth events. */
+    s?: string
 }
 
 interface MarketStore {
     ticker: TickerData | null
     orderBook: OrderBookData | null
+    /** Which symbol the current orderBook frame belongs to (multi-symbol WS). */
+    orderBookSymbol: string
     /** WS connection status the UI can render (drives <ConnectionStatus>). */
     status: ConnState
     /** Back-compat boolean derived from status === 'open'. */
@@ -53,12 +58,14 @@ interface MarketStore {
 export const useMarketStore = create<MarketStore>((set) => ({
     ticker: null,
     orderBook: null,
+    orderBookSymbol: 'BTCUSDT',
     status: 'closed',
     isConnected: false,
     reconnectAttempts: 0,
     lastTickerAt: 0,
     setTicker: (data) => set({ ticker: data, lastTickerAt: Date.now() }),
-    setOrderBook: (data) => set({ orderBook: data }),
+    setOrderBook: (data) =>
+        set({ orderBook: data, orderBookSymbol: String(data.s ?? 'BTCUSDT').toUpperCase() }),
     setStatus: (status) => set({ status, isConnected: status === 'open' }),
     setConnected: (isConnected) =>
         set({ isConnected, status: isConnected ? 'open' : 'closed' }),
@@ -163,9 +170,15 @@ export function useMarketData() {
                 attempt = 0
                 setReconnectAttempts(0)
                 setStatus('open')
+                // Hand the terminal a live sender for market-channel subscriptions;
+                // desired channels are replayed automatically on every (re)connect.
+                registerWsSender((payload) => {
+                    try { ws.send(payload) } catch { /* racing close — replayed next open */ }
+                })
             }
 
             ws.onclose = () => {
+                registerWsSender(null)
                 if (isUnmounting) return
                 wsRef.current = null
                 scheduleReconnect()
@@ -379,6 +392,7 @@ export function useMarketData() {
 
         return () => {
             isUnmounting = true
+            registerWsSender(null)
             if (reconnectTimer) clearTimeout(reconnectTimer)
             useMarketStore.getState().setStatus('closed')
             if (wsRef.current) {

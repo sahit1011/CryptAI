@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react"
 import { Value, PnL } from "@/components/ui/value"
 import { useStore } from "@/store/useStore"
+import { useTerminalStore } from "@/store/useTerminalStore"
+import { SYMBOLS } from "@/lib/chart/klines"
 
 /*
  * FooterStrip — 28px account strip: equity · balance · unrealized · realized ·
@@ -38,9 +40,7 @@ export function FooterStrip() {
             </div>
 
             <div className="flex shrink-0 items-center gap-3">
-                <span className="hidden text-[10px] text-subtle-foreground lg:block" title="Data provenance — what streams vs polls">
-                    BTC live · ETH/Gold 5s poll
-                </span>
+                <Provenance />
                 <Clock />
             </div>
         </footer>
@@ -52,6 +52,20 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
         <span className="flex shrink-0 items-baseline gap-1.5 px-2.5 first:pl-0">
             <span className="label-md text-subtle-foreground">{label}</span>
             {children}
+        </span>
+    )
+}
+
+/** Honest per-symbol data provenance, derived from what actually arrived. */
+function Provenance() {
+    const tickers = useTerminalStore((s) => s.tickers)
+    const parts = SYMBOLS.map((s) => {
+        const t = tickers[s.ticker]
+        return `${s.label} ${t?.source === "ws" ? "live" : "5s poll"}`
+    })
+    return (
+        <span className="hidden text-[10px] text-subtle-foreground lg:block" title="Data provenance — what streams vs polls, per symbol">
+            {parts.join(" · ")}
         </span>
     )
 }

@@ -81,6 +81,7 @@ export function OrderBookPanel() {
     // Reset the precision step when the symbol changes (deferred, not sync-in-effect).
     useEffect(() => {
         restRef.current = null
+        wsAtRef.current = 0 // the previous symbol's WS freshness must not carry over
         const t = setTimeout(() => { setStep(stepsFor(symbol)[0]); setBook(null) }, 0)
         return () => clearTimeout(t)
     }, [symbol])
@@ -102,20 +103,23 @@ export function OrderBookPanel() {
         return () => { stopped = true; clearInterval(id) }
     }, [symbol])
 
-    // WS L5 freshness marker (the frames themselves are read at commit time).
+    // WS L5 freshness marker — only frames for the ACTIVE symbol count (the
+    // subscribe protocol streams whichever symbol the terminal is viewing).
     useEffect(() => {
         const unsub = useMarketStore.subscribe((state, prev) => {
-            if (state.orderBook !== prev.orderBook) wsAtRef.current = Date.now()
+            if (state.orderBook !== prev.orderBook && state.orderBookSymbol === symbol) {
+                wsAtRef.current = Date.now()
+            }
         })
         return unsub
-    }, [])
+    }, [symbol])
 
-    // Commit tick: merge REST + (BTC-only) WS L5 → one BookState.
+    // Commit tick: merge REST + WS L5 (when the WS book matches this symbol).
     useEffect(() => {
         const id = setInterval(() => {
             const rest = restRef.current
-            const wsBook = useMarketStore.getState().orderBook
-            const isWsFresh = symbol === "BTCUSDT" && wsBook != null && Date.now() - wsAtRef.current < WS_FRESH_MS
+            const { orderBook: wsBook, orderBookSymbol } = useMarketStore.getState()
+            const isWsFresh = orderBookSymbol === symbol && wsBook != null && Date.now() - wsAtRef.current < WS_FRESH_MS
 
             if (!rest && !isWsFresh) return
 
@@ -177,7 +181,7 @@ export function OrderBookPanel() {
                         className="num text-[10px] text-subtle-foreground"
                         title={book?.source === "ws+rest"
                             ? "Top of book streams live (L5 WS); depth refreshes every 5s"
-                            : "Snapshot refreshes every 5s — live multi-symbol streaming lands with the WS subscribe protocol"}
+                            : "Snapshot refreshes every 5s — the live stream takes over as soon as depth frames arrive for this symbol"}
                     >
                         {book?.source === "ws+rest" ? "L5 · live" : "REST · 5s"}
                     </span>

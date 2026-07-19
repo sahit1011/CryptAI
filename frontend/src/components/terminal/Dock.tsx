@@ -25,13 +25,23 @@ const TABS: { id: DockTab; label: string }[] = [
     { id: "wire", label: "Wire" },
 ]
 
-export function Dock({ collapsed, forcedTab }: { collapsed: boolean; forcedTab?: DockTab }) {
+export function Dock({
+    collapsed,
+    forcedTab,
+    hideSetups = false,
+}: {
+    collapsed: boolean
+    forcedTab?: DockTab
+    /** Wide layout promotes AI setups to the command rail — drop the tab here. */
+    hideSetups?: boolean
+}) {
     const storeTab = useTerminalStore((s) => s.dockTab)
     const setDockTab = useTerminalStore((s) => s.setDockTab)
     const activeTrades = useStore((s) => s.activeTrades)
     const portfolioMode = useStore((s) => s.portfolio.mode)
 
-    const tab = forcedTab ?? storeTab
+    let tab = forcedTab ?? storeTab
+    if (hideSetups && tab === "setups") tab = "positions"
     const openCount = activeTrades.filter((t) => t.status === "OPEN").length
     const netUpnl = useMemo(
         () => activeTrades.reduce((acc, t) => (t.status === "OPEN" ? acc + (t.pnl || 0) : acc), 0),
@@ -41,7 +51,10 @@ export function Dock({ collapsed, forcedTab }: { collapsed: boolean; forcedTab?:
     return (
         <div className="flex h-full flex-col bg-surface">
             <div className="flex h-7 shrink-0 items-center border-b border-border">
-                {(forcedTab ? TABS.filter((t) => t.id === forcedTab) : TABS).map((t) => (
+                {(forcedTab
+                    ? TABS.filter((t) => t.id === forcedTab)
+                    : hideSetups ? TABS.filter((t) => t.id !== "setups") : TABS
+                ).map((t) => (
                     <button
                         key={t.id}
                         onClick={() => setDockTab(t.id)}

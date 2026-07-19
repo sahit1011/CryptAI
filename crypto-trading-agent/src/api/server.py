@@ -210,6 +210,25 @@ class ConnectionManager:
         # Recent trade-setup suggestions (shared across users), replayed on connect
         # and served by GET /api/setups for load-time hydration.
         self.recent_signals: deque = deque(maxlen=30)
+        # Per-connection market-channel subscriptions ("ticker.ETHUSDT",
+        # "kline.1m.XAUTUSDT", "depth.ETHUSDT"). The base BTCUSDT streams stay an
+        # untargeted broadcast (the dashboard predates the protocol); everything
+        # else is delivered only to sockets that asked for it.
+        self.channel_subs: Dict[WebSocket, set] = {}
+
+    # Cap per connection — enough for every symbol×stream we serve, hostile-proof.
+    MAX_CHANNELS_PER_CONNECTION = 24
+
+    def add_channels(self, websocket: WebSocket, channels: set) -> set:
+        subs = self.channel_subs.setdefault(websocket, set())
+        room = self.MAX_CHANNELS_PER_CONNECTION - len(subs)
+        subs.update(list(channels)[: max(0, room)])
+        return subs
+
+    def remove_channels(self, websocket: WebSocket, channels: set) -> set:
+        subs = self.channel_subs.setdefault(websocket, set())
+        subs.difference_update(channels)
+        return subs
 
     def get_recent_signals(self) -> List[Dict[str, Any]]:
         """Newest-first list of recent setup payloads (for GET /api/setups)."""
@@ -284,6 +303,7 @@ class ConnectionManager:
             logger.error(f"Error hydrating client state: {e}")
 
     def disconnect(self, websocket: WebSocket):
+        self.channel_subs.pop(websocket, None)
         if self.connections.pop(websocket, "missing") != "missing":
             logger.info(f"Client disconnected. Total: {len(self.connections)}")
 
@@ -294,7 +314,13 @@ class ConnectionManager:
         if positions is not None:
             bucket["positions"] = positions
 
-    async def broadcast(self, message: Dict[str, Any]):
+    async def broadcast(self, message: Dict[str, Any], channel: Optional[str] = None):
+        """Fan a message out to connected sockets.
+
+        `channel` (e.g. "ticker.ETHUSDT") makes delivery OPT-IN: only sockets
+        that subscribed to that market channel receive it. None keeps the
+        legacy behavior — tenanted messages to their owner, untenanted to all.
+        """
         try:
             json_msg = json.dumps(message, default=str)
             target = self._message_user(message)     # None => untenanted/global
@@ -321,6 +347,9 @@ class ConnectionManager:
             for connection, uid in list(self.connections.items()):
                 # Tenanted message -> only its owner's sockets. Untenanted -> everyone.
                 if target is not None and uid != target:
+                    continue
+                # Channel-scoped market data -> only sockets that subscribed.
+                if channel is not None and channel not in self.channel_subs.get(connection, ()):
                     continue
                 try:
                     if connection.client_state.value == 1:  # CONNECTED
@@ -350,6 +379,79 @@ trade_history_manager = None
 credential_vault = None
 # Per-user trading settings (mode + active exchange), created once at startup.
 user_settings_store = None
+
+
+# --- Market-channel subscribe protocol -----------------------------------------
+# Clients ask for extra symbols/streams over the socket:
+#   {"op": "subscribe",   "channels": ["ticker.ETHUSDT", "kline.1m.ETHUSDT", "depth.ETHUSDT"]}
+#   {"op": "unsubscribe", "channels": [...]}
+# Channel grammar: ticker.<SYM> | depth.<SYM> | kline.<interval>.<SYM>, with SYM
+# restricted to the configured traded symbols (no arbitrary upstream fan-out).
+# The base BTCUSDT streams are always-on broadcasts for back-compat.
+
+BASE_CHANNELS = {"ticker.BTCUSDT", "depth.BTCUSDT", "kline.1m.BTCUSDT"}
+_ALLOWED_KLINE_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
+_allowed_symbols = {s.upper() for s in get_config().trading.symbols}
+# Streams already requested from Binance this process-lifetime. Add-only: with a
+# handful of symbols the upstream cost is tiny, and per-connection filtering
+# controls who actually receives frames.
+_upstream_channels: set = set()
+
+
+def _parse_channel(channel: str) -> Optional[Dict[str, str]]:
+    """Validate + decompose a channel string; None when malformed/not allowed."""
+    parts = channel.split(".")
+    if len(parts) == 2 and parts[0] in ("ticker", "depth"):
+        kind, symbol = parts[0], parts[1].upper()
+    elif len(parts) == 3 and parts[0] == "kline" and parts[1] in _ALLOWED_KLINE_INTERVALS:
+        kind, symbol = "kline", parts[2].upper()
+    else:
+        return None
+    if symbol not in _allowed_symbols:
+        return None
+    return {"kind": kind, "symbol": symbol, "interval": parts[1] if kind == "kline" else ""}
+
+
+def _market_channel(data: Dict[str, Any]) -> Optional[str]:
+    """The channel key a raw Binance market event belongs to."""
+    event = data.get("e")
+    symbol = str(data.get("s", "")).upper()
+    if not symbol:
+        return None
+    if event == "24hrTicker":
+        return f"ticker.{symbol}"
+    if event == "depthUpdate":
+        return f"depth.{symbol}"
+    if event == "kline":
+        interval = (data.get("k") or {}).get("i", "1m")
+        return f"kline.{interval}.{symbol}"
+    return None
+
+
+async def _ensure_upstream(channels: set) -> None:
+    """Make sure Binance is streaming every requested channel (add-only)."""
+    if binance_client is None:
+        return
+    for channel in channels:
+        if channel in _upstream_channels or channel in BASE_CHANNELS:
+            continue
+        parsed = _parse_channel(channel)
+        if parsed is None:
+            continue
+        symbol = parsed["symbol"].lower()
+        try:
+            if parsed["kind"] == "ticker":
+                await binance_client.subscribe_ticker(symbol, handle_binance_update)
+            elif parsed["kind"] == "depth":
+                await binance_client.subscribe_depth(
+                    symbol, levels=5, update_speed="100ms", callback=handle_binance_update
+                )
+            else:
+                await binance_client.subscribe_kline(symbol, [parsed["interval"]], handle_binance_update)
+            _upstream_channels.add(channel)
+            logger.info(f"[ws] upstream subscribed: {channel}")
+        except Exception as e:
+            logger.error(f"[ws] upstream subscribe failed for {channel}: {e}")
 
 
 async def handle_binance_update(data: Dict[str, Any]):
@@ -385,8 +487,12 @@ async def handle_binance_update(data: Dict[str, Any]):
         "type": frontend_type,
         "data": data
     }
-    
-    await manager.broadcast(payload)
+
+    # Base BTCUSDT streams broadcast to everyone (legacy contract — the
+    # dashboard predates the subscribe protocol). Every other market frame is
+    # channel-scoped: delivered only to sockets that subscribed to it.
+    channel = _market_channel(data)
+    await manager.broadcast(payload, channel=None if channel in BASE_CHANNELS else channel)
 
 async def handle_agent_message(data: Dict[str, Any]):
     """Callback for agent messages from MessageBus"""
@@ -598,9 +704,34 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket, user_id)
     try:
         while True:
-            # Keep connection alive, maybe listen for client commands later
-            data = await websocket.receive_text()
-            # Echo or process (optional)
+            raw = await websocket.receive_text()
+            # Client-driven market subscriptions (see the protocol block above).
+            # Anything unparseable is ignored — never a reason to drop the socket.
+            try:
+                msg = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(msg, dict):
+                continue
+            op = msg.get("op")
+            if op not in ("subscribe", "unsubscribe"):
+                continue
+            requested = {
+                c for c in (msg.get("channels") or [])
+                if isinstance(c, str) and _parse_channel(c) is not None
+            }
+            if op == "subscribe":
+                current = manager.add_channels(websocket, requested)
+                await _ensure_upstream(requested)
+            else:
+                current = manager.remove_channels(websocket, requested)
+            # Ack with the connection's full channel set so the client can verify.
+            try:
+                await websocket.send_text(json.dumps(
+                    {"type": "subscriptions", "data": sorted(current)}
+                ))
+            except Exception:
+                pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
