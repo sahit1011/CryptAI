@@ -20,6 +20,7 @@ Reconnect strategy (single, supervisor-based):
 """
 import asyncio
 import json
+import os
 import random
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Callable, Optional
@@ -32,7 +33,22 @@ class BinanceWebSocketClient:
     Real-time WebSocket client for Binance Futures
     """
 
-    BASE_URL = "wss://fstream.binance.com/ws"
+    # Ordered WS endpoints. Futures first (the trading venue); the spot host and
+    # the data-mirror serve the SAME market-data streams (ticker/kline/depth) and
+    # exist because some networks (corporate MDM filters, regional blocks) let
+    # fstream complete a TLS handshake but never deliver a frame — the client
+    # then staleness-reconnects into the same dead host forever. Reconnects
+    # rotate through this list so live data finds a path. BINANCE_WS_URL (env)
+    # is tried first when set.
+    WS_URLS = [
+        "wss://fstream.binance.com/ws",
+        "wss://stream.binance.com:9443/ws",
+        "wss://data-stream.binance.vision/ws",
+    ]
+    # Back-compat alias (external references / logs).
+    BASE_URL = WS_URLS[0]
+    # Give a blocked host only this long to open before rotating on.
+    OPEN_TIMEOUT = 10.0
 
     # --- Reconnect / liveness tuning -------------------------------------
     # recv() timeout: how long we wait for any frame before sending a keepalive
@@ -70,6 +86,12 @@ class BinanceWebSocketClient:
         # Timestamp (event-loop clock) of the last market message received.
         # Used for per-socket staleness detection.
         self._last_message_at: float = 0.0
+        # Host rotation: BINANCE_WS_URL (env) first when set, then WS_URLS.
+        # _url_index advances on every reconnect so a silently-dead host is
+        # abandoned instead of retried forever.
+        env_url = os.getenv("BINANCE_WS_URL", "").strip()
+        self._urls: List[str] = ([env_url] if env_url else []) + list(self.WS_URLS)
+        self._url_index = 0
 
     async def connect(self):
         """
@@ -96,9 +118,10 @@ class BinanceWebSocketClient:
 
     async def _open_connection(self):
         """Open (or re-open) the underlying socket and resubscribe streams."""
-        self.ws = await connect(self.BASE_URL)
+        url = self._urls[self._url_index % len(self._urls)]
+        self.ws = await asyncio.wait_for(connect(url), timeout=self.OPEN_TIMEOUT)
         self._mark_message_received()  # treat a fresh connect as "live"
-        logger.info("✅ Connected to Binance WebSocket")
+        logger.info(f"✅ Connected to Binance WebSocket ({url.split('/')[2]})")
 
         # Resubscribe to streams on (re)connect.
         if self.subscriptions:
@@ -286,6 +309,11 @@ class BinanceWebSocketClient:
             # The current socket is unusable; close it before backing off so we
             # never leave a stale-but-open socket lingering.
             await self._close_socket()
+
+            # Rotate to the next WS host: a host that handshakes but never
+            # delivers a frame (MDM filter / regional block) would otherwise be
+            # staleness-reconnected forever. All hosts serve the same streams.
+            self._url_index += 1
 
             attempt += 1
             if attempt > self.max_reconnect_attempts:

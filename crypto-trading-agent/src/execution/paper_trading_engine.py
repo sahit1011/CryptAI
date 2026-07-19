@@ -274,8 +274,17 @@ class PaperTradingEngine:
         Returns:
             Order response (BingX format)
         """
+        # Normalize the side to THIS module's enum. Callers (OrderManager, the
+        # API's manual-execution path) pass exchange_client.OrderSide — a
+        # DIFFERENT Enum class whose members NEVER compare equal to ours, so
+        # `order.side == OrderSide.BUY` was always False and every BUY entry
+        # silently booked as a SHORT position. Coerce by value once here; all
+        # downstream comparisons are then same-class and correct.
+        if not isinstance(side, OrderSide):
+            side = OrderSide(str(getattr(side, "value", side)).upper())
+
         order_id = self._generate_order_id()
-        
+
         # Create order
         order = PaperOrder(
             order_id=order_id,
@@ -880,6 +889,24 @@ class PaperTradingEngine:
     # These methods make PaperTradingEngine compatible with OrderManager
     # ============================================================================
     
+    def _rejected_market_order(self, symbol: str, side: OrderSide, quantity: float, client_order_id: Optional[str]):
+        """An exchange-shaped REJECTED order — no live price, so nothing filled."""
+        from src.execution.exchange_client import Order, OrderStatus as ExchangeOrderStatus
+        return Order(
+            order_id=self._generate_order_id(),
+            client_order_id=client_order_id or "",
+            symbol=symbol,
+            side=side.value if hasattr(side, "value") else str(side),
+            order_type="MARKET",
+            price=None,
+            quantity=quantity,
+            status=ExchangeOrderStatus.REJECTED,
+            filled_quantity=0.0,
+            average_price=0.0,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+
     async def place_market_order(
         self,
         symbol: str,
@@ -914,11 +941,18 @@ class PaperTradingEngine:
                     logger.warning(f"Failed to fetch price from StateManager: {e}")
             
             if not price_found and (symbol_clean not in self.current_prices or self.current_prices.get(symbol_clean, 0) == 0):
-                logger.warning(f"No price data for {symbol}, using fallback price")
-                # Set a reasonable fallback price (this should be set by data agent normally)
-                # Use a more realistic fallback if possible, or keep existing but log error
-                self.current_prices[symbol] = 85000.0  # Updated fallback
-                self.current_prices[symbol_clean] = 85000.0
+                # HARD FAILURE: never invent a price. A hardcoded fallback here
+                # (previously $85,000 — a BTC-shaped number) filled paper orders at
+                # fantasy levels: with the fill above the bracket's take-profits the
+                # TP legs "filled" instantly and the netting flipped a LONG bracket
+                # into a phantom SHORT. Same doctrine as the strategy agent's
+                # price/ATR hard-gates: no live price -> honest rejection; the
+                # caller sees exactly why nothing was booked.
+                logger.error(
+                    f"No live price for {symbol} (engine + StateManager empty) — "
+                    f"rejecting market order instead of filling at a fabricated price"
+                )
+                return self._rejected_market_order(symbol, side, quantity, client_order_id)
         
         result = await self.place_order(
             symbol=symbol,

@@ -156,7 +156,21 @@ class OrderManager:
             )
             
             execution.entry_order = entry_order
-            
+
+            # A rejected/expired entry means NO position exists. Placing the
+            # bracket legs anyway would rest naked SL/TP orders that can later
+            # fill into a phantom position (paper netting once flipped a LONG
+            # bracket into a fantasy-priced SHORT exactly this way). Abort.
+            entry_status = getattr(entry_order, "status", None)
+            entry_status_str = str(getattr(entry_status, "value", entry_status) or "").upper()
+            if entry_status_str in ("REJECTED", "EXPIRED"):
+                logger.error(
+                    f"[OrderManager] Entry order {entry_status_str} for {symbol} — "
+                    f"aborting bracket (no SL/TP legs placed)"
+                )
+                execution.status = "failed"
+                return execution
+
             # Step 2: Wait for entry fill (if limit order)
             if strategy == ExecutionStrategy.PATIENT:
                 logger.info(f"⏳ Waiting for limit order to fill (timeout: 3600s / 1 hour)...")

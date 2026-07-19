@@ -111,6 +111,19 @@ class UserSession:
                 strategy=ExecutionStrategy.IMMEDIATE,
                 metadata=setup.get("metadata"),
             )
+            # The risk gate approved, but the EXECUTION can still fail (e.g. no
+            # live price -> honest entry rejection, exchange error). Reporting
+            # that as approved=True made the UI say "placed" while nothing was
+            # booked — surface it as a rejection with the reason instead.
+            exec_status = str(getattr(execution, "status", "") or "")
+            if exec_status in ("failed", "timeout"):
+                return {
+                    "user_id": self.user_id, "approved": False,
+                    "reasons": [
+                        "execution failed — entry order rejected (no live market price or exchange error)"
+                        if exec_status == "failed" else "entry order timed out unfilled",
+                    ],
+                }
             # Publish this tenant's updated portfolio (stamped with their user_id).
             try:
                 await self.engine.publish_portfolio_update()
