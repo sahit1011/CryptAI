@@ -67,6 +67,7 @@ class MultiUserTradingDaemon:
         self.coordinator: Optional[MultiUserCoordinator] = None
         self.engine_switch = None  # EngineSwitch, set once Redis is up
         self._loop_task: Optional[asyncio.Task] = None
+        self._tick_task: Optional[asyncio.Task] = None
         self._was_on = None  # tracks on/off transitions for one-time log lines
 
     # ------------------------------------------------------------------ setup
@@ -289,6 +290,10 @@ class MultiUserTradingDaemon:
         self._loop_task = asyncio.create_task(
             self.coordinator.run_forever(self._analysis_with_signals, interval)
         )
+        # Price ticks make paper brackets SELF-MANAGE: resting SL/TP legs fill
+        # when the live price crosses them, positions mark to market, and the
+        # UI's uPnL stays current — without a human touching anything.
+        self._tick_task = asyncio.create_task(self._price_tick_loop())
 
     async def _handle_user_command(self, message):
         """Tenant-scoped commands from the API (bus channel `user_commands`).
@@ -426,6 +431,65 @@ class MultiUserTradingDaemon:
             return
         await self.state_manager.set(f"cmd_reply:{cid}", result, ttl=60)
 
+    # Tick cadence: fast enough that a crossed SL/TP fills within seconds,
+    # slow enough to be negligible load (a few dict scans per user).
+    PRICE_TICK_INTERVAL_S = 3.0
+    # Publish portfolio (mark/uPnL) even without fills every N ticks (~15s).
+    PUBLISH_EVERY_N_TICKS = 5
+
+    async def _price_tick_loop(self):
+        """Feed live prices into every cached per-user PAPER engine.
+
+        Fills/triggers whatever the price crossed (engine-native logic), sweeps
+        the orphaned OCO leg after a fill, and publishes portfolio state — on
+        every change immediately, and on a slow heartbeat regardless so open
+        positions' uPnL stays live in the UI.
+
+        Only sessions cached in this process tick (a daemon restart loses
+        in-memory paper positions — the known hydration gap, tracked separately).
+        Live/keyed engines are skipped: the EXCHANGE fills their orders.
+        """
+        from src.core.paper_tick import process_engine_tick, sweep_orphaned_legs
+
+        tick = 0
+        while self.running:
+            try:
+                await asyncio.sleep(self.PRICE_TICK_INTERVAL_S)
+                tick += 1
+                if self.registry is None or self.state_manager is None:
+                    continue
+                sessions = dict(getattr(self.registry, "_sessions", {}) or {})
+                if not sessions:
+                    continue
+                prices = await self.state_manager.get_all_prices()
+                if not prices:
+                    continue
+                heartbeat = tick % self.PUBLISH_EVERY_N_TICKS == 0
+
+                for user_id, session in sessions.items():
+                    engine = getattr(session, "engine", None)
+                    # Paper engines only — live engines have no local order book.
+                    if engine is None or not hasattr(engine, "check_limit_orders"):
+                        continue
+                    try:
+                        changed = await process_engine_tick(engine, prices)
+                        if changed:
+                            swept = await sweep_orphaned_legs(engine)
+                            plog.info(
+                                f"[paper-tick] fills for {user_id}"
+                                + (f" (+{swept} OCO leg(s) swept)" if swept else ""),
+                                agent="daemon",
+                            )
+                        has_exposure = bool(getattr(engine, "positions", {}) or engine.get_open_orders())
+                        if (changed or (heartbeat and has_exposure)) and hasattr(engine, "publish_portfolio_update"):
+                            await engine.publish_portfolio_update()
+                    except Exception as e:
+                        plog.warning(f"[paper-tick] tick failed for {user_id}: {e}", agent="daemon")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[paper-tick] loop error: {e}", agent="daemon")
+
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.
 
@@ -509,6 +573,12 @@ class MultiUserTradingDaemon:
             self._loop_task.cancel()
             try:
                 await self._loop_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._tick_task:
+            self._tick_task.cancel()
+            try:
+                await self._tick_task
             except (asyncio.CancelledError, Exception):
                 pass
         for agent in (self.memory_agent, self.strategy_agent, self.analysis_agent, self.data_agent):

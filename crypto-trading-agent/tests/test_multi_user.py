@@ -25,11 +25,18 @@ def _registry():
     )
 
 
+async def _seed_price(session, symbol="BTCUSDT", price=64000.0):
+    """Engines refuse to fill without a live price (the honest-fills contract —
+    the old $85k fantasy fallback is gone), so tests seed one exactly like the
+    daemon's price-tick loop does in production."""
+    await session.engine.check_limit_orders(symbol, price)
+
+
 @pytest.mark.asyncio
 async def test_shared_setup_books_to_every_tenant():
     reg = _registry()
-    reg.session("userA")
-    reg.session("userB")
+    await _seed_price(reg.session("userA"))
+    await _seed_price(reg.session("userB"))
     results = await MultiUserExecutor(reg).book_for_all(SETUP)  # one shared setup -> all
     assert {r["user_id"] for r in results} == {"userA", "userB"}
     assert all(r["approved"] for r in results)
@@ -46,6 +53,7 @@ async def test_portfolios_are_isolated():
     assert a.engine.initial_balance == 10000.0 and b.engine.initial_balance == 50000.0
 
     # Book for A only; B must be untouched.
+    await _seed_price(a)
     await a.evaluate_and_book(SETUP)
     assert len(a.engine.get_positions()) == 1
     assert len(b.engine.get_positions()) == 0
