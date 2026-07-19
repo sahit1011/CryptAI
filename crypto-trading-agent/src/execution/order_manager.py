@@ -205,10 +205,17 @@ class OrderManager:
 
             # Step 4: Place take-profit orders
             for i, tp_level in enumerate(take_profit_levels):
+                # `size` is a FRACTION of the position (docstring contract:
+                # [{'price': 43500, 'size': 0.33}]) — the leg's absolute quantity
+                # is fraction × total. Passing the raw fraction as the quantity
+                # rested TP legs at e.g. 1.0 BTC against a 0.03 BTC position — a
+                # fill would have flipped the book 30x the other way.
+                tp_fraction = float(tp_level.get('size') or 0) or (1.0 / max(1, len(take_profit_levels)))
+                tp_qty = min(total_quantity, total_quantity * min(1.0, max(0.0, tp_fraction)))
                 tp_order = await self._place_take_profit(
                     symbol=symbol,
                     direction=direction,
-                    quantity=tp_level['size'],
+                    quantity=tp_qty,
                     price=tp_level['price'],
                     client_order_id=self._coid(execution_id, f"tp{i}")
                 )

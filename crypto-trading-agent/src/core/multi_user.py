@@ -30,15 +30,24 @@ class UserRiskConfig:
 
 
 def _normalize_tps(setup: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Normalize take-profit levels to the [{price, size}] shape execute_trade_setup wants.
+    """Normalize take-profit levels to the [{price, size}] shape execute_trade_setup wants,
+    where `size` is a FRACTION of the position.
 
-    Accepts either that shape already, or a list of bare prices (split evenly).
+    Accepts: that shape already; AI-setup dicts carrying `percentage` (33.33 → 0.3333);
+    or a list of bare prices (split evenly).
     """
     tps = setup.get("take_profit_levels") or setup.get("take_profits") or []
-    if tps and isinstance(tps[0], dict):
-        return tps
     if not tps:
         return []
+    if isinstance(tps[0], dict):
+        share = round(1.0 / len(tps), 4)
+        out = []
+        for tp in tps:
+            size = tp.get("size")
+            if size is None and tp.get("percentage") is not None:
+                size = float(tp["percentage"]) / 100.0
+            out.append({"price": float(tp["price"]), "size": float(size) if size else share})
+        return out
     share = round(1.0 / len(tps), 4)
     return [{"price": float(p), "size": share} for p in tps]
 
