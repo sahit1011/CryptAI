@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useSearchParams } from "next/navigation"
-import { LayoutDashboard, Activity, Bot, Wallet, LineChart, LogOut, TrendingUp, TrendingDown, Home, Settings2 } from "lucide-react"
+import { LayoutDashboard, Activity, Bot, Wallet, LineChart, LogOut, TrendingUp, TrendingDown, Home, Settings2, CandlestickChart } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { PnL } from "@/components/ui/value"
@@ -14,10 +14,12 @@ import { useClosedTrades } from "@/hooks/useClosedTrades";
 import { computeTradeStats } from "@/lib/tradeStats"
 
 // Nav maps to the real dashboard sections (URL-driven via ?section=), so nothing
-// points at a route that doesn't exist. `section` is matched against ?section=.
+// points at a route that doesn't exist. `section` is matched against ?section=;
+// section: null entries are standalone routes matched on pathname.
 const routes = [
     { label: "Home", icon: Home, href: "/", section: null },
     { label: "Overview", icon: LayoutDashboard, href: "/dashboard", section: "overview" },
+    { label: "Terminal", icon: CandlestickChart, href: "/terminal", section: null },
     { label: "Portfolio", icon: Wallet, href: "/dashboard?section=portfolio", section: "portfolio" },
     { label: "Markets", icon: LineChart, href: "/dashboard?section=markets", section: "markets" },
     { label: "AI Agents", icon: Bot, href: "/dashboard?section=agents", section: "agents" },
@@ -66,7 +68,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 {routes.map((route) => {
                     const isActive =
                         route.section === null
-                            ? pathname === "/"
+                            ? pathname === route.href
                             : pathname === "/dashboard" && currentSection === route.section
                     return (
                         <Link
