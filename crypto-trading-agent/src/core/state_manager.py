@@ -282,6 +282,24 @@ class StateManager:
             pipe.rpush(key, json.dumps(pos, default=str))
         await pipe.execute()
 
+    async def get_orders(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """A tenant's OPEN (resting) orders — e.g. a bracket's SL/TP legs.
+
+        Persisted by the paper engine on every portfolio publish so the API can
+        list working orders without reaching into another process's memory.
+        """
+        orders_json = await self.redis.lrange(self._list_key(user_id, "orders"), 0, -1)
+        return [json.loads(o) for o in orders_json]
+
+    async def replace_orders(self, orders: List[Dict[str, Any]], user_id: Optional[str] = None):
+        """Atomically replace a tenant's open-order list (same MULTI pattern as positions)."""
+        key = self._list_key(user_id, "orders")
+        pipe = self.redis.pipeline(transaction=True)
+        pipe.delete(key)
+        for order in orders:
+            pipe.rpush(key, json.dumps(order, default=str))
+        await pipe.execute()
+
     async def remove_position(self, position_id: str, user_id: Optional[str] = None) -> int:
         """Remove a single position by id, atomically.
 

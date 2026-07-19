@@ -304,13 +304,43 @@ class MultiUserTradingDaemon:
         try:
             cmd = (message or {}).get("type")
             user_id = (message or {}).get("user_id")
-            if not user_id or cmd not in ("close_position", "close_all"):
+            if not user_id or cmd not in ("close_position", "close_all", "execute_setup", "cancel_order"):
                 return
             from src.execution.paper_trading_engine import OrderSide
 
             session = self.registry.session(user_id) if self.registry else None
             engine = getattr(session, "engine", None)
             if engine is None or not hasattr(engine, "get_positions"):
+                await self._reply_command(message, {"approved": False, "error": "engine unavailable"})
+                return
+
+            # --- execute_setup: book a manual/paper bracket in THIS process's
+            # long-lived engine, so its position and resting SL/TP legs live where
+            # closes settle and orders are listable. The API awaits the reply key.
+            if cmd == "execute_setup":
+                setup = (message or {}).get("setup")
+                if not isinstance(setup, dict) or not setup.get("symbol"):
+                    await self._reply_command(message, {"approved": False, "error": "malformed setup"})
+                    return
+                result = await session.evaluate_and_book(setup)
+                await self._reply_command(message, result)
+                return
+
+            # --- cancel_order: cancel one resting order in the engine, republish.
+            if cmd == "cancel_order":
+                order_id = str((message or {}).get("order_id") or "")
+                symbol = str((message or {}).get("symbol") or "")
+                if not order_id:
+                    await self._reply_command(message, {"canceled": False, "error": "order_id required"})
+                    return
+                result = await engine.cancel_order(symbol or order_id, order_id)
+                canceled = not (isinstance(result, dict) and result.get("error"))
+                if hasattr(engine, "publish_portfolio_update"):
+                    await engine.publish_portfolio_update()
+                await self._reply_command(message, {
+                    "canceled": canceled,
+                    **({"error": result.get("error")} if isinstance(result, dict) and result.get("error") else {}),
+                })
                 return
 
             symbol = str((message or {}).get("symbol") or "").replace("-", "").upper()
@@ -360,6 +390,17 @@ class MultiUserTradingDaemon:
                     else OrderSide.BUY
                 )
                 await engine.close_position(symbol=p.get("symbol"), side=side, quantity=qty)
+                # The position is gone — its surviving bracket legs (SL/TP) must
+                # go with it, or naked reduce-only orders linger and can fill
+                # into a phantom position later.
+                closed_symbol = str(p.get("symbol") or "")
+                if hasattr(engine, "get_open_orders"):
+                    for order in engine.get_open_orders() or []:
+                        if str(order.get("symbol", "")) == closed_symbol and order.get("reduceOnly"):
+                            try:
+                                await engine.cancel_order(closed_symbol, order.get("orderId"))
+                            except Exception:
+                                pass
                 plog.info(
                     f"[user_commands] closed {p.get('symbol')} for {user_id} (paper, user-requested)",
                     agent="daemon",
@@ -368,6 +409,22 @@ class MultiUserTradingDaemon:
                 await engine.publish_portfolio_update()
         except Exception as e:
             plog.error(f"[user_commands] error handling command: {e}", agent="daemon")
+            try:
+                await self._reply_command(message, {"approved": False, "error": "daemon error — see logs"})
+            except Exception:
+                pass
+
+    async def _reply_command(self, message, result) -> None:
+        """Write a command's result to its short-lived Redis reply key.
+
+        The API polls `cmd_reply:{correlation_id}` (60s TTL) — a deliberately
+        boring request/response transport that works identically whether the
+        daemon runs embedded in the API process or as a separate container.
+        """
+        cid = (message or {}).get("correlation_id")
+        if not cid or self.state_manager is None:
+            return
+        await self.state_manager.set(f"cmd_reply:{cid}", result, ttl=60)
 
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.

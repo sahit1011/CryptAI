@@ -621,7 +621,37 @@ class BingXClient(ExchangeClient):
             ))
 
         return positions
-    
+
+    async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Open (resting) orders from BingX, normalized to the shared BingX-like
+        dict shape the paper engine also emits — so the API/UI render one format.
+        """
+        params: Dict[str, Any] = {}
+        if symbol:
+            params['symbol'] = self._format_symbol(symbol)
+        response = await self._request('GET', '/openApi/swap/v2/trade/openOrders', params)
+        # BingX wraps the list in an `orders` envelope inside `data` (already
+        # unwrapped by _request); be liberal in what we accept.
+        rows = response.get('orders') if isinstance(response, dict) else response
+        orders: List[Dict[str, Any]] = []
+        for row in (rows or []):
+            if not isinstance(row, dict):
+                continue
+            orders.append({
+                'orderId': str(row.get('orderId', '')),
+                'clientOrderId': row.get('clientOrderID', row.get('clientOrderId', '')) or '',
+                'symbol': row.get('symbol', ''),
+                'side': row.get('side', ''),
+                'type': row.get('type', ''),
+                'origQty': str(row.get('origQty', row.get('quantity', '0'))),
+                'price': str(row.get('price', '0')),
+                'stopPrice': str(row.get('stopPrice', '0')),
+                'status': row.get('status', 'NEW'),
+                'reduceOnly': bool(row.get('reduceOnly', False)),
+                'updateTime': int(row.get('updateTime', row.get('time', 0)) or 0),
+            })
+        return orders
+
     def _parse_order(self, data: Dict[str, Any]) -> Order:
         """Parse a BingX order response into an Order object.
 

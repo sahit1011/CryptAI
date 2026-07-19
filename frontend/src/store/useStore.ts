@@ -84,6 +84,11 @@ interface AppState {
     addSignal: (signal: Signal) => void
     setSignals: (signals: Signal[]) => void
 
+    // Working (resting) orders — a bracket's SL/TP legs. WS frames are the
+    // authoritative set; a REST seed covers the refresh race. Not persisted.
+    openOrders: import("@/lib/orders").OpenOrder[]
+    setOpenOrders: (orders: import("@/lib/orders").OpenOrder[]) => void
+
     // Display currency preference (values are stored in USD; shown per this choice).
     // Default USD; user toggles to INR in the dashboard. Persisted.
     currency: "USD" | "INR"
@@ -163,6 +168,9 @@ export const useStore = create<AppState>()(
                 signals: [signal, ...state.signals.filter((s) => s.id !== signal.id)].slice(0, 30),
             })),
             setSignals: (signals) => set({ signals }),
+
+            openOrders: [],
+            setOpenOrders: (openOrders) => set({ openOrders }),
 
             currency: "USD",
             setCurrency: (c) => set({ currency: c }),

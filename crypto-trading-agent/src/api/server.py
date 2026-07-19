@@ -499,8 +499,8 @@ async def handle_agent_message(data: Dict[str, Any]):
     # Determine message type for frontend
     msg_type = "agent_update"
     
-    # Check if this is an execution update (balance or positions)
-    if data.get("type") in ["balance_update", "position_update"]:
+    # Check if this is an execution update (balance, positions, or resting orders)
+    if data.get("type") in ["balance_update", "position_update", "open_orders"]:
         msg_type = "execution_status"
 
     # Trade-setup suggestion (from the daemon's analysis) -> Signals feed
@@ -1158,7 +1158,7 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
                 recommended = params.max_position_size_usd / body.entry_price
                 risk_amount = recommended * abs(body.entry_price - body.stop_loss)
 
-        result = await session.evaluate_and_book({
+        setup = {
             "symbol": body.symbol,
             "direction": body.direction,
             "entry_price": body.entry_price,
@@ -1174,7 +1174,27 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
             "market_regime": body.market_regime,
             "recommended_position_size": recommended,
             "risk_amount": risk_amount,
-        })
+        }
+
+        if is_live and engine is not None:
+            # Keyed users book at the exchange — it is the source of truth, so a
+            # request-scoped engine is correct here.
+            result = await session.evaluate_and_book(setup)
+        else:
+            # PAPER books in the DAEMON's long-lived engine (over the bus, reply
+            # via a short-lived Redis key). A request-scoped paper engine dies
+            # with the request: its position couldn't settle on close and its
+            # resting SL/TP legs were unlistable. Daemon ownership fixes both.
+            result = await _dispatch_user_command({
+                "type": "execute_setup",
+                "user_id": user_id,
+                "setup": setup,
+            })
+            if result is None:
+                raise HTTPException(
+                    status_code=504,
+                    detail="The trading daemon didn't answer in time — nothing was booked. Try again.",
+                )
         result["exchange"] = exchange
         result["live"] = is_live
         return result
@@ -1186,6 +1206,37 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
             status_code=500,
             detail="Execution failed — see server logs (X-Request-ID header correlates).",
         )
+
+
+import uuid as _uuid
+
+REPLY_POLL_INTERVAL_S = 0.25
+REPLY_TIMEOUT_S = 12.0
+
+
+async def _dispatch_user_command(command: Dict[str, Any], *, wait: bool = True) -> Optional[Dict[str, Any]]:
+    """Send a tenant command to the daemon over the bus; await its reply key.
+
+    Transport is deliberately boring: the daemon writes the result to
+    `cmd_reply:{correlation_id}` (60s TTL) and this polls it — identical
+    behavior whether the daemon is embedded in this process or a separate
+    container. Returns None on timeout / when the bus is down.
+    """
+    if message_bus is None or state_manager is None:
+        return None
+    cid = str(_uuid.uuid4())
+    command = {**command, "correlation_id": cid,
+               "timestamp": datetime.now(timezone.utc).isoformat()}
+    await message_bus.publish("user_commands", command, persist=False)
+    if not wait:
+        return {"dispatched": True}
+    deadline = asyncio.get_event_loop().time() + REPLY_TIMEOUT_S
+    while asyncio.get_event_loop().time() < deadline:
+        reply = await state_manager.get(f"cmd_reply:{cid}")
+        if reply is not None:
+            return reply
+        await asyncio.sleep(REPLY_POLL_INTERVAL_S)
+    return None
 
 
 # --- Per-user positions: list + close (the terminal's P0 surface) ---------------
@@ -1297,6 +1348,64 @@ async def close_all_user_positions(user_id: str = Depends(require_user)):
     except Exception:
         logger.exception(f"close-all failed for {user_id}")
         raise HTTPException(status_code=500, detail="Close-all failed — see server logs (X-Request-ID correlates).")
+
+
+# --- Working orders: list + cancel ----------------------------------------------
+# Paper orders live in the daemon's long-lived engine and are mirrored to Redis
+# on every portfolio publish; keyed users read through to the exchange.
+
+@app.get("/api/orders")
+async def get_user_orders(user_id: str = Depends(require_user)):
+    """The caller's open (resting) orders — e.g. a bracket's SL/TP legs."""
+    try:
+        engine, exchange, is_live = await asyncio.to_thread(_build_user_engine, user_id)
+        if is_live and engine is not None:
+            try:
+                orders = await engine.client.get_open_orders()
+                return {"orders": orders, "source": "exchange", "exchange": exchange}
+            except AttributeError:
+                # Exchange client without an open-orders endpoint: disclose it.
+                return {"orders": [], "source": "unsupported", "exchange": exchange}
+        if state_manager is None:
+            raise HTTPException(status_code=503, detail="State manager unavailable")
+        orders = await state_manager.get_orders(user_id=user_id)
+        return {"orders": orders, "source": "paper"}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"get-orders failed for {user_id}")
+        raise HTTPException(status_code=500, detail="Orders unavailable — see server logs.")
+
+
+@app.delete("/api/orders/{order_id}")
+async def cancel_user_order(
+    order_id: str,
+    symbol: str = Query(..., min_length=3, max_length=20),
+    user_id: str = Depends(require_user),
+):
+    """Cancel ONE of the caller's resting orders."""
+    try:
+        engine, exchange, is_live = await asyncio.to_thread(_build_user_engine, user_id)
+        if is_live and engine is not None:
+            ok = await engine.client.cancel_order(symbol, order_id)
+            return {"canceled": bool(ok), "live": True, "exchange": exchange}
+        result = await _dispatch_user_command({
+            "type": "cancel_order",
+            "user_id": user_id,
+            "order_id": order_id,
+            "symbol": symbol,
+        })
+        if result is None:
+            raise HTTPException(
+                status_code=504,
+                detail="The trading daemon didn't answer in time — the order may still be open.",
+            )
+        return {**result, "live": False}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"cancel-order failed for {user_id}")
+        raise HTTPException(status_code=500, detail="Cancel failed — see server logs.")
 
 
 @app.post("/api/close-positions")

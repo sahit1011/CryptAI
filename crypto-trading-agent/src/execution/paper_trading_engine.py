@@ -881,8 +881,18 @@ class PaperTradingEngine:
         
         # Publish position update
         await self._publish_update("execution_status", "position_update", positions)
-        
-        logger.debug(f"Published portfolio update: ${perf['total_equity']:.2f} | {len(positions)} positions")
+
+        # Open (resting) orders — a bracket's SL/TP legs. Persisted so the API can
+        # list them cross-process, and pushed so the terminal's Orders tab is live.
+        open_orders = self.get_open_orders()
+        if self.state_manager:
+            await self.state_manager.replace_orders(open_orders, user_id=self.user_id)
+        await self._publish_update("execution_status", "open_orders", open_orders)
+
+        logger.debug(
+            f"Published portfolio update: ${perf['total_equity']:.2f} | "
+            f"{len(positions)} positions | {len(open_orders)} open orders"
+        )
     
     # ============================================================================
     # Exchange Client Interface Compatibility Methods

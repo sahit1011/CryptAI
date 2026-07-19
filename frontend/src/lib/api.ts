@@ -279,3 +279,23 @@ export async function executeSetup(setup: Record<string, unknown>): Promise<Reco
     if (!res.ok) throw new Error(await backendError(res));
     return res.json();
 }
+
+/** The caller's open (resting) orders — e.g. a bracket's SL/TP legs. */
+export async function getOpenOrders(): Promise<{ orders: Record<string, unknown>[]; source?: string }> {
+    const res = await fetch(`${API_URL}/api/orders`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Cancel ONE of the caller's resting orders. */
+export async function cancelOrder(orderId: string, symbol: string): Promise<Record<string, unknown>> {
+    const res = await fetch(
+        `${API_URL}/api/orders/${encodeURIComponent(orderId)}?symbol=${encodeURIComponent(symbol)}`,
+        { method: "DELETE", headers: await authHeaders() },
+    );
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}

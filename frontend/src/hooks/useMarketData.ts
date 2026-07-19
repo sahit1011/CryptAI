@@ -8,6 +8,7 @@ import { payloadToSignal } from '@/lib/signals'
 import { publishKline } from '@/lib/chart/klineBus'
 import { parseWsKline } from '@/lib/chart/klines'
 import { registerWsSender } from '@/lib/wsCommand'
+import { mapOpenOrders } from '@/lib/orders'
 import { safeNum, safeDiv } from '@/lib/utils'
 import type { Trade } from '@/store/useStore'
 import type { ConnState } from '@/components/ui/connection-status'
@@ -337,6 +338,10 @@ export function useMarketData() {
             if (d.type === 'balance_update') applyBalance(d.payload)
             else if (d.type === 'position_update') applyPositions(d.payload)
             else if (d.type === 'update_trade') applyTradeUpdate(d.payload)
+            else if (d.type === 'open_orders') {
+                // Resting bracket legs (SL/TP) — authoritative set from the engine.
+                useStore.getState().setOpenOrders(mapOpenOrders(d.payload))
+            }
             else if (d.type === 'panic_close') {
                 useStore.getState().setTrades([])
             }
