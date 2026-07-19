@@ -999,15 +999,50 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
             user_id, message_bus=message_bus, state_manager=state_manager,
             config=config, exchange=engine,
         )
+
+        # The risk gate VALIDATES a size — it never invents one. AI setups arrive
+        # pre-sized by the strategy agent's PositionSizer; a hand-built terminal
+        # ticket doesn't, so size it here with the SAME sizer (fixed-risk % of the
+        # account over the stop distance) against the caller's plan-sized account.
+        # Without this, ticket brackets validated at $0 and always rejected.
+        recommended = body.recommended_position_size or 0.0
+        risk_amount = 0.0
+        if recommended <= 0:
+            from src.strategy.position_sizer import PositionSizer
+            # Size INSIDE the caller's plan limits (the sizer's own defaults can
+            # exceed a small plan's caps and get the bracket auto-rejected):
+            # risk% from the plan's max_risk_per_trade, notional capped at the
+            # plan's max_position_size_usd.
+            params = config.risk_params
+            plan_risk_pct = (params.max_risk_per_trade * 100) if params else None
+            sizing = PositionSizer().calculate_size(
+                account_balance=config.initial_balance,
+                entry_price=body.entry_price,
+                stop_loss=body.stop_loss,
+                risk_percent=plan_risk_pct,
+            )
+            recommended = sizing.recommended_size
+            risk_amount = sizing.risk_amount
+            if params and recommended * body.entry_price > params.max_position_size_usd:
+                recommended = params.max_position_size_usd / body.entry_price
+                risk_amount = recommended * abs(body.entry_price - body.stop_loss)
+
         result = await session.evaluate_and_book({
             "symbol": body.symbol,
             "direction": body.direction,
             "entry_price": body.entry_price,
             "stop_loss": body.stop_loss,
             "take_profit_levels": body.take_profit_levels,
-            "confidence_score": body.confidence_score or 0.0,
+            # The risk gate's 0.65 confidence floor exists for MACHINE-proposed
+            # setups. A hand-built ticket carries no model score — the human
+            # reviewed and confirmed the bracket, which IS the confidence — so
+            # an absent score defaults to 1.0 rather than 0.0 (which made every
+            # manual/paper ticket auto-reject). AI setups executed manually still
+            # pass their real score through and stay gated.
+            "confidence_score": body.confidence_score if body.confidence_score is not None else 1.0,
             "market_regime": body.market_regime,
-            "recommended_position_size": body.recommended_position_size or 0.0,
+            "recommended_position_size": recommended,
+            "risk_amount": risk_amount,
         })
         result["exchange"] = exchange
         result["live"] = is_live
@@ -1020,6 +1055,117 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
             status_code=500,
             detail="Execution failed — see server logs (X-Request-ID header correlates).",
         )
+
+
+# --- Per-user positions: list + close (the terminal's P0 surface) ---------------
+# A trading UI that can open but not close reads broken. These are PER-USER,
+# tenant-scoped routes — the global panic_close below stays a service control and
+# must never be user-facing.
+
+@app.get("/api/positions")
+async def get_user_positions(user_id: str = Depends(require_user)):
+    """The caller's open positions (Redis read-through — per-user engines persist here).
+
+    Covers the page-refresh race where the WS hydration frame hasn't arrived yet.
+    """
+    if state_manager is None:
+        raise HTTPException(status_code=503, detail="State manager unavailable")
+    positions = await state_manager.get_positions(user_id=user_id)
+    return {"positions": positions, "source": "state"}
+
+
+class ClosePositionBody(BaseModel):
+    symbol: str = Field(..., min_length=3, max_length=20)
+    position_id: Optional[str] = Field(default=None, max_length=80)
+
+
+async def _close_live_position(engine, symbol: str) -> Dict[str, Any]:
+    """Reduce-only market close of one symbol's position at the exchange.
+
+    The exchange is the source of truth for keyed users, so a freshly built
+    engine (same pattern as execute-setup) resolves side/quantity server-side.
+    """
+    from src.execution.exchange_client import OrderSide
+    norm = symbol.replace("-", "").upper()
+    positions = await engine.client.get_open_positions()
+    target = next(
+        (p for p in positions if str(p.symbol).replace("-", "").upper() == norm), None
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"No open {symbol} position at the exchange")
+    side = OrderSide.SELL if str(target.side).upper() == "LONG" else OrderSide.BUY
+    order = await engine.close_position(
+        symbol=target.symbol, side=side, quantity=abs(float(target.quantity))
+    )
+    await engine.publish_portfolio_update()
+    return {"closed": True, "live": True, "order_id": getattr(order, "order_id", None)}
+
+
+@app.post("/api/positions/close")
+async def close_user_position(body: ClosePositionBody, user_id: str = Depends(require_user)):
+    """Close ONE of the caller's positions.
+
+    Keyed users close directly at the exchange (source of truth). Paper positions
+    live in the daemon's long-lived engine, so the close dispatches over the bus
+    and settles there; the UI receives the authoritative removal on the next
+    position_update frame.
+    """
+    try:
+        engine, exchange, is_live = await asyncio.to_thread(_build_user_engine, user_id)
+        if is_live and engine is not None:
+            result = await _close_live_position(engine, body.symbol)
+            result["exchange"] = exchange
+            return result
+        if message_bus is None:
+            raise HTTPException(status_code=503, detail="Message bus unavailable")
+        await message_bus.publish("user_commands", {
+            "type": "close_position",
+            "user_id": user_id,
+            "symbol": body.symbol,
+            "position_id": body.position_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }, persist=False)
+        return {
+            "closed": False, "dispatched": True, "live": False,
+            "detail": "Close dispatched to the paper engine — the next position_update confirms.",
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"close-position failed for {user_id}")
+        raise HTTPException(status_code=500, detail="Close failed — see server logs (X-Request-ID correlates).")
+
+
+@app.post("/api/positions/close-all")
+async def close_all_user_positions(user_id: str = Depends(require_user)):
+    """Close ALL of the caller's positions — their account only, never global."""
+    try:
+        engine, exchange, is_live = await asyncio.to_thread(_build_user_engine, user_id)
+        if is_live and engine is not None:
+            from src.execution.exchange_client import OrderSide
+            positions = await engine.client.get_open_positions()
+            order_ids = []
+            for p in positions:
+                side = OrderSide.SELL if str(p.side).upper() == "LONG" else OrderSide.BUY
+                order = await engine.close_position(
+                    symbol=p.symbol, side=side, quantity=abs(float(p.quantity))
+                )
+                order_ids.append(getattr(order, "order_id", None))
+            await engine.publish_portfolio_update()
+            return {"closed": len(order_ids), "live": True, "exchange": exchange}
+        if message_bus is None:
+            raise HTTPException(status_code=503, detail="Message bus unavailable")
+        await message_bus.publish("user_commands", {
+            "type": "close_all",
+            "user_id": user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }, persist=False)
+        return {"dispatched": True, "live": False}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"close-all failed for {user_id}")
+        raise HTTPException(status_code=500, detail="Close-all failed — see server logs (X-Request-ID correlates).")
 
 
 @app.post("/api/close-positions")

@@ -265,8 +265,15 @@ class MultiUserTradingDaemon:
         from src.utils.monitoring import init_monitoring
         init_monitoring("daemon")
         await self.initialize_infrastructure()
-        await self.initialize_agents()
+        # Multi-user layer + the tenant command channel come up BEFORE the slow
+        # agent hydration (candle backfill can take minutes): the API dispatches
+        # PAPER closes over `user_commands`, and a command arriving during boot
+        # must be handled, not silently dropped. (Keyed users close directly at
+        # the exchange in the API process.) initialize_multi_user only needs
+        # infrastructure, so this reorder is safe.
         self.initialize_multi_user()
+        await self.message_bus.subscribe("user_commands", self._handle_user_command)
+        await self.initialize_agents()
 
         interval = int(os.getenv("CYCLE_INTERVAL", "180"))
         active = self.registry.active_user_ids()
@@ -282,6 +289,85 @@ class MultiUserTradingDaemon:
         self._loop_task = asyncio.create_task(
             self.coordinator.run_forever(self._analysis_with_signals, interval)
         )
+
+    async def _handle_user_command(self, message):
+        """Tenant-scoped commands from the API (bus channel `user_commands`).
+
+        `close_position` / `close_all` for PAPER accounts: those positions live in
+        this process's long-lived per-user engines, so the API can't close them
+        itself. Settlement runs through the engine's own reduce-only path (real
+        fill/P&L bookkeeping — never a raw Redis delete of a live position). If
+        the engine no longer tracks the record (daemon restarted), the stale Redis
+        row is dropped explicitly and logged as unsettled — honest cleanup, not a
+        fake settlement.
+        """
+        try:
+            cmd = (message or {}).get("type")
+            user_id = (message or {}).get("user_id")
+            if not user_id or cmd not in ("close_position", "close_all"):
+                return
+            from src.execution.paper_trading_engine import OrderSide
+
+            session = self.registry.session(user_id) if self.registry else None
+            engine = getattr(session, "engine", None)
+            if engine is None or not hasattr(engine, "get_positions"):
+                return
+
+            symbol = str((message or {}).get("symbol") or "").replace("-", "").upper()
+            positions = engine.get_positions() or []
+            targets = [
+                p for p in positions
+                if cmd == "close_all"
+                or str(p.get("symbol", "")).replace("-", "").upper() == symbol
+            ]
+
+            if not targets:
+                plog.warning(
+                    f"[user_commands] {cmd}: no open position in-engine for {user_id} "
+                    f"{symbol or '(all)'} — clearing stale record if present",
+                    agent="daemon",
+                )
+                # Zombie cleanup: a record the engine no longer tracks can never
+                # settle; drop it from Redis so the UI reflects reality, and
+                # publish the surviving set so connected clients update live.
+                if self.state_manager is not None:
+                    stored = await self.state_manager.get_positions(user_id=user_id)
+                    if cmd == "close_all":
+                        keep = []
+                    elif symbol:
+                        keep = [
+                            p for p in stored
+                            if str(p.get("symbol", "")).replace("-", "").upper() != symbol
+                        ]
+                    else:
+                        return
+                    if len(keep) != len(stored):
+                        await self.state_manager.replace_positions(keep, user_id=user_id)
+                        await self.message_bus.publish("execution_status", {
+                            "type": "position_update",
+                            "payload": keep,
+                            "user_id": user_id,
+                        })
+                return
+
+            for p in targets:
+                qty = abs(float(p.get("positionAmt") or 0))
+                if qty <= 0:
+                    continue
+                side = (
+                    OrderSide.SELL
+                    if str(p.get("positionSide", "LONG")).upper() == "LONG"
+                    else OrderSide.BUY
+                )
+                await engine.close_position(symbol=p.get("symbol"), side=side, quantity=qty)
+                plog.info(
+                    f"[user_commands] closed {p.get('symbol')} for {user_id} (paper, user-requested)",
+                    agent="daemon",
+                )
+            if hasattr(engine, "publish_portfolio_update"):
+                await engine.publish_portfolio_update()
+        except Exception as e:
+            plog.error(f"[user_commands] error handling command: {e}", agent="daemon")
 
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.
