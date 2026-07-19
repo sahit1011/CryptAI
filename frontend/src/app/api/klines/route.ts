@@ -58,6 +58,10 @@ export async function GET(request: NextRequest) {
   const interval = params.get("interval") || "1m";
   const limitRaw = parseInt(params.get("limit") || "500", 10);
   const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) ? limitRaw : 500, 1000));
+  // Pan-back pagination: bars strictly at/before this ms timestamp (Binance endTime).
+  const endTimeRaw = params.get("endTime");
+  const endTime = endTimeRaw != null ? parseInt(endTimeRaw, 10) : NaN;
+  const endTimeParam = Number.isFinite(endTime) && endTime > 0 ? `&endTime=${endTime}` : "";
 
   if (!VALID_INTERVALS.has(interval)) {
     return NextResponse.json({ error: "invalid interval" }, { status: 400 });
@@ -65,7 +69,7 @@ export async function GET(request: NextRequest) {
 
   for (const host of HOSTS) {
     try {
-      const url = `${host.base}${host.path}?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const url = `${host.base}${host.path}?symbol=${symbol}&interval=${interval}&limit=${limit}${endTimeParam}`;
       const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(6000) });
       if (!res.ok) continue;
       const data = await res.json();

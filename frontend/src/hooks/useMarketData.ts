@@ -5,6 +5,8 @@ import { create } from 'zustand'
 import { useStore } from '@/store/useStore'
 import { buildWsUrl } from '@/lib/api'
 import { payloadToSignal } from '@/lib/signals'
+import { publishKline } from '@/lib/chart/klineBus'
+import { parseWsKline } from '@/lib/chart/klines'
 import { safeNum, safeDiv } from '@/lib/utils'
 import type { Trade } from '@/store/useStore'
 import type { ConnState } from '@/components/ui/connection-status'
@@ -16,6 +18,11 @@ interface TickerData {
     P: string // Price Change Percent
     v: string // Volume
     q: string // Quote Volume
+    // Raw Binance 24hrTicker frames also carry the 24h open/high/low — kept
+    // optional so REST-fallback tickers (which lack them) still type-check.
+    o?: string // Open
+    h?: string // High
+    l?: string // Low
 }
 
 interface OrderBookData {
@@ -193,6 +200,14 @@ export function useMarketData() {
                 case 'depthUpdate':
                     setOrderBook(data as OrderBookData)
                     break
+
+                case 'kline': {
+                    // Live 1m bars flow to the terminal chart via a module-level
+                    // ref bus — never React state (a tick-rate re-render tax).
+                    const parsed = parseWsKline(data)
+                    if (parsed) publishKline(parsed.symbol, parsed.bar)
+                    break
+                }
 
                 case 'balance_update':
                     applyBalance(data)

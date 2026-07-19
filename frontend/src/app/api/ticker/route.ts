@@ -20,7 +20,24 @@ const COINS = [
 
 export const dynamic = "force-dynamic";
 
-interface Tick { symbol: string; lastPrice: string; priceChangePercent: string; }
+interface Tick {
+  symbol: string;
+  lastPrice: string;
+  priceChangePercent: string;
+  // 24h stats — present when Binance answers; absent on the CoinGecko fallback
+  // (consumers must treat them as optional).
+  openPrice?: string;
+  highPrice?: string;
+  lowPrice?: string;
+  volume?: string;
+  quoteVolume?: string;
+}
+
+interface BinanceTicker {
+  symbol: string; lastPrice: string; priceChangePercent: string;
+  openPrice?: string; highPrice?: string; lowPrice?: string;
+  volume?: string; quoteVolume?: string;
+}
 
 async function fromBinance(): Promise<Tick[] | null> {
   const symbolsParam = encodeURIComponent(JSON.stringify(COINS.map((c) => c.symbol)));
@@ -33,10 +50,15 @@ async function fromBinance(): Promise<Tick[] | null> {
       if (!res.ok) continue;
       const data = await res.json();
       if (!Array.isArray(data) || data.length === 0) continue;
-      return data.map((d: { symbol: string; lastPrice: string; priceChangePercent: string }) => ({
+      return data.map((d: BinanceTicker) => ({
         symbol: d.symbol,
         lastPrice: d.lastPrice,
         priceChangePercent: d.priceChangePercent,
+        openPrice: d.openPrice,
+        highPrice: d.highPrice,
+        lowPrice: d.lowPrice,
+        volume: d.volume,
+        quoteVolume: d.quoteVolume,
       }));
     } catch {
       /* try next host */

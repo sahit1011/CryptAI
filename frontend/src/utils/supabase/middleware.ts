@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placehol
 // Routes that require an authenticated session. Server-side enforcement here is the
 // real gate — the client-side check in dashboard/layout is only UX (it hydrates after
 // JS and is bypassable on its own).
-const PROTECTED_PREFIXES = ['/dashboard']
+const PROTECTED_PREFIXES = ['/dashboard', '/terminal']
 
 export async function updateSession(request: NextRequest) {
     let response = NextResponse.next({
