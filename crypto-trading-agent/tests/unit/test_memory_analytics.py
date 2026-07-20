@@ -3,7 +3,7 @@ Unit tests for Performance Analytics and Market Regime Detector
 """
 import pytest
 from datetime import datetime, timedelta
-from src.memory.performance_analytics import PerformanceAnalytics
+from src.memory.performance_analytics import PerformanceAnalyticsEngine as PerformanceAnalytics
 from src.memory.market_regime_detector import MarketRegimeDetector, MarketRegime
 
 def test_performance_analytics():
