@@ -13,10 +13,7 @@ from src.strategy.trade_setup_builder import (
     TradeSetup,
 )
 
-pytestmark = pytest.mark.skip(
-    reason="Stale: builder API changed to build_setup_with_confirmation and "
-    "TradeSetup gained required fields; tests need a rewrite."
-)
+# Quarantined via tests/conftest.py until rewritten to the current builder API.
 
 @pytest.fixture
 def sample_analysis():
