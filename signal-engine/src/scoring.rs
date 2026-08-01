@@ -26,7 +26,7 @@
 use crate::indicators::{
     atr, correlation, efficiency_ratio, ema, percentile_rank, returns, Candle,
 };
-use crate::pulse::{Context, Factors, Pulse, Regime, Structure, Veto};
+use crate::pulse::{Context, Factors, Level, Pulse, Regime, Structure, Veto};
 use crate::quant::{variance_ratio, VarianceRatio};
 
 /// One timeframe's bars. `label` is the wire name, e.g. `"1h"`.
@@ -135,6 +135,11 @@ pub struct ScoringConfig {
     /// A trend label additionally requires the variance ratio to be at least this — the
     /// chart alone is not allowed to assert persistence.
     pub vr_trend_min: f64,
+    /// Bars of confirmation either side of a swing pivot. Larger means fewer, more
+    /// significant swings and more lag before one is confirmed.
+    pub swing_lookback: usize,
+    /// Cap on published levels of each kind, most recent first. Bounds the pulse payload.
+    pub max_levels_per_kind: usize,
     pub weights: Weights,
 }
 
@@ -158,6 +163,8 @@ impl Default for ScoringConfig {
             vr_window: 400,
             vr_mean_reversion_max: 0.95,
             vr_trend_min: 1.00,
+            swing_lookback: 3,
+            max_levels_per_kind: 10,
             weights: Weights::default(),
         }
     }
@@ -256,6 +263,14 @@ pub fn score(snapshot: &MarketSnapshot, cfg: &ScoringConfig) -> Scored {
         cfg,
     );
 
+    // Market structure from the primary timeframe. Absolute ATR (not the percentage) is
+    // what scales the order-block displacement threshold.
+    let reference_price_for_atr = closes.last().copied().unwrap_or(0.0);
+    let atr_abs = atr_pct / 100.0 * reference_price_for_atr;
+    let structure = primary
+        .map(|tf| build_structure(&tf.candles, atr_abs, reference_price_for_atr, cfg))
+        .unwrap_or_default();
+
     let btc_correlation_30d = {
         let sym_returns = returns(&closes);
         let btc_returns = returns(&snapshot.btc_closes);
@@ -288,7 +303,7 @@ pub fn score(snapshot: &MarketSnapshot, cfg: &ScoringConfig) -> Scored {
         raw,
         vetoes,
         factors,
-        Structure::default(), // structure detection lands with the ICT/SMC port
+        structure,
         context,
         reference_price,
     );
@@ -296,6 +311,90 @@ pub fn score(snapshot: &MarketSnapshot, cfg: &ScoringConfig) -> Scored {
     Scored {
         pulse,
         net_direction,
+    }
+}
+
+/// Convert a detected structure map into the wire shape.
+///
+/// Levels are capped to the ones NEAREST current price. A symbol in a long range
+/// accumulates hundreds of unfilled gaps and swing clusters; publishing them all would
+/// bloat every pulse, and publishing an arbitrary subset is worse — only levels price can
+/// plausibly reach matter for a decision now.
+///
+/// Selecting by position in the vector was wrong and shipped briefly: `liquidity_pools`
+/// sorts its output by PRICE, so "the last N" meant the ten highest-priced pools. Live
+/// output on 2026-08-02 published pools at 77,640 while BTC traded at 62,530 — 25% away
+/// and worthless. Distance from price is the only ordering that means the same thing for
+/// every level kind.
+fn build_structure(
+    candles: &[Candle],
+    atr_abs: f64,
+    current_price: f64,
+    cfg: &ScoringConfig,
+) -> Structure {
+    let map = crate::structure::analyze(candles, atr_abs, cfg.swing_lookback);
+    let cap = cfg.max_levels_per_kind;
+
+    let nearest = |mut v: Vec<Level>| -> Vec<Level> {
+        if current_price > 0.0 {
+            // Distance to the level's nearest edge; zero when price is inside it.
+            v.sort_by(|a, b| {
+                let d = |l: &Level| {
+                    if current_price < l.low {
+                        l.low - current_price
+                    } else if current_price > l.high {
+                        current_price - l.high
+                    } else {
+                        0.0
+                    }
+                };
+                d(a).total_cmp(&d(b))
+            });
+        }
+        v.truncate(cap);
+        v
+    };
+
+    Structure {
+        htf_bias: map.bias.map(|b| b.to_string()),
+        swing_high: map.swings.iter().rev().find(|s| s.is_high).map(|s| s.price),
+        swing_low: map
+            .swings
+            .iter()
+            .rev()
+            .find(|s| !s.is_high)
+            .map(|s| s.price),
+        order_blocks: nearest(
+            map.order_blocks
+                .iter()
+                .map(|ob| Level {
+                    low: ob.low,
+                    high: ob.high,
+                    timeframe: Some(if ob.bullish { "bullish" } else { "bearish" }.to_string()),
+                })
+                .collect(),
+        ),
+        fvgs: nearest(
+            map.fvgs
+                .iter()
+                .map(|g| Level {
+                    low: g.low,
+                    high: g.high,
+                    timeframe: Some(if g.bullish { "bullish" } else { "bearish" }.to_string()),
+                })
+                .collect(),
+        ),
+        liquidity_pools: nearest(map.liquidity_pools),
+        key_levels: nearest(
+            map.swings
+                .iter()
+                .map(|s| Level {
+                    low: s.price,
+                    high: s.price,
+                    timeframe: Some(if s.is_high { "swing_high" } else { "swing_low" }.to_string()),
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -860,6 +959,130 @@ mod tests {
         let s = score(&degenerate_snapshot(), &ScoringConfig::default());
         assert!(s.pulse.vetoes.contains(&Veto::InsufficientHistory));
         assert_eq!(s.pulse.tradability, 0);
+    }
+
+    #[test]
+    fn structure_reaches_the_pulse_and_is_bounded() {
+        // The `structure` field shipped empty until 2026-08-02 because the scorer passed
+        // Structure::default(). An empty structure is indistinguishable from "no levels
+        // exist", so the per-user layer had nothing to reason over.
+        let mut snap = good_snapshot();
+        // Oscillation is required for swings — a monotonic ramp has no strict interior
+        // extremum and correctly yields none.
+        let closes: Vec<f64> = (0..400)
+            .map(|i| {
+                let t = i as f64;
+                100.0 + t * 0.05 + 10.0 * (t * std::f64::consts::TAU / 20.0).sin()
+            })
+            .collect();
+        snap.timeframes = vec![TimeframeData {
+            label: "1h",
+            weight: 2.0,
+            candles: closes
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Candle {
+                    open: *c,
+                    high: c + 0.5,
+                    low: c - 0.5,
+                    close: *c,
+                    volume: 1.0,
+                    close_time: i as i64 * 3_600_000,
+                })
+                .collect(),
+        }];
+
+        let cfg = ScoringConfig::default();
+        let s = score(&snap, &cfg);
+        let st = &s.pulse.structure;
+
+        assert!(st.swing_high.is_some(), "no swing high reached the pulse");
+        assert!(st.swing_low.is_some(), "no swing low reached the pulse");
+        assert!(!st.key_levels.is_empty(), "no key levels reached the pulse");
+
+        // Payload bound: a ranging symbol accumulates hundreds of levels, and publishing
+        // them all would bloat every pulse and bury the ones near price.
+        for (name, levels) in [
+            ("order_blocks", &st.order_blocks),
+            ("fvgs", &st.fvgs),
+            ("liquidity_pools", &st.liquidity_pools),
+            ("key_levels", &st.key_levels),
+        ] {
+            assert!(
+                levels.len() <= cfg.max_levels_per_kind,
+                "{name} published {} levels, cap is {}",
+                levels.len(),
+                cfg.max_levels_per_kind
+            );
+        }
+    }
+
+    #[test]
+    fn published_levels_are_the_ones_nearest_price() {
+        // Regression, caught in live output 2026-08-02: the cap kept the LAST N entries
+        // of each vector, but liquidity_pools sorts by price, so it published the ten
+        // highest-priced pools — 77,640 while BTC traded at 62,530, 25% away and
+        // worthless. Selecting by distance is the only ordering that means the same
+        // thing for every level kind.
+        let mut snap = good_snapshot();
+        let closes: Vec<f64> = (0..500)
+            .map(|i| {
+                let t = i as f64;
+                // Wide oscillation so levels form far above and below the final price.
+                1000.0 + 300.0 * (t * std::f64::consts::TAU / 40.0).sin()
+            })
+            .collect();
+        snap.timeframes = vec![TimeframeData {
+            label: "1h",
+            weight: 2.0,
+            candles: candles_from(&closes, 2.0),
+        }];
+
+        let cfg = ScoringConfig::default();
+        let s = score(&snap, &cfg);
+        let price = s.pulse.reference_price;
+
+        let dist = |l: &Level| {
+            if price < l.low {
+                l.low - price
+            } else if price > l.high {
+                price - l.high
+            } else {
+                0.0
+            }
+        };
+
+        for (name, levels) in [
+            ("key_levels", &s.pulse.structure.key_levels),
+            ("liquidity_pools", &s.pulse.structure.liquidity_pools),
+        ] {
+            if levels.len() < 2 {
+                continue;
+            }
+            let distances: Vec<f64> = levels.iter().map(dist).collect();
+            let sorted = distances.windows(2).all(|w| match (w.first(), w.get(1)) {
+                (Some(a), Some(b)) => a <= b,
+                _ => true,
+            });
+            assert!(
+                sorted,
+                "{name} not ordered by distance from price: {distances:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn structure_detection_never_panics_on_a_degenerate_snapshot() {
+        let _ = score(&degenerate_snapshot(), &ScoringConfig::default());
+        let mut flat = good_snapshot();
+        flat.timeframes = vec![TimeframeData {
+            label: "1h",
+            weight: 1.0,
+            candles: candles_from(&[100.0; 400], 0.0),
+        }];
+        let s = score(&flat, &ScoringConfig::default());
+        // A perfectly flat market genuinely has no structure. Empty is the right answer.
+        assert!(s.pulse.structure.key_levels.is_empty());
     }
 
     #[test]
