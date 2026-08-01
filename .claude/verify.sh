@@ -66,8 +66,27 @@ BE=crypto-trading-agent
 BE_ENV=(ENVIRONMENT=test LOG_LEVEL=WARNING ENABLE_EXECUTION=false
         LIVE_TRADING_CONFIRMED=false USE_TESTNET=true)
 if [ -x "$BE/.venv/bin/pytest" ]; then
+  # Imports EVERY package under src/, not just the API. A package whose __init__
+  # re-exports a module that was never written imports fine from anywhere that does not
+  # touch it — src.signals shipped broken exactly that way on 2026-08-02, because the
+  # smoke test only covered src.api.server.
   step "backend import smoke" env -C "$BE" "${BE_ENV[@]}" \
-    .venv/bin/python -c "import src.api.server"
+    .venv/bin/python -c "
+import importlib, pkgutil, sys
+import src
+failed = []
+for m in pkgutil.iter_modules(src.__path__, 'src.'):
+    if not m.ispkg:
+        continue
+    try:
+        importlib.import_module(m.name)
+    except Exception as e:
+        failed.append(f'{m.name}: {type(e).__name__}: {e}')
+importlib.import_module('src.api.server')
+if failed:
+    print('\n'.join(failed), file=sys.stderr)
+    sys.exit(1)
+"
   step "backend tests"        env -C "$BE" "${BE_ENV[@]}" \
     .venv/bin/pytest -q
 else
