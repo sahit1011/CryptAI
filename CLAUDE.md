@@ -91,11 +91,68 @@ tests pass; nothing was weakened.
 Keep this pattern: never `sleep()` to wait out a cooldown, expiry, or retry window.
 Rewind the stored timestamp or inject the clock.
 
-**Remaining:** 197 of 401 tests are quarantined as "stale, drifted from the current
-API" (see `tests/conftest.py`). That's ~49% of the suite providing no protection —
-the largest correctness gap in the repo. Un-quarantine them incrementally, starting
-with `test_order_manager`, `test_state_manager`, and `test_vector_memory`. Never
+**Remaining:** 189 of 402 tests are quarantined as "stale, drifted from the current
+API" (see `tests/conftest.py`). That's ~47% of the suite providing no protection —
+the largest correctness gap in the repo. Un-quarantine them incrementally. Never
 un-quarantine by loosening an assertion.
+
+Run the quarantined tests to see their real failures without editing the list:
+```bash
+CRYPTAI_RUN_QUARANTINED=1 .venv/bin/pytest tests/unit/test_state_manager.py -q
+```
+
+**⚠️ "Quarantined" does not always mean "stale."** `test_order_manager` was
+un-quarantined 2026-08-02 and it had **not** drifted — it was correctly failing because
+it asserted the *old, dangerous* rollback behaviour (cancel a filled entry, which is a
+no-op that leaves a naked unprotected position). The code had been fixed to close
+reduce-only; the test was quarantined rather than updated. **Read each quarantined
+failure before assuming the test is at fault — some of them are real signal.**
+
+## M0 findings (verified 2026-08-02) — read before M1
+
+Architecture for the session/agent rebuild is in **`docs/MULTI_TENANCY.md`** (design
+contract, not yet built). Ground truth established this session:
+
+**CoinDCX has NO testnet.** Checked against `docs.coindcx.com`: only
+`api.coindcx.com` / `public.coindcx.com` are documented — no sandbox base URL exists.
+The CoinDCX write path therefore cannot be validated without real money on production.
+Delta India *does* have one, and `DeltaExchangeClient.TESTNET_URL`
+(`cdn-ind.testnet.deltaex.org`) is correct. **Consequence: Delta is the reference live
+adapter; CoinDCX order placement stays unproven until a manual small-size prod smoke.**
+
+**`/health` lies, and `render.yaml:31` probes it.** It reports
+`"message_bus": message_bus is not None`, which is True even when the Redis connection
+failed — the object is constructed either way. A production instance with dead Redis
+reports healthy and keeps taking traffic. `/health/ready` is the honest one (correctly
+503s). Fix `/health` to check the connection, and point `healthCheckPath` at
+`/health/live` (its docstring already says a dead Redis must not restart the pod).
+
+**`/api/setups` is unauthenticated by design** — "setups are the same for everyone;
+only EXECUTION is per-user". That is exactly the model `docs/MULTI_TENANCY.md`
+supersedes. When setups become per-user synthesis, this endpoint **must** become
+authenticated and user-scoped. Tracked as a tenancy blocker, not a nice-to-have.
+
+**The API boots fine without Redis or Postgres** — it logs the failure and degrades
+rather than crashing. Verified by probe: `/health` 200, `/health/ready` 503,
+`/api/portfolio` and `/api/settings` 403 (fail-closed auth), `/api/setups` 200.
+
+**No Redis, Postgres, or Docker locally.** Unit tests are hermetic so this does not
+block them; `tests/integration` and any real boot do need services (`brew install
+redis postgresql@16`).
+
+**New schema layer.** `user_preferences`, `sessions`, `session_events`, `proposals`,
+`pulse_snapshots` — models in `src/data/data_models.py`, migration
+`alembic/versions/9c4e7a1b2d03_*`. Purely additive, safe to apply ahead of the code.
+`tests/test_schema_migration_parity.py` builds the schema from *both* the models and
+the migration and diffs them, so they can never drift; it also asserts the tenancy
+boundary (`pulse_snapshots` must never gain a `user_id`; every per-user table must have
+an indexed one).
+
+**Money precision debt.** The new tables use `Float` to match the existing `trades`
+columns they join against, which conflicts with the workspace integer-minor-units rule.
+Mixing `Numeric` into new tables while old ones stay `Float` would create conversion
+bugs at the boundary — the fix is one wholesale migration across all money columns.
+`currency` columns were added now since INR settlement on the Indian venues is additive.
 
 ## Known state (verified 2026-08-01, on v2)
 - `frontend`: `tsc --noEmit` clean, **52/52 vitest passing**, `npm run build` passes.
