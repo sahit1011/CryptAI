@@ -1,0 +1,29 @@
+[package]
+name = "signal-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+description = "CryptAI shared signal plane — deterministic market regime and tradability scoring"
+
+# Deliberately lean. The core (contract + indicators + scoring) is pure computation with
+# no I/O, so it compiles and tests in seconds. Async/Redis/WS dependencies arrive with the
+# ingest and publish layers; keeping them out of the core means the math stays testable
+# without a runtime.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[lints.clippy]
+# This crate decides whether real money gets deployed. Silent numeric failure is the
+# threat model, so the lossy/panicky arithmetic patterns are denied rather than allowed.
+indexing_slicing = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
