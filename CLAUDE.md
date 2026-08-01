@@ -71,12 +71,12 @@ relative to v2 and wastes CI minutes; deleting it is a safe cleanup.
 
 ## Verification
 `.claude/verify.sh` gates every turn in **~6s**. Four checks:
-frontend typecheck · 52 frontend unit tests · backend import smoke · 204 backend tests.
+frontend typecheck · 52 frontend unit tests · backend import smoke · 309 backend tests.
 
 Not covered, and why:
 - `npm run build` — ~60s. Run before pushing.
 - Playwright e2e, and `tests/integration` (needs live Redis + Postgres).
-- The **197 quarantined backend tests** (see below).
+- The **191 quarantined/skipped backend tests** (see below).
 
 First run in a fresh clone can take ~50 min: chromadb downloads an ONNX embedding
 model on first use. That is one-time — every run after is ~6s.
@@ -91,8 +91,8 @@ tests pass; nothing was weakened.
 Keep this pattern: never `sleep()` to wait out a cooldown, expiry, or retry window.
 Rewind the stored timestamp or inject the clock.
 
-**Remaining:** 189 of 402 tests are quarantined as "stale, drifted from the current
-API" (see `tests/conftest.py`). That's ~47% of the suite providing no protection —
+**Remaining:** 189 tests are quarantined as "stale, drifted from the current
+API" (see `tests/conftest.py`) out of 500 collected. That's ~38% providing no protection —
 the largest correctness gap in the repo. Un-quarantine them incrementally. Never
 un-quarantine by loosening an assertion.
 
@@ -147,6 +147,20 @@ redis postgresql@16`).
 the migration and diffs them, so they can never drift; it also asserts the tenancy
 boundary (`pulse_snapshots` must never gain a `user_id`; every per-user table must have
 an indexed one).
+
+**The gate was hiding 97 tests.** `pytest.ini`'s `testpaths` was a two-entry allowlist
+(`tests/test_exchange_contract.py` + `tests/unit`), so every file at `tests/` root —
+including `test_multi_user.py` (tenancy) and `test_oco_management.py` (money safety) —
+never ran, and any new file added there would have been excluded silently. Widened to
+the whole `tests/` tree; `tests/integration` stays opt-in via `norecursedirs`. **309
+passing / 191 skipped, was 213 / 189.** If you add a test file, confirm it appears in
+`pytest --collect-only -q`.
+
+**`MessageBus.connect()` reported success without connecting.** `redis.from_url()` is
+lazy — no socket until the first command — so `connect()` logged "connected to Redis"
+against a dead Redis and the failure surfaced later somewhere else. It now pings.
+Same root cause as the `/health` bug: **constructing is not reaching.** Assume any
+"connected"/"initialized" flag in this codebase is unverified until you see a ping.
 
 **Money precision debt.** The new tables use `Float` to match the existing `trades`
 columns they join against, which conflicts with the workspace integer-minor-units rule.
