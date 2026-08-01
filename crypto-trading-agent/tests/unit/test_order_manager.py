@@ -124,18 +124,21 @@ async def test_execute_short_trade(order_manager, mock_exchange):
 
 
 @pytest.mark.asyncio
-async def test_execution_failure_and_rollback(order_manager, mock_exchange):
-    """Test execution failure triggers rollback"""
-    
-    # Entry succeeds
-    mock_exchange.place_market_order.return_value = create_mock_order('entry_1')
-    
-    # Stop-loss fails
+async def test_rollback_closes_FILLED_entry_reduce_only(order_manager, mock_exchange):
+    """A filled entry whose stop-loss placement fails must be CLOSED, not cancelled.
+
+    Cancelling a filled order is a no-op, so the old behaviour left a naked,
+    unprotected open position on the book. This is the money-safety branch of
+    `_rollback_execution` — assert the reduce-only close, and assert we did NOT
+    merely cancel.
+    """
+    # Entry fills...
+    mock_exchange.place_market_order.return_value = create_mock_order(
+        'entry_1', OrderStatus.FILLED)
+    # ...then the protective stop fails to place.
     mock_exchange.place_stop_loss_order.side_effect = Exception("API Error")
-    
-    # Rollback should cancel entry
-    mock_exchange.cancel_order.return_value = True
-    
+    mock_exchange.close_position.return_value = create_mock_order('close_1')
+
     execution = await order_manager.execute_trade_setup(
         symbol='BTCUSDT',
         direction='LONG',
@@ -145,10 +148,41 @@ async def test_execution_failure_and_rollback(order_manager, mock_exchange):
         total_quantity=0.1,
         strategy=ExecutionStrategy.IMMEDIATE
     )
-    
+
     assert execution.status == 'failed'
-    # Verify rollback was attempted
-    assert mock_exchange.cancel_order.called
+    assert mock_exchange.close_position.called, \
+        "filled entry was not flattened — position would be left open and unprotected"
+    # A LONG is flattened by SELLing.
+    assert mock_exchange.close_position.call_args.kwargs['side'] == OrderSide.SELL
+    assert mock_exchange.close_position.call_args.kwargs['quantity'] == 0.1
+
+
+@pytest.mark.asyncio
+async def test_rollback_cancels_UNFILLED_entry(order_manager, mock_exchange):
+    """The other branch: an entry still resting on the book is cancelled, not closed.
+
+    Closing an unfilled entry would OPEN a position in the opposite direction.
+
+    Driven directly rather than through `execute_trade_setup`, because that path sets
+    `entry_filled = True` unconditionally once the entry is placed (order_manager.py:193)
+    — a PATIENT limit that never fills returns status='timeout' before rollback is
+    reached. So this branch is defensive code with no live caller today; the test pins
+    its behaviour before anything starts depending on it.
+    """
+    execution = TradeExecution(
+        execution_id='exec_unfilled',
+        symbol='BTCUSDT',
+        direction='LONG',
+        entry_order=create_mock_order('entry_1', OrderStatus.NEW),
+        entry_filled=False,
+    )
+    mock_exchange.cancel_order.return_value = True
+
+    await order_manager._rollback_execution(execution)
+
+    assert mock_exchange.cancel_order.called, "resting entry order was not cancelled"
+    assert not mock_exchange.close_position.called, \
+        "closed an unfilled entry — that opens a position in the opposite direction"
 
 
 @pytest.mark.asyncio
