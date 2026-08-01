@@ -174,14 +174,19 @@ class TestCircuitBreaker:
         """Test auto-reset functionality"""
         auto_breaker.trigger(reason="Test", manual=False)
         assert auto_breaker.active is True
-        
-        # Simulate time passing (1 minute cooldown)
-        import time
-        time.sleep(61)  # Wait for cooldown
-        
+
+        # Rewind the trigger timestamp past the cooldown instead of sleeping for
+        # it. reset() compares `datetime.now() - triggered_at` against
+        # `cooldown_minutes`, so this exercises the exact same branch — but takes
+        # microseconds instead of 61 seconds (which alone was 95% of the suite's
+        # entire runtime).
+        auto_breaker.triggered_at -= timedelta(
+            minutes=auto_breaker.cooldown_minutes, seconds=1
+        )
+
         # Check auto-reset
         reset_performed = auto_breaker.check_auto_reset()
-        
+
         assert reset_performed is True
         assert auto_breaker.active is False
     
