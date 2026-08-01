@@ -16,7 +16,10 @@
 //! - A pulse carries **facts and scores, never a trade decision**.
 //! - A non-empty veto list forces `tradability` to 0, enforced in the constructor.
 
+pub mod feature_store;
 pub mod indicators;
+pub mod ingest;
+pub mod publish;
 pub mod pulse;
 pub mod quant;
 pub mod scoring;

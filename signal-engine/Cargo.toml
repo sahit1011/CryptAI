@@ -13,6 +13,16 @@ description = "CryptAI shared signal plane — deterministic market regime and t
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# I/O layer. The core (contract + indicators + quant + scoring) stays free of these so
+# the math remains testable without a runtime; only ingest/publish/main pull them in.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [dev-dependencies]
 
 [profile.release]
