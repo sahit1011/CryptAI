@@ -54,6 +54,14 @@ struct Input {
     depth_usd: Option<f64>,
     #[serde(default)]
     funding_rate: Option<f64>,
+    /// Override the variance-ratio thresholds. Setting both to a large negative number
+    /// exactly reproduces the pre-2026-08-02 classifier (no mean-reversion branch, no
+    /// confirmation required for a trend label), which is how the A/B in
+    /// `eval/walkforward.py` compares old against new on identical data.
+    #[serde(default)]
+    vr_mean_reversion_max: Option<f64>,
+    #[serde(default)]
+    vr_trend_min: Option<f64>,
 }
 
 fn default_warmup() -> usize {
@@ -136,7 +144,14 @@ fn main() {
     };
 
     let candles: Vec<Candle> = input.bars.iter().map(to_candle).collect();
-    let cfg = ScoringConfig::default();
+    let mut cfg = ScoringConfig::default();
+    if let Some(v) = input.vr_mean_reversion_max {
+        cfg.vr_mean_reversion_max = v;
+    }
+    if let Some(v) = input.vr_trend_min {
+        cfg.vr_trend_min = v;
+    }
+    let cfg = cfg;
 
     // Neutral defaults: no veto, mid-quality book. Stated in the report.
     let spread_bps = input.spread_bps.unwrap_or(1.0);

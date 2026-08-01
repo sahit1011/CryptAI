@@ -19,6 +19,19 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// How the market is behaving. A property of the market, identical for every tenant.
+///
+/// # This is a DESCRIPTION, not a recommendation
+///
+/// `TrendingUp` does not mean "go long". Out-of-sample validation on six instruments
+/// never used while building the classifier found **no directional edge**: mean IC
+/// improvement −0.008, paired t −0.40, 3 of 6 improved. The in-sample result that
+/// motivated the variance-ratio work (+0.111 and +0.139 on BTC and XAUT) did not
+/// replicate anywhere. See `eval/FINDINGS.md`.
+///
+/// The label is retained because it describes measurable market behaviour, and the
+/// per-user reasoning plane can legitimately use "this market is statistically
+/// mean-reverting" to choose a strategy. Any consumer that maps this enum straight to a
+/// trade direction is asserting an edge that has been tested and not found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Regime {

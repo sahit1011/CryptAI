@@ -1,0 +1,1046 @@
+{
+  "generated_ms": 1785621459501,
+  "development": [
+    {
+      "symbol": "BTCUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": -0.03364445997935248,
+        "regime_ic_t": -0.6003065208002039,
+        "directional_sharpe": -0.48330933065658166,
+        "trades": 65,
+        "mean_trade_pct": -0.12502265099635984,
+        "max_drawdown_pct": -25.648697746728338,
+        "trend_label_pct": 20.3125
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": 0.07713048373159445,
+        "regime_ic_t": 1.3795432042581284,
+        "directional_sharpe": 1.056084751742079,
+        "trades": 16,
+        "mean_trade_pct": 0.6023806776337369,
+        "max_drawdown_pct": -4.723026049450842,
+        "trend_label_pct": 5.0
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.003544748938196247,
+          "regime_ic_t": -0.0313065716413086,
+          "directional_sharpe": 0.9359838996996386,
+          "trades": 23,
+          "mean_trade_pct": 0.17530700312490652,
+          "max_drawdown_pct": -7.281374442469095,
+          "trend_label_pct": 28.749999999999996,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.07222158474351877,
+          "regime_ic_t": -0.6354011131746247,
+          "directional_sharpe": -0.32385148913778394,
+          "trades": 17,
+          "mean_trade_pct": -0.0959940989016678,
+          "max_drawdown_pct": -7.6268804896468385,
+          "trend_label_pct": 21.518987341772153,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.1300668404354177,
+          "regime_ic_t": -1.1511103125299258,
+          "directional_sharpe": -1.534810187589893,
+          "trades": 15,
+          "mean_trade_pct": -0.5323310855816469,
+          "max_drawdown_pct": -14.0695832150608,
+          "trend_label_pct": 18.9873417721519,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.13845027553576075,
+          "regime_ic_t": 1.2267102094721438,
+          "directional_sharpe": 2.8729604770575983,
+          "trades": 15,
+          "mean_trade_pct": 0.8182214174902052,
+          "max_drawdown_pct": -4.326408565078052,
+          "trend_label_pct": 18.9873417721519,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.14944730874026774,
+          "regime_ic_t": 1.3348739396816964,
+          "directional_sharpe": 2.2319306844005458,
+          "trades": 14,
+          "mean_trade_pct": 0.5666364533156879,
+          "max_drawdown_pct": -4.723026049450842,
+          "trend_label_pct": 17.5,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.23025746564846689,
+          "regime_ic_t": -2.076291545440272,
+          "directional_sharpe": -3.0488860660904575,
+          "trades": 2,
+          "mean_trade_pct": -2.665150048717119,
+          "max_drawdown_pct": -2.445454069446634,
+          "trend_label_pct": 2.5316455696202533,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.21555981528576695,
+          "regime_ic_t": 1.93706895790286,
+          "directional_sharpe": 2.9747688314046923,
+          "trades": 2,
+          "mean_trade_pct": 2.9688619231175273,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 2.5316455696202533,
+          "fold": 4
+        }
+      ]
+    },
+    {
+      "symbol": "XAUTUSDT",
+      "observations": 2780,
+      "baseline": {
+        "periods": 115,
+        "regime_ic": -0.19449973123078027,
+        "regime_ic_t": -2.1078143373607574,
+        "directional_sharpe": -3.003543385710307,
+        "trades": 29,
+        "mean_trade_pct": -0.3669639342832931,
+        "max_drawdown_pct": -12.170151654767318,
+        "trend_label_pct": 25.217391304347824
+      },
+      "treatment": {
+        "periods": 115,
+        "regime_ic": -0.055461597922901416,
+        "regime_ic_t": -0.5904737176491686,
+        "directional_sharpe": -0.5030005950786252,
+        "trades": 7,
+        "mean_trade_pct": -0.148232977310422,
+        "max_drawdown_pct": -3.173819091763245,
+        "trend_label_pct": 6.086956521739131
+      },
+      "baseline_folds": [
+        {
+          "periods": 28,
+          "regime_ic": -0.009864372480410562,
+          "regime_ic_t": -0.05030107512079326,
+          "directional_sharpe": -0.9997216221958928,
+          "trades": 5,
+          "mean_trade_pct": -0.15621373056844412,
+          "max_drawdown_pct": -2.907593182377365,
+          "trend_label_pct": 17.857142857142858,
+          "fold": 1
+        },
+        {
+          "periods": 27,
+          "regime_ic": -0.10222091811997197,
+          "regime_ic_t": -0.513795996777869,
+          "directional_sharpe": -1.4883000363767582,
+          "trades": 6,
+          "mean_trade_pct": -0.06259375253851265,
+          "max_drawdown_pct": -0.8283015946740838,
+          "trend_label_pct": 22.22222222222222,
+          "fold": 2
+        },
+        {
+          "periods": 27,
+          "regime_ic": -0.340178457121712,
+          "regime_ic_t": -1.8087654328865979,
+          "directional_sharpe": -6.433392976878545,
+          "trades": 11,
+          "mean_trade_pct": -0.5643978458131037,
+          "max_drawdown_pct": -6.5426424726510755,
+          "trend_label_pct": 40.74074074074074,
+          "fold": 3
+        },
+        {
+          "periods": 27,
+          "regime_ic": -0.27101998647187936,
+          "regime_ic_t": -1.4077882076347596,
+          "directional_sharpe": -4.596506145212292,
+          "trades": 4,
+          "mean_trade_pct": -0.7303432716393693,
+          "max_drawdown_pct": -2.9064863357880277,
+          "trend_label_pct": 14.814814814814813,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 28,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 1
+        },
+        {
+          "periods": 27,
+          "regime_ic": -0.025178987334922198,
+          "regime_ic_t": -0.12593486318441796,
+          "directional_sharpe": 3.6767538017276205,
+          "trades": 1,
+          "mean_trade_pct": 0.2574471042164461,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 3.7037037037037033,
+          "fold": 2
+        },
+        {
+          "periods": 27,
+          "regime_ic": -0.1872631747193189,
+          "regime_ic_t": -0.9531777987939178,
+          "directional_sharpe": -4.021831600250929,
+          "trades": 6,
+          "mean_trade_pct": -0.5731754093342163,
+          "max_drawdown_pct": -3.9009273480198745,
+          "trend_label_pct": 22.22222222222222,
+          "fold": 3
+        },
+        {
+          "periods": 27,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 4
+        }
+      ]
+    }
+  ],
+  "heldout": [
+    {
+      "symbol": "ETHUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": -0.0858410576575062,
+        "regime_ic_t": -1.5364365659303065,
+        "directional_sharpe": -1.285405360502078,
+        "trades": 65,
+        "mean_trade_pct": -0.5663558033378492,
+        "max_drawdown_pct": -41.08693314730994,
+        "trend_label_pct": 20.3125
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": -0.03836624655592107,
+        "regime_ic_t": -0.6846722763847845,
+        "directional_sharpe": -0.6713531761227245,
+        "trades": 19,
+        "mean_trade_pct": -0.5868729474523116,
+        "max_drawdown_pct": -18.804641075933926,
+        "trend_label_pct": 5.9375
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.03326872004577989,
+          "regime_ic_t": -0.2939841167622188,
+          "directional_sharpe": -1.0355845334199925,
+          "trades": 19,
+          "mean_trade_pct": -0.48564495257564555,
+          "max_drawdown_pct": -20.103918838689935,
+          "trend_label_pct": 23.75,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.003342767764809172,
+          "regime_ic_t": -0.029332831975925726,
+          "directional_sharpe": 0.03704235291155975,
+          "trades": 22,
+          "mean_trade_pct": 0.014804645358703426,
+          "max_drawdown_pct": -14.853866256782716,
+          "trend_label_pct": 27.848101265822784,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.3709113164206931,
+          "regime_ic_t": -3.5047321231952004,
+          "directional_sharpe": -6.258675120089791,
+          "trades": 13,
+          "mean_trade_pct": -2.775393327898418,
+          "max_drawdown_pct": -32.42392265492544,
+          "trend_label_pct": 16.455696202531644,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.04495961695766494,
+          "regime_ic_t": 0.394918377097859,
+          "directional_sharpe": 1.420406319052384,
+          "trades": 18,
+          "mean_trade_pct": 0.5287927015145046,
+          "max_drawdown_pct": -11.756497986197308,
+          "trend_label_pct": 22.78481012658228,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.022497183808928803,
+          "regime_ic_t": -0.19874004741383425,
+          "directional_sharpe": -0.5553736634798793,
+          "trades": 17,
+          "mean_trade_pct": -0.25750299460517434,
+          "max_drawdown_pct": -16.655623841347012,
+          "trend_label_pct": 21.25,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.053006511955516464,
+          "regime_ic_t": -0.465785070890781,
+          "directional_sharpe": -0.9329704029764604,
+          "trades": 2,
+          "mean_trade_pct": -1.2265877947781556,
+          "max_drawdown_pct": -5.008561092730154,
+          "trend_label_pct": 2.5316455696202533,
+          "fold": 4
+        }
+      ]
+    },
+    {
+      "symbol": "SOLUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": -0.032898255293650217,
+        "regime_ic_t": -0.5869776580264272,
+        "directional_sharpe": -0.9841857737542736,
+        "trades": 61,
+        "mean_trade_pct": -0.4801392461463933,
+        "max_drawdown_pct": -41.64439294922964,
+        "trend_label_pct": 19.0625
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": -0.06004694870437182,
+        "regime_ic_t": -1.0727261618086137,
+        "directional_sharpe": -1.216596451161583,
+        "trades": 27,
+        "mean_trade_pct": -0.9197674052791869,
+        "max_drawdown_pct": -27.4673642802947,
+        "trend_label_pct": 8.4375
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.028572466068969717,
+          "regime_ic_t": 0.252448256310666,
+          "directional_sharpe": -0.163685149858934,
+          "trades": 19,
+          "mean_trade_pct": -0.08560393794818655,
+          "max_drawdown_pct": -13.933363765161497,
+          "trend_label_pct": 23.75,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.05995381779296836,
+          "regime_ic_t": 0.5270406821306913,
+          "directional_sharpe": 1.2777485215242526,
+          "trades": 17,
+          "mean_trade_pct": 0.6369159513083824,
+          "max_drawdown_pct": -13.578147328021698,
+          "trend_label_pct": 21.518987341772153,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.2207627816851043,
+          "regime_ic_t": -1.986189750881808,
+          "directional_sharpe": -4.32607914508461,
+          "trades": 12,
+          "mean_trade_pct": -1.9798228592868654,
+          "max_drawdown_pct": -23.304627710510793,
+          "trend_label_pct": 15.18987341772152,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.011161478601307066,
+          "regime_ic_t": 0.09794767851969227,
+          "directional_sharpe": 0.2500286342379755,
+          "trades": 20,
+          "mean_trade_pct": 0.09206638546525425,
+          "max_drawdown_pct": -18.63705923605289,
+          "trend_label_pct": 25.31645569620253,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.00908364167175941,
+          "regime_ic_t": -0.08022786101120648,
+          "directional_sharpe": -0.9075868579362933,
+          "trades": 17,
+          "mean_trade_pct": -0.5041850294400793,
+          "max_drawdown_pct": -14.336266017957827,
+          "trend_label_pct": 21.25,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.1489608979310545,
+          "regime_ic_t": -1.3218746144085876,
+          "directional_sharpe": -2.149477416619435,
+          "trades": 1,
+          "mean_trade_pct": -2.8543307086614123,
+          "max_drawdown_pct": -2.8543307086614123,
+          "trend_label_pct": 1.2658227848101267,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.2980834479267223,
+          "regime_ic_t": -2.7402436225541003,
+          "directional_sharpe": -4.543137264744426,
+          "trades": 7,
+          "mean_trade_pct": -3.5012618221547185,
+          "max_drawdown_pct": -22.311690850017808,
+          "trend_label_pct": 8.860759493670885,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 4
+        }
+      ]
+    },
+    {
+      "symbol": "BNBUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": -0.03199259059437629,
+        "regime_ic_t": -0.5708018053619547,
+        "directional_sharpe": -0.08164187275153365,
+        "trades": 52,
+        "mean_trade_pct": -0.02787304454873164,
+        "max_drawdown_pct": -16.412753712213778,
+        "trend_label_pct": 16.25
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": 0.014038276435432871,
+        "regime_ic_t": 0.2503630007577913,
+        "directional_sharpe": 0.7857394115902799,
+        "trades": 28,
+        "mean_trade_pct": 0.4340626053774531,
+        "max_drawdown_pct": -8.5044323638529,
+        "trend_label_pct": 8.75
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.0667782921873737,
+          "regime_ic_t": 0.5910893144276678,
+          "directional_sharpe": 2.247084730110178,
+          "trades": 20,
+          "mean_trade_pct": 0.7190231691545174,
+          "max_drawdown_pct": -5.186370176263244,
+          "trend_label_pct": 25.0,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.1820624497153933,
+          "regime_ic_t": -1.6247459409879226,
+          "directional_sharpe": -2.285339804174626,
+          "trades": 10,
+          "mean_trade_pct": -0.7505579355114322,
+          "max_drawdown_pct": -7.171039503115506,
+          "trend_label_pct": 12.658227848101266,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.0011132016452532593,
+          "regime_ic_t": 0.009768310845618387,
+          "directional_sharpe": 0.0726270780880435,
+          "trades": 11,
+          "mean_trade_pct": 0.01640324393748353,
+          "max_drawdown_pct": -4.0496874276066475,
+          "trend_label_pct": 13.924050632911392,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.17189659905543292,
+          "regime_ic_t": -1.5311781245108649,
+          "directional_sharpe": -2.056453536163468,
+          "trades": 18,
+          "mean_trade_pct": -0.47804709812143625,
+          "max_drawdown_pct": -11.516976228322443,
+          "trend_label_pct": 22.78481012658228,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.09589997534981555,
+          "regime_ic_t": 0.8508874100304271,
+          "directional_sharpe": 2.8595690358423203,
+          "trades": 16,
+          "mean_trade_pct": 1.0851711212087043,
+          "max_drawdown_pct": -3.368172936761475,
+          "trend_label_pct": 20.0,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.10488231847009283,
+          "regime_ic_t": -0.925442759384028,
+          "directional_sharpe": -1.1463524014724529,
+          "trades": 6,
+          "mean_trade_pct": -0.5761127363738998,
+          "max_drawdown_pct": -4.878379986502769,
+          "trend_label_pct": 7.59493670886076,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.09496999225153994,
+          "regime_ic_t": -0.8371420684279353,
+          "directional_sharpe": -0.6149715509647115,
+          "trades": 8,
+          "mean_trade_pct": -0.2985263947434938,
+          "max_drawdown_pct": -7.231028812005904,
+          "trend_label_pct": 10.126582278481013,
+          "fold": 4
+        }
+      ]
+    },
+    {
+      "symbol": "XRPUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": -0.034108962806456825,
+        "regime_ic_t": -0.6086040727048696,
+        "directional_sharpe": -0.41723857233768374,
+        "trades": 62,
+        "mean_trade_pct": -0.2204946698796284,
+        "max_drawdown_pct": -33.65729977252021,
+        "trend_label_pct": 19.375
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": -0.09278944630971228,
+        "regime_ic_t": -1.661842457251678,
+        "directional_sharpe": -0.8503769455736789,
+        "trades": 19,
+        "mean_trade_pct": -0.8192978305092848,
+        "max_drawdown_pct": -18.365254306899356,
+        "trend_label_pct": 5.9375
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.018224462216644737,
+          "regime_ic_t": -0.16098082779846395,
+          "directional_sharpe": -0.6694877516715533,
+          "trades": 19,
+          "mean_trade_pct": -0.3745236271416524,
+          "max_drawdown_pct": -23.138548644630223,
+          "trend_label_pct": 23.75,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.020222713232331557,
+          "regime_ic_t": -0.1774898851072837,
+          "directional_sharpe": 0.9273883400566364,
+          "trades": 20,
+          "mean_trade_pct": 0.394870574146165,
+          "max_drawdown_pct": -16.000255091562526,
+          "trend_label_pct": 25.31645569620253,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.21486613105092903,
+          "regime_ic_t": -1.9305331255697744,
+          "directional_sharpe": -4.404524016669579,
+          "trades": 15,
+          "mean_trade_pct": -1.0900793712406103,
+          "max_drawdown_pct": -15.369989629355263,
+          "trend_label_pct": 18.9873417721519,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.012586455620157472,
+          "regime_ic_t": -0.11045444921114715,
+          "directional_sharpe": -0.24976781748746993,
+          "trades": 15,
+          "mean_trade_pct": -0.10800762580211196,
+          "max_drawdown_pct": -15.282318474768694,
+          "trend_label_pct": 18.9873417721519,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.16403026583060748,
+          "regime_ic_t": -1.4685673775428363,
+          "directional_sharpe": -2.9867371589997935,
+          "trades": 5,
+          "mean_trade_pct": -3.0097624793468647,
+          "max_drawdown_pct": -15.747509161020506,
+          "trend_label_pct": 6.25,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.03765342655993718,
+          "regime_ic_t": 0.3306419491228848,
+          "directional_sharpe": 1.9231762802674561,
+          "trades": 11,
+          "mean_trade_pct": 1.1127325002941224,
+          "max_drawdown_pct": -5.059457862471374,
+          "trend_label_pct": 13.924050632911392,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.22836759428432132,
+          "regime_ic_t": -2.058308346080538,
+          "directional_sharpe": -4.248898819484059,
+          "trades": 7,
+          "mean_trade_pct": -1.8582967153749297,
+          "max_drawdown_pct": -12.399719696939515,
+          "trend_label_pct": 8.860759493670885,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 4
+        }
+      ]
+    },
+    {
+      "symbol": "ADAUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": -0.0656018299495101,
+        "regime_ic_t": -1.1723736415828416,
+        "directional_sharpe": -0.1165908148894076,
+        "trades": 76,
+        "mean_trade_pct": -0.0647405942286699,
+        "max_drawdown_pct": -47.4026719804257,
+        "trend_label_pct": 23.75
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": -0.05473268075815168,
+        "regime_ic_t": -0.9774887257414536,
+        "directional_sharpe": -0.0746179220705927,
+        "trades": 22,
+        "mean_trade_pct": -0.09066941882045336,
+        "max_drawdown_pct": -24.4807957147323,
+        "trend_label_pct": 6.875000000000001
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.051624593991404136,
+          "regime_ic_t": 0.4565448433703028,
+          "directional_sharpe": 1.2965456832269255,
+          "trades": 23,
+          "mean_trade_pct": 0.7803483001291021,
+          "max_drawdown_pct": -15.31889382992383,
+          "trend_label_pct": 28.749999999999996,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.004216360576173251,
+          "regime_ic_t": -0.03699874277799624,
+          "directional_sharpe": -0.5345046403877849,
+          "trades": 24,
+          "mean_trade_pct": -0.20898251836209505,
+          "max_drawdown_pct": -15.79645839990754,
+          "trend_label_pct": 30.37974683544304,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.19975862181467802,
+          "regime_ic_t": -1.7889304399685535,
+          "directional_sharpe": -3.621495743216198,
+          "trades": 11,
+          "mean_trade_pct": -1.6453837485198495,
+          "max_drawdown_pct": -17.063996325799735,
+          "trend_label_pct": 13.924050632911392,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.06087410291012489,
+          "regime_ic_t": 0.5351605660421126,
+          "directional_sharpe": 2.8629565630868505,
+          "trades": 19,
+          "mean_trade_pct": 1.9927904858213137,
+          "max_drawdown_pct": -16.90310352085519,
+          "trend_label_pct": 24.050632911392405,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.04310291440438627,
+          "regime_ic_t": 0.3810287464792127,
+          "directional_sharpe": 1.0209781673015919,
+          "trades": 7,
+          "mean_trade_pct": 1.611621670320746,
+          "max_drawdown_pct": -14.058738565238313,
+          "trend_label_pct": 8.75,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.08856532080368801,
+          "regime_ic_t": 0.7802235250136754,
+          "directional_sharpe": 0.6316158731198651,
+          "trades": 7,
+          "mean_trade_pct": 0.4908867498910253,
+          "max_drawdown_pct": -11.672758241119967,
+          "trend_label_pct": 8.860759493670885,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.06582805886043833,
+          "regime_ic_t": -0.5788945053658904,
+          "directional_sharpe": -1.5907218049778091,
+          "trades": 4,
+          "mean_trade_pct": -0.7243828410329611,
+          "max_drawdown_pct": -4.1729623487500955,
+          "trend_label_pct": 5.063291139240507,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.01257474881144958,
+          "regime_ic_t": 0.11035169798871568,
+          "directional_sharpe": 1.7306904881582732,
+          "trades": 9,
+          "mean_trade_pct": 1.5568166578037315,
+          "max_drawdown_pct": -7.4516730143045535,
+          "trend_label_pct": 11.39240506329114,
+          "fold": 4
+        }
+      ]
+    },
+    {
+      "symbol": "LINKUSDT",
+      "observations": 7700,
+      "baseline": {
+        "periods": 320,
+        "regime_ic": 0.02919031350989944,
+        "regime_ic_t": 0.5207597668558487,
+        "directional_sharpe": -0.2754272222927191,
+        "trades": 51,
+        "mean_trade_pct": -0.16408978799516055,
+        "max_drawdown_pct": -28.54049603790994,
+        "trend_label_pct": 15.937499999999998
+      },
+      "treatment": {
+        "periods": 320,
+        "regime_ic": -0.03946359356134814,
+        "regime_ic_t": -0.7042853148907534,
+        "directional_sharpe": -0.8646526811744648,
+        "trades": 10,
+        "mean_trade_pct": -1.3117084839176785,
+        "max_drawdown_pct": -14.59634734677362,
+        "trend_label_pct": 3.125
+      },
+      "baseline_folds": [
+        {
+          "periods": 80,
+          "regime_ic": 0.020329225815557003,
+          "regime_ic_t": 0.1795799730095307,
+          "directional_sharpe": -0.6511170202041116,
+          "trades": 14,
+          "mean_trade_pct": -0.5230052091374489,
+          "max_drawdown_pct": -21.044717560510747,
+          "trend_label_pct": 17.5,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": 0.168711449436331,
+          "regime_ic_t": 1.5019669291608184,
+          "directional_sharpe": 2.0282064737937326,
+          "trades": 18,
+          "mean_trade_pct": 0.7721055735096325,
+          "max_drawdown_pct": -10.79510743627555,
+          "trend_label_pct": 22.78481012658228,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.2602614766392574,
+          "regime_ic_t": -2.3652976676296795,
+          "directional_sharpe": -4.583476105491209,
+          "trades": 16,
+          "mean_trade_pct": -1.8265631754895346,
+          "max_drawdown_pct": -26.16182429899171,
+          "trend_label_pct": 20.253164556962027,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.009550113215532037,
+          "regime_ic_t": -0.08380572518543812,
+          "directional_sharpe": 0.20603171325209602,
+          "trades": 15,
+          "mean_trade_pct": 0.08092587839025148,
+          "max_drawdown_pct": -14.227778320669868,
+          "trend_label_pct": 18.9873417721519,
+          "fold": 4
+        }
+      ],
+      "treatment_folds": [
+        {
+          "periods": 80,
+          "regime_ic": -0.06856570137094993,
+          "regime_ic_t": -0.6069843532603693,
+          "directional_sharpe": -1.0804987538565167,
+          "trades": 8,
+          "mean_trade_pct": -0.9842418289139038,
+          "max_drawdown_pct": -14.59634734677362,
+          "trend_label_pct": 10.0,
+          "fold": 1
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.1489608979310545,
+          "regime_ic_t": -1.3218746144085876,
+          "directional_sharpe": -2.1494774166194364,
+          "trades": 1,
+          "mean_trade_pct": -4.561403508771933,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 1.2658227848101267,
+          "fold": 2
+        },
+        {
+          "periods": 79,
+          "regime_ic": -0.08127714629385947,
+          "regime_ic_t": -0.7155715040856637,
+          "directional_sharpe": -1.9096289758684244,
+          "trades": 2,
+          "mean_trade_pct": -0.8078037298569596,
+          "max_drawdown_pct": -1.80608365019011,
+          "trend_label_pct": 2.5316455696202533,
+          "fold": 3
+        },
+        {
+          "periods": 79,
+          "regime_ic": NaN,
+          "regime_ic_t": NaN,
+          "directional_sharpe": NaN,
+          "trades": 0,
+          "mean_trade_pct": NaN,
+          "max_drawdown_pct": 0.0,
+          "trend_label_pct": 0.0,
+          "fold": 4
+        }
+      ]
+    }
+  ],
+  "sensitivity": {
+    "BTCUSDT": [
+      {
+        "vr_mean_reversion_max": 0.85,
+        "regime_ic": 0.07713048373159445,
+        "directional_sharpe": 1.056084751742079,
+        "trend_label_pct": 5.0,
+        "trades": 16
+      },
+      {
+        "vr_mean_reversion_max": 0.9,
+        "regime_ic": 0.07713048373159445,
+        "directional_sharpe": 1.056084751742079,
+        "trend_label_pct": 5.0,
+        "trades": 16
+      },
+      {
+        "vr_mean_reversion_max": 0.93,
+        "regime_ic": 0.07713048373159445,
+        "directional_sharpe": 1.056084751742079,
+        "trend_label_pct": 5.0,
+        "trades": 16
+      },
+      {
+        "vr_mean_reversion_max": 0.95,
+        "regime_ic": 0.07713048373159445,
+        "directional_sharpe": 1.056084751742079,
+        "trend_label_pct": 5.0,
+        "trades": 16
+      },
+      {
+        "vr_mean_reversion_max": 0.97,
+        "regime_ic": 0.07713048373159445,
+        "directional_sharpe": 1.056084751742079,
+        "trend_label_pct": 5.0,
+        "trades": 16
+      },
+      {
+        "vr_mean_reversion_max": 1.0,
+        "regime_ic": 0.07713048373159445,
+        "directional_sharpe": 1.056084751742079,
+        "trend_label_pct": 5.0,
+        "trades": 16
+      },
+      {
+        "vr_mean_reversion_max": 1.03,
+        "regime_ic": 0.07265739482464373,
+        "directional_sharpe": 1.0266410207697143,
+        "trend_label_pct": 3.4375000000000004,
+        "trades": 11
+      }
+    ],
+    "XAUTUSDT": [
+      {
+        "vr_mean_reversion_max": 0.85,
+        "regime_ic": -0.055461597922901416,
+        "directional_sharpe": -0.5030005950786252,
+        "trend_label_pct": 6.086956521739131,
+        "trades": 7
+      },
+      {
+        "vr_mean_reversion_max": 0.9,
+        "regime_ic": -0.055461597922901416,
+        "directional_sharpe": -0.5030005950786252,
+        "trend_label_pct": 6.086956521739131,
+        "trades": 7
+      },
+      {
+        "vr_mean_reversion_max": 0.93,
+        "regime_ic": -0.055461597922901416,
+        "directional_sharpe": -0.5030005950786252,
+        "trend_label_pct": 6.086956521739131,
+        "trades": 7
+      },
+      {
+        "vr_mean_reversion_max": 0.95,
+        "regime_ic": -0.055461597922901416,
+        "directional_sharpe": -0.5030005950786252,
+        "trend_label_pct": 6.086956521739131,
+        "trades": 7
+      },
+      {
+        "vr_mean_reversion_max": 0.97,
+        "regime_ic": -0.055461597922901416,
+        "directional_sharpe": -0.5030005950786252,
+        "trend_label_pct": 6.086956521739131,
+        "trades": 7
+      },
+      {
+        "vr_mean_reversion_max": 1.0,
+        "regime_ic": -0.055461597922901416,
+        "directional_sharpe": -0.5030005950786252,
+        "trend_label_pct": 6.086956521739131,
+        "trades": 7
+      },
+      {
+        "vr_mean_reversion_max": 1.03,
+        "regime_ic": -0.13169996631303446,
+        "directional_sharpe": -2.2041650286345837,
+        "trend_label_pct": 4.3478260869565215,
+        "trades": 5
+      }
+    ]
+  },
+  "heldout_summary": {
+    "n_symbols": 6,
+    "mean_ic_improvement": -0.008351376110411987,
+    "sd": 0.05092381283721497,
+    "paired_t": -0.40171010340429586,
+    "symbols_improved": 3
+  }
+}
