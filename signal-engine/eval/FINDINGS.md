@@ -97,7 +97,70 @@ direction.
 `TrendingUp` as "go long". Direction is synthesised per-user, which is what
 `docs/MULTI_TENANCY.md` said before any of this was measured.
 
-## 3. Methodology bugs found and fixed in this harness
+## 3. Factor independence — orthogonalisation NOT needed
+
+The scoring module has warned since it was written that "six indicators that all measure
+trend are one signal, not six", then weighted six factors as if independent. Measured
+across 23,088 observations on BTC/ETH/SOL before building any fix:
+
+| | correlation (max off-diagonal) | VIF |
+|---|---|---|
+| trend_alignment | 0.308 (vs efficiency_ratio) | 1.11 |
+| volatility_band | −0.144 | 1.02 |
+| efficiency_ratio | 0.308 | 1.12 |
+| liquidity_window | 0.010 | 1.00 |
+
+**Effective independent factors: 3.88 of 4** (entropy of the correlation eigenvalue
+spectrum). The conventional multicollinearity threshold is VIF > 5; nothing is close.
+
+**Gram-Schmidt orthogonalisation was planned and then not built.** It would have been
+code for a problem this factor set does not have. The general criticism is sound — it
+just does not apply here, which is only knowable by measuring.
+
+The one place it does bite: `trend_alignment` loses more than half its marginal IC
+(+0.072 → +0.031) once what `efficiency_ratio` explains is removed. That informs the
+weights below rather than requiring a residualisation step at scoring time.
+
+## 4. Weight calibration — VALIDATED out of sample
+
+The shipped weights were a hand-picked prior. Measurement inverted them almost exactly:
+
+| Factor | old weight | residual IC (t) | new weight |
+|---|---|---|---|
+| liquidity_window | 0.10 *(lowest)* | **+0.0927** (t +7.07) *(highest)* | 0.284 |
+| efficiency_ratio | 0.25 | +0.0615 (t +4.68) | 0.188 |
+| volatility_band | 0.15 | +0.0595 (t +4.53) | 0.182 |
+| trend_alignment | 0.25 *(highest)* | **+0.0313** (t +2.38) *(lowest)* | 0.096 |
+
+Weights derived from BTC/ETH/SOL only, then scored on six symbols never used in the
+derivation (BNB, XRP, ADA, LINK, AVAX, DOT — 46,176 observations):
+
+| | held-out IC | t |
+|---|---|---|
+| shipped prior | +0.0901 | +9.72 |
+| IC-derived | **+0.1052** | **+11.36** |
+
+**5 of 6 symbols improved.** This is a real out-of-sample gain — and worth contrasting
+with the regime fix in §2, which the same harness refuted (3 of 6, t −0.40). The
+procedure is identical; only the result differs.
+
+### Two limits on this result
+
+**Horizon-specific.** At 12 bars the same procedure gives `liquidity_window` 0.090 rather
+than 0.378 and improves only 2 of 6 symbols. That is not noise — hour of day predicts the
+size of a 4-hour move, but a 12-hour window spans most of a session cycle, so the starting
+hour stops mattering. The shipped weights are tuned for the ~4-bar horizon where the
+signal has power at all. Do not reuse them for a longer-horizon product.
+
+**Cross-sectional, not temporal.** Held-out symbols cover the same time period as the
+development ones, so a market-wide regime could be driving both. Re-validate on a later
+period once `pulse_snapshots` has accumulated live data.
+
+`positioning` and `book_quality` keep their prior weights: both are constant in a kline
+backtest, so this procedure could not measure them. They populate live now, so the next
+calibration can.
+
+## 5. Methodology bugs found and fixed in this harness
 
 Both were in the first version of `evaluate.py`, and both inflated results:
 
@@ -108,7 +171,7 @@ Both were in the first version of `evaluate.py`, and both inflated results:
 2. **t-statistics assumed independent observations** when consecutive ones shared 23 of
    24 bars, inflating every t by roughly √24. Fixed with effective sample size n/h.
 
-## 4. What has NOT been tested
+## 6. What has NOT been tested
 
 - **Funding, open interest, spread, and depth are held constant.** Klines carry no such
   history, so `positioning` and `book_quality` contribute a constant offset and none of
@@ -121,7 +184,7 @@ Both were in the first version of `evaluate.py`, and both inflated results:
 - **Deflated Sharpe is 0.00 everywhere.** After correcting for the number of
   configurations tried, no strategy variant here shows skill.
 
-## 5. What to do next
+## 7. What to do next
 
 1. **Do not ship a directional recommendation.** The filter is the validated product.
 2. **Re-run this after the ingest layer lands**, with real funding/OI/spread/depth, so

@@ -73,19 +73,49 @@ pub struct Weights {
 
 impl Default for Weights {
     fn default() -> Self {
-        // Rationale for the ordering, pending calibration:
-        // - efficiency_ratio and trend_alignment carry the most, because whether the
-        //   market is actually going somewhere dominates everything else.
-        // - volatility_band matters but is a hump, so it is easy to over-weight.
-        // - book_quality and liquidity_window are execution-quality terms: they rarely
-        //   make a setup good, they frequently make one unaffordable.
-        // - positioning is the smallest because its extreme cases are already vetoed;
-        //   this term only shapes the approach to that cliff.
+        // CALIBRATED 2026-08-02, and validated out of sample. See eval/FINDINGS.md and
+        // eval/weight_validation.py.
+        //
+        // The previous values were a hand-picked prior reasoning that "whether the market
+        // is going somewhere dominates everything else". Measurement disagreed, almost
+        // exactly inverting it. Residual IC against |forward return| at 4 bars:
+        //
+        //   liquidity_window   +0.0927  (t +7.07)   had the LOWEST weight
+        //   efficiency_ratio   +0.0615  (t +4.68)
+        //   volatility_band    +0.0595  (t +4.53)
+        //   trend_alignment    +0.0313  (t +2.38)   had the HIGHEST weight
+        //
+        // trend_alignment loses more than half its marginal IC (+0.072 -> +0.031) once
+        // what efficiency_ratio already explains is removed — the one place in this set
+        // where the confluence-inflation criticism actually bites.
+        //
+        // Weights were derived from BTC/ETH/SOL only, then scored on six symbols never
+        // used in the derivation: held-out IC 0.0901 -> 0.1052, 5 of 6 symbols improved,
+        // 46,176 observations. That is a real out-of-sample gain, unlike the regime fix
+        // this same harness refuted.
+        //
+        // HORIZON-SPECIFIC. At 12 bars the same procedure gives liquidity_window 0.090
+        // instead of 0.378 and improves only 2 of 6 symbols. That is not noise: hour of
+        // day predicts the size of a 4-hour move, but a 12-hour window spans most of a
+        // session cycle so the starting hour stops mattering. These weights are tuned for
+        // the ~4-bar horizon where the signal actually has predictive power (IC decays to
+        // nothing by 24 bars). Do not reuse them for a longer-horizon product without
+        // re-deriving.
+        //
+        // CROSS-SECTIONAL, NOT TEMPORAL. Held-out symbols cover the same time period as
+        // the development ones, so a market-wide regime could drive both. Re-validate on
+        // a later period once enough pulse_snapshots have accumulated.
+        //
+        // positioning and book_quality keep their prior values: both are constant in a
+        // kline backtest (no funding/OI/book history), so this procedure could not
+        // measure them. They are now populated live, so the next calibration can.
+        // The four measured factors are scaled to occupy the same 0.75 share they held
+        // before, leaving the two unmeasured ones untouched.
         Self {
-            trend_alignment: 0.25,
-            volatility_band: 0.15,
-            efficiency_ratio: 0.25,
-            liquidity_window: 0.10,
+            trend_alignment: 0.096,
+            volatility_band: 0.182,
+            efficiency_ratio: 0.188,
+            liquidity_window: 0.284,
             positioning: 0.10,
             book_quality: 0.15,
         }
