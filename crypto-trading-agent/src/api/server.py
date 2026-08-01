@@ -1467,10 +1467,27 @@ async def close_all_positions(_auth: None = Depends(require_auth)):
 
 @app.get("/health")
 async def health_check():
+    """Human/dashboard status. Always 200 — this is a report, not a gate.
+
+    `message_bus` must reflect whether Redis is actually REACHABLE, not merely whether
+    the object was constructed. `startup_event` catches the connection failure and
+    carries on, so `message_bus is not None` stays True against a dead Redis and this
+    endpoint used to report a broken instance as fully healthy.
+
+    Gates live elsewhere and are unchanged: /health/live for liveness (never checks
+    dependencies), /health/ready for readiness (503s when deps are down).
+    """
+    try:
+        bus_ok = bool(message_bus) and bool(
+            await asyncio.wait_for(message_bus.redis_client.ping(), timeout=2)
+        )
+    except Exception:
+        bus_ok = False
+
     return {
-        "status": "online",
+        "status": "online" if bus_ok else "degraded",
         "connections": len(manager.active_connections),
-        "message_bus": message_bus is not None
+        "message_bus": bus_ok,
     }
 
 
