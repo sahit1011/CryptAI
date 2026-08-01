@@ -55,8 +55,10 @@ fi
 
 # ── Backend (Python 3.12) ────────────────────────────────────
 # Import smoke catches broken imports, syntax errors, and bad top-level side
-# effects. pytest runs the hermetic suite (contract + unit, mocked Redis/Postgres
-# per pytest.ini testpaths) — 204 tests in ~3s.
+# effects. pytest runs the hermetic suite (everything under tests/ except the
+# opt-in tests/integration, mocked Redis/Postgres per pytest.ini) — 309 tests in
+# ~6s. It was 213 until 2026-08-02, when pytest.ini's testpaths was widened from a
+# two-entry allowlist that silently excluded ~17 files at tests/ root.
 #
 # Env is pinned to the fail-safe combination so a gate run can never touch a
 # real exchange, mirroring ci.yml.
