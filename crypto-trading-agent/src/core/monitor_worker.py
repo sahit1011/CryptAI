@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -337,7 +337,10 @@ class PositionMonitorWorker:
             "favorable_pct": round(fav * 100, 3),
             "peak_favorable_pct": round(self.state.peak_fav * 100, 3),
             "adverse_streak": self.state.adverse_streak,
-            "updated_at": self._now().isoformat(),
+            # Real wall-clock UTC (not the injectable decision clock): this is a
+            # "last written" marker the browser compares against its own now to decide
+            # staleness, so it must be unambiguous UTC, not a naive server-local string.
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         ttl = EXIT_STATUS_TTL_SECONDS if decision.action == EXIT else STATUS_TTL_SECONDS
         try:
