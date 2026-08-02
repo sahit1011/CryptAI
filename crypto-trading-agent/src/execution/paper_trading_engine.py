@@ -172,6 +172,10 @@ class PaperTradingEngine:
         # so multiple per-user engines never share state. Falls back to BOT_USER_ID for
         # the single-bot deployment.
         self.user_id = user_id or os.getenv("BOT_USER_ID")
+        # Async hook fired when a position fully closes (position_id, symbol, exit_price,
+        # pnl, reason). UserSession points this at its PortfolioStateTracker so per-user
+        # risk limits (heat, daily loss, trade count) see real closes.
+        self.on_position_closed: Optional[Any] = None
         self.initial_balance = initial_balance
         self.balance = initial_balance
         self.maker_fee = maker_fee
@@ -529,7 +533,21 @@ class PaperTradingEngine:
                 if position.quantity <= 0.001:  # Account for floating point
                     del self.positions[symbol]
                     logger.info(f"Position closed: {symbol} | Total P&L: ${position.realized_pnl:+.2f}")
-                    
+
+                    # Feed the owner's risk tracker (set by UserSession). Best-effort:
+                    # a tracker failure must never block the fill/close hot path.
+                    if self.on_position_closed is not None:
+                        try:
+                            await self.on_position_closed(
+                                position_id=position.position_id,
+                                symbol=symbol,
+                                exit_price=order.filled_price,
+                                pnl=position.realized_pnl,
+                                reason="tp_hit" if pnl > 0 else "sl_hit",
+                            )
+                        except Exception as e:
+                            logger.warning(f"on_position_closed hook failed for {symbol}: {e}")
+
                     # CRITICAL FIX: Notify Memory Agent to update DB with exit details
                     if self.message_bus:
                         # Extract trade ID from position ID (POS_PT_...) -> PT_...

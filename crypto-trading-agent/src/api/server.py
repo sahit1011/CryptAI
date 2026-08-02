@@ -1469,6 +1469,11 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
             if params and recommended * body.entry_price > params.max_position_size_usd:
                 recommended = params.max_position_size_usd / body.entry_price
                 risk_amount = recommended * abs(body.entry_price - body.stop_loss)
+        else:
+            # Client-supplied size: derive the dollar risk from the bracket geometry.
+            # Leaving it 0 made the per-trade-risk and heat checks trivially pass and
+            # crashed the tracker's close-side R-multiple math.
+            risk_amount = recommended * abs(body.entry_price - body.stop_loss)
 
         setup = {
             "symbol": body.symbol,

@@ -12,6 +12,7 @@ This is the "shared-engine-per-user-portfolio" model: efficient (analysis/LLM co
 paid once, not per user) with strict per-tenant isolation of money and state.
 """
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
@@ -64,6 +65,7 @@ class UserSession:
         exchange: Optional[Any] = None,
     ):
         self.user_id = user_id
+        self.message_bus = message_bus
         cfg = config or UserRiskConfig()
         # Per-user engine stamps user_id -> per-user Redis keys + per-user WS delivery.
         # A live exchange client (from the user's vault keys) can be injected as
@@ -75,10 +77,25 @@ class UserSession:
             user_id=user_id,
         )
         self.order_manager = OrderManager(self.engine)
+        # snapshot_dir MUST be per-user: the tracker persists to a stable filename, so a
+        # shared directory would have every tenant's tracker overwriting one snapshot —
+        # and on restart each would hydrate from whichever tenant wrote last.
         self.portfolio = PortfolioStateTracker(
-            initial_balance=cfg.initial_balance, state_manager=state_manager
+            initial_balance=cfg.initial_balance,
+            state_manager=state_manager,
+            snapshot_dir=f"data/snapshots/users/{user_id}",
         )
         self.risk = DeterministicRiskCalculator(self.portfolio, cfg.risk_params)
+        # Closes flow back into the tracker so heat/daily-loss/trade-count limits see
+        # them. Paper engine only; a live client doesn't emit this hook yet (M4 scope) —
+        # its tracker positions then persist until reconcile, erring over-strict.
+        if hasattr(self.engine, "on_position_closed"):
+            self.engine.on_position_closed = self._on_position_closed
+
+    async def _on_position_closed(
+        self, position_id: str, symbol: str, exit_price: float, pnl: float, reason: str
+    ) -> None:
+        await self.portfolio.close_position(position_id, exit_price, reason)
 
     async def evaluate_and_book(self, setup: Dict[str, Any]) -> Dict[str, Any]:
         """Validate a SHARED setup against THIS user's portfolio; book it if approved.
@@ -133,6 +150,12 @@ class UserSession:
                         if exec_status == "failed" else "entry order timed out unfilled",
                     ],
                 }
+            # Book into this user's risk tracker and log the entry to memory. Without
+            # these, every later validate_trade_setup sees an empty portfolio (heat,
+            # position-count, daily-loss limits all vacuous) and the memory agent's
+            # exit update finds no trade row ("Trade not found").
+            await self._record_booking(setup, size, execution)
+
             # Publish this tenant's updated portfolio (stamped with their user_id).
             try:
                 await self.engine.publish_portfolio_update()
@@ -148,6 +171,87 @@ class UserSession:
         except Exception as e:
             logger.exception(f"[multi-user] booking failed for {self.user_id}: {e}")
             return {"user_id": self.user_id, "approved": False, "error": str(e)}
+
+    async def _record_booking(self, setup: Dict[str, Any], size: float, execution: Any) -> None:
+        """Feed the risk tracker and the memory agent after a successful booking.
+
+        Best-effort by design: a bookkeeping failure must not unwind a booked trade —
+        the position already exists in the engine either way.
+
+        The id must join with the close side: the paper engine's close path derives
+        trade_id as position.position_id minus the "POS_" prefix, so we read the engine's
+        actual position for this symbol and reuse its id for both the tracker and the
+        memory entry. Live engines (no .positions dict) fall back to execution_id.
+        """
+        symbol = setup["symbol"]
+        pos = getattr(self.engine, "positions", {}).get(symbol)
+        position_id = getattr(pos, "position_id", None) or getattr(execution, "execution_id", None)
+        if not position_id:
+            logger.warning(f"[multi-user] no position id to record for {self.user_id}/{symbol}")
+            return
+        entry_price = getattr(pos, "entry_price", None) or setup["entry_price"]
+        tp_levels = [
+            tp["price"] if isinstance(tp, dict) else float(tp)
+            for tp in (setup.get("take_profit_levels") or [])
+        ]
+        # Any producer can hand us a setup without a dollar risk figure; derive it from
+        # the bracket so the tracker's heat/R-multiple math never sees a zero.
+        risk_amount = setup.get("risk_amount", 0.0) or 0.0
+        if risk_amount <= 0:
+            risk_amount = size * abs(entry_price - setup["stop_loss"])
+
+        try:
+            await self.portfolio.add_position(
+                position_id=position_id,
+                symbol=symbol,
+                direction=setup["direction"],
+                entry_price=entry_price,
+                position_size=size,
+                stop_loss=setup["stop_loss"],
+                take_profit_levels=tp_levels,
+                risk_amount=risk_amount,
+                strategy_type=setup.get("strategy_type", "DAY_TRADE"),
+                confidence_score=setup.get("confidence_score", 0.0) or 0.0,
+            )
+        except Exception as e:
+            logger.warning(f"[multi-user] tracker add_position failed for {self.user_id}: {e}")
+
+        if self.message_bus is None:
+            return
+        trade_id = str(position_id).replace("POS_", "")
+        try:
+            await self.message_bus.publish(
+                "memory_agent_inbox",
+                {
+                    "id": f"log_{trade_id}",
+                    "correlation_id": f"log_{trade_id}",
+                    "sender": "multi_user_executor",
+                    "receiver": "memory_agent",
+                    "type": "log_trade",
+                    "payload": {
+                        "trade_id": trade_id,
+                        "user_id": self.user_id,
+                        "symbol": symbol,
+                        "direction": setup["direction"],
+                        "entry_price": entry_price,
+                        "entry_time": datetime.now().isoformat(),
+                        "position_size": size,
+                        "stop_loss": setup["stop_loss"],
+                        "take_profit_levels": tp_levels,
+                        "risk_amount": risk_amount,
+                        "strategy_type": setup.get("strategy_type", ""),
+                        "confidence_score": setup.get("confidence_score", 0.0) or 0.0,
+                        "confluence_count": setup.get("confluence_count", 0) or 0,
+                        "market_regime": setup.get("market_regime", "") or "",
+                        "atr_at_entry": setup.get("atr_at_entry", 0.0) or 0.0,
+                        "smc_patterns": setup.get("smc_patterns"),
+                        "ict_setups": setup.get("ict_setups"),
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[multi-user] log_trade publish failed for {self.user_id}: {e}")
 
 
 class UserRegistry:
