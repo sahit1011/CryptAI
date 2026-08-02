@@ -299,3 +299,114 @@ export async function cancelOrder(orderId: string, symbol: string): Promise<Reco
     if (!res.ok) throw new Error(await backendError(res));
     return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Metered trading sessions + proposals (the M2 control plane).
+// ---------------------------------------------------------------------------
+
+/** Error that keeps the HTTP status, so the UI can tell a 409 refusal (show the
+ * backend's reason, refetch state) from a 504 (engine busy — safe to retry). */
+export class ApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+        super(message);
+        this.status = status;
+    }
+}
+
+export type SessionStatus = "scanning" | "setup_proposed" | "executing" | "ended";
+
+export interface TradingSession {
+    session_id: string;
+    status: SessionStatus;
+    quota_seconds_granted: number;
+    elapsed_seconds: number;
+    remaining_seconds: number;
+    clock_running: boolean;
+    llm_tokens_used: number;
+    llm_cost_micros: number;
+    llm_cost_cap_micros: number;
+    cycles_completed: number;
+    started_at: string | null;
+    ended_at: string | null;
+    end_reason: string | null;
+}
+
+export interface SessionOverview {
+    session: TradingSession | null;
+    daily_quota_seconds: number;
+    used_today_seconds: number;
+    remaining_today_seconds: number;
+}
+
+export interface Proposal {
+    proposal_id: string;
+    session_id: string;
+    symbol: string;
+    direction: "LONG" | "SHORT";
+    entry_price: number;
+    stop_loss: number;
+    take_profit_levels: { price: number }[];
+    position_size: number;
+    risk_amount: number;
+    risk_currency: string;
+    risk_reward_ratio: number;
+    leverage: number;
+    confidence_score: number | null;
+    thesis: string | null;
+    strategy_type: string | null;
+    market_regime: string | null;
+    status: string;
+    expires_at: string | null;
+    created_at: string | null;
+}
+
+export interface ApproveResult {
+    session: TradingSession;
+    execution: { approved: boolean; recovered?: boolean; execution_id?: string | null };
+    proposal_id: string;
+}
+
+async function sessionFetch<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await fetch(`${API_URL}${path}`, {
+        cache: "no-store",
+        ...init,
+        headers: await authHeaders(init?.method === "POST"),
+    });
+    if (!res.ok) throw new ApiError(res.status, await backendError(res));
+    return res.json();
+}
+
+/** The caller's active session plus today's quota. `session: null` = idle (normal). */
+export async function getSession(): Promise<SessionOverview> {
+    return sessionFetch("/api/session");
+}
+
+/** Begin a metered session. 429 = daily quota spent (resets at UTC midnight). */
+export async function startSession(quotaSeconds?: number): Promise<TradingSession> {
+    return sessionFetch("/api/session/start", {
+        method: "POST",
+        body: JSON.stringify(quotaSeconds ? { quota_seconds: quotaSeconds } : {}),
+    });
+}
+
+/** End the caller's session early. Open positions keep being monitored. */
+export async function endSession(): Promise<TradingSession> {
+    return sessionFetch("/api/session/end", { method: "POST" });
+}
+
+/** The caller's newest pending proposal; null renders as "no card", not an error. */
+export async function getPendingProposal(): Promise<{ proposal: Proposal | null }> {
+    return sessionFetch("/api/proposals/pending");
+}
+
+/** Approve the pending proposal. The backend re-validates at the live price; a 409
+ * with "retry" in the detail means the proposal is still live (price drifted). */
+export async function approveProposal(): Promise<ApproveResult> {
+    return sessionFetch("/api/session/approve", { method: "POST" });
+}
+
+/** Decline the pending proposal and resume scanning. */
+export async function rejectProposal(): Promise<TradingSession> {
+    return sessionFetch("/api/session/reject", { method: "POST" });
+}

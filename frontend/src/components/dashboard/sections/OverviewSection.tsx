@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states";
 import { ArrowRight, History, Radar } from "lucide-react";
 import { SignalsFeed } from "../widgets/SignalsFeed";
 import { EquityCurve } from "../widgets/EquityCurve";
+import { SessionPanel } from "../widgets/SessionPanel";
 import { useStore } from "@/store/useStore";
 import { useMarketStore } from "@/hooks/useMarketData";
 import { useClosedTrades } from "@/hooks/useClosedTrades";
@@ -121,6 +122,9 @@ export function OverviewSection() {
                     ))
                 )}
             </div>
+
+            {/* The metered trading session — start the swarm, decide on its proposal. */}
+            <SessionPanel />
 
             {/* Realized equity curve — the settled-P&L run, whenever there's history. */}
             {stats.equityCurve.length > 1 && (
