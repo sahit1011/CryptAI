@@ -132,6 +132,29 @@ def test_downgrade_reverses_cleanly():
     assert not left_behind, f"downgrade left tables behind: {left_behind}"
 
 
+def test_channel_migration_is_idempotent_after_a_self_heal():
+    """The collision the self-heal creates: SessionManager adds `channel` WITHOUT bumping
+    alembic_version, so a later `alembic upgrade` must not re-add it and crash the migrate
+    step. Simulate a DB already at 9c4e7a1b2d03 whose sessions table already has channel,
+    then run only the b2d3 migration — it must be a no-op, not a duplicate-column error."""
+    from sqlalchemy import text
+
+    b2d3 = _load_migration(VERSIONS_DIR / "b2d3e4f5a6c7_add_session_channel.py")
+    prior = _load_migration(MIGRATION)  # 9c4e7a1b2d03 creates the sessions table
+
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            prior.upgrade()  # sessions table exists, WITHOUT channel
+            # Self-heal adds the column out of band, no version bump.
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN channel VARCHAR(16)"))
+            b2d3.upgrade()   # must NOT raise duplicate-column
+        conn.commit()
+    cols = {c["name"] for c in inspect(engine).get_columns("sessions")}
+    assert "channel" in cols  # present exactly once, no crash
+
+
 def test_full_chain_downgrades_cleanly():
     """Every migration in the chain must be reversible, not just the session layer —
     an incident may need to roll back the newest migration first."""

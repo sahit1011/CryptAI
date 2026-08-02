@@ -148,9 +148,24 @@ class SessionManager:
         existing = {c["name"] for c in inspector.get_columns("sessions")}
         additive = {"channel": "VARCHAR(16)"}
         for name, ddl_type in additive.items():
-            if name not in existing:
+            if name in existing:
+                continue
+            try:
                 with self.engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {name} {ddl_type}"))
+            except Exception:
+                # TOCTOU: on Render the backend and daemon deploy from the same push and
+                # construct SessionManager against the same Postgres at once — both can
+                # pass the inspect above and race this ALTER. The loser gets a
+                # duplicate-column error; that is success, not failure (the column now
+                # exists). Re-inspect and swallow only if it really landed; re-raise a
+                # genuine failure so a broken DB is not silently ignored.
+                landed = {c["name"] for c in inspect(self.engine).get_columns("sessions")}
+                if name not in landed:
+                    raise
+                logger.info(
+                    f"sessions.{name} was added by a concurrent boot; continuing"
+                )
 
     # -- clock ---------------------------------------------------------------
 

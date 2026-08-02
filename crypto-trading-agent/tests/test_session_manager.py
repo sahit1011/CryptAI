@@ -252,6 +252,52 @@ def test_ensure_schema_adds_channel_to_a_preexisting_table(tmp_path, clock):
     assert s["channel"] == "swing"
 
 
+def test_ensure_schema_is_idempotent_across_reconstruction(tmp_path, clock):
+    """Two SessionManagers over the same DB: the second sees channel already present and
+    skips the ALTER — no duplicate-column crash on the common re-boot case."""
+    db = f"sqlite:///{tmp_path}/shared.db"
+    first = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # adds channel
+    second = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # sees it, skips
+    assert second.start(USER, channel="scalp")["channel"] == "scalp"
+    _ = first
+
+
+def test_ensure_schema_swallows_a_concurrent_duplicate_add(tmp_path, clock, monkeypatch):
+    """The real TOCTOU (backend + daemon boot together on Render): _ensure_schema's
+    inspect reports channel ABSENT (stale), so it runs the ALTER — which the DB rejects
+    because a concurrent boot already added it. The except must re-inspect and swallow,
+    not propagate (propagating leaves session_manager=None and disables the session
+    plane). Forced deterministically: `_ensure_schema` does `from sqlalchemy import
+    inspect` at call time, so patching sqlalchemy.inspect controls what it sees."""
+    import sqlalchemy
+
+    db = f"sqlite:///{tmp_path}/race.db"
+    mgr = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # channel really exists
+
+    class _FakeInspector:
+        def __init__(self, has_channel):
+            self._has = has_channel
+
+        def get_table_names(self):
+            return ["sessions"]
+
+        def get_columns(self, _table):
+            cols = [{"name": "id"}, {"name": "session_id"}]
+            return cols + ([{"name": "channel"}] if self._has else [])
+
+    calls = {"n": 0}
+
+    def fake_inspect(_engine):
+        calls["n"] += 1
+        # 1st call: the `existing` check — lie that channel is absent, forcing the ALTER.
+        # 2nd call: the post-failure re-check — tell the truth (it exists), so it swallows.
+        return _FakeInspector(has_channel=calls["n"] >= 2)
+
+    monkeypatch.setattr(sqlalchemy, "inspect", fake_inspect)
+    mgr._ensure_schema()  # ALTER duplicate -> caught -> re-inspect -> swallow. No raise.
+    assert calls["n"] == 2  # it did try the ALTER and did re-check
+
+
 def test_quota_resets_at_utc_midnight(mgr, clock):
     s = mgr.start(USER)
     clock.advance(1800)
