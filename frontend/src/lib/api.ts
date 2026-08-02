@@ -319,6 +319,7 @@ export type SessionStatus = "scanning" | "setup_proposed" | "executing" | "ended
 export interface TradingSession {
     session_id: string;
     status: SessionStatus;
+    channel: GoalHorizon | null;
     quota_seconds_granted: number;
     elapsed_seconds: number;
     remaining_seconds: number;
@@ -382,11 +383,17 @@ export async function getSession(): Promise<SessionOverview> {
     return sessionFetch("/api/session");
 }
 
-/** Begin a metered session. 429 = daily quota spent (resets at UTC midnight). */
-export async function startSession(quotaSeconds?: number): Promise<TradingSession> {
+/** Begin a metered session. 429 = daily quota spent (resets at UTC midnight).
+ * `channel` (scalp|intraday|swing|position) overrides the persona for this session. */
+export async function startSession(
+    opts: { channel?: GoalHorizon; quotaSeconds?: number } = {},
+): Promise<TradingSession> {
+    const body: Record<string, unknown> = {};
+    if (opts.quotaSeconds) body.quota_seconds = opts.quotaSeconds;
+    if (opts.channel) body.channel = opts.channel;
     return sessionFetch("/api/session/start", {
         method: "POST",
-        body: JSON.stringify(quotaSeconds ? { quota_seconds: quotaSeconds } : {}),
+        body: JSON.stringify(body),
     });
 }
 

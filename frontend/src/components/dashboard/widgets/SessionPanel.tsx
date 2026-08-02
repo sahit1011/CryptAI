@@ -8,6 +8,8 @@ import { LoadingState } from "@/components/ui/states";
 import { cn } from "@/lib/utils";
 import { useSession } from "@/hooks/useSession";
 import { formatClock, sessionPhase } from "@/lib/session";
+import { TRADING_STYLES } from "@/lib/preferences";
+import { getPreferences, type GoalHorizon } from "@/lib/api";
 import { ProposalCard } from "./ProposalCard";
 
 /*
@@ -22,6 +24,19 @@ import { ProposalCard } from "./ProposalCard";
 export function SessionPanel() {
     const { overview, proposal, loading, error, notice, busy, start, end, approve, reject } =
         useSession();
+
+    // The channel to start with — seeded from the user's persona default, overridable
+    // per session before Start.
+    const [channel, setChannel] = useState<GoalHorizon>("swing");
+    useEffect(() => {
+        let cancelled = false;
+        getPreferences()
+            .then((p) => !cancelled && setChannel(p.goal_horizon))
+            .catch(() => { /* keep the default */ });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     // Smooth local tick for the scanning timer, reset on every server poll.
     const [tick, setTick] = useState(0);
@@ -67,20 +82,44 @@ export function SessionPanel() {
                     </p>
                 ) : null}
 
-                {/* IDLE — offer to start */}
+                {/* IDLE — pick a style, then start */}
                 {phase === "idle" ? (
-                    <div className="flex flex-col items-center gap-3 py-4 text-center">
-                        <Timer className="size-8 text-muted-foreground/60" />
+                    <div className="flex flex-col gap-4 py-2">
+                        <p className="text-center text-xs text-muted-foreground">
+                            {formatClock(dailyRemaining)} of analysis time left today. The clock only
+                            runs while the swarm is scanning — it pauses when a setup is on the table.
+                        </p>
                         <div>
-                            <p className="text-sm font-medium text-foreground">Ready when you are</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                {formatClock(dailyRemaining)} of analysis time left today. The clock only
-                                runs while the swarm is scanning — it pauses when a setup is on the table.
+                            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Trading style this session
                             </p>
+                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                {TRADING_STYLES.map((s) => {
+                                    const active = channel === s.value;
+                                    return (
+                                        <button
+                                            key={s.value}
+                                            type="button"
+                                            onClick={() => setChannel(s.value)}
+                                            aria-pressed={active}
+                                            disabled={busy}
+                                            title={s.blurb}
+                                            className={cn(
+                                                "rounded-lg border px-3 py-2 text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60",
+                                                active
+                                                    ? "border-accent/40 bg-accent-muted/40 text-foreground"
+                                                    : "border-border bg-elevated/30 text-muted-foreground hover:text-foreground",
+                                            )}
+                                        >
+                                            {s.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
                         </div>
                         <Button
-                            className="bg-profit text-background hover:bg-profit/90"
-                            onClick={start}
+                            className="self-center bg-profit text-background hover:bg-profit/90"
+                            onClick={() => start(channel)}
                             disabled={busy}
                         >
                             <Play className="size-4" />
@@ -115,7 +154,9 @@ export function SessionPanel() {
                                 <div className="mt-1 font-mono text-3xl font-semibold tabular-nums text-foreground">
                                     {formatClock(liveRemaining)}
                                 </div>
-                                <div className="text-[11px] text-muted-foreground">left this session</div>
+                                <div className="text-[11px] text-muted-foreground">
+                                    left this session{session?.channel ? ` · ${session.channel}` : ""}
+                                </div>
                             </div>
                             <Button variant="outline" size="sm" onClick={end} disabled={busy}>
                                 <Square className="size-3.5" />

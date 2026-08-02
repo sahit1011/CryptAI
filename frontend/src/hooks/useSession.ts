@@ -11,6 +11,7 @@ import {
     rejectProposal,
     startSession,
     type ApproveResult,
+    type GoalHorizon,
     type Proposal,
     type SessionOverview,
 } from "@/lib/api";
@@ -34,7 +35,7 @@ export interface SessionApi {
     /** Last mutation's user-facing message (409 reasons, retry hints). */
     notice: string | null;
     busy: boolean;
-    start: () => Promise<void>;
+    start: (channel?: GoalHorizon) => Promise<void>;
     end: () => Promise<void>;
     approve: () => Promise<ApproveResult | null>;
     reject: () => Promise<void>;
@@ -100,9 +101,12 @@ export function useSession(): SessionApi {
         [refresh],
     );
 
-    const start = useCallback(async () => {
-        await mutate(() => startSession());
-    }, [mutate]);
+    const start = useCallback(
+        async (channel?: GoalHorizon) => {
+            await mutate(() => startSession({ channel }));
+        },
+        [mutate],
+    );
 
     const end = useCallback(async () => {
         await mutate(() => endSession());

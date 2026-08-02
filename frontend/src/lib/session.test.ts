@@ -22,6 +22,7 @@ function session(status: TradingSession["status"]): TradingSession {
     return {
         session_id: "s1",
         status,
+        channel: null,
         quota_seconds_granted: 1800,
         elapsed_seconds: 60,
         remaining_seconds: 1740,
