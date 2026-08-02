@@ -31,6 +31,31 @@ from loguru import logger
 #: under the proposal TTL so we never propose something already near expiry.
 DEFAULT_SETUP_FRESHNESS_SECONDS = 900
 
+#: Minimum risk:reward a setup must clear to qualify for a channel. Faster styles
+#: accept a tighter ratio (higher hit-rate, quicker turnover); slower styles demand
+#: more reward per unit risk. Applied tighten-only against the user's own floor — the
+#: channel can only make the bar STRICTER, never loosen the persona's risk rule.
+CHANNEL_MIN_RR = {
+    "scalp": 1.2,
+    "intraday": 1.5,
+    "swing": 2.0,
+    "position": 2.5,
+}
+
+
+def effective_prefs_for_channel(
+    prefs: Dict[str, Any], channel: Optional[str]
+) -> Dict[str, Any]:
+    """Overlay the session's chosen channel onto the persona: it sets goal_horizon for
+    this session and raises (never lowers) the R:R floor. None keeps the persona as-is."""
+    if not channel:
+        return prefs
+    floor = CHANNEL_MIN_RR.get(channel)
+    out = {**prefs, "goal_horizon": channel}
+    if floor is not None:
+        out["min_risk_reward"] = max(float(prefs.get("min_risk_reward") or 0.0), floor)
+    return out
+
 
 class SharedSetupCache:
     """Latest shared-analysis setups per symbol, timestamped.
@@ -98,7 +123,9 @@ def build_analyze_fn(
     async def analyze(context: Dict[str, Any]) -> tuple:
         user_id = context["user_id"]
         session_id = context["session_id"]
-        prefs = context.get("preferences") or {}
+        base_prefs = context.get("preferences") or {}
+        # The session's channel (chosen at start) overrides the persona for THIS session.
+        prefs = effective_prefs_for_channel(base_prefs, context.get("channel"))
         pulses = context.get("pulses") or {}
         symbols = context.get("symbols") or []
 

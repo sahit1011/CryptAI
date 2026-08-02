@@ -179,6 +179,20 @@ def test_approve_and_reject_require_a_pending_proposal(wired):
     assert mgr.get_active(ALICE)["status"] == "setup_proposed"
 
 
+def test_start_accepts_and_records_a_channel(wired):
+    client, _, mgr, _ = wired
+    r = client.post("/api/session/start", json={"channel": "scalp"})
+    assert r.status_code == 200
+    assert r.json()["channel"] == "scalp"
+
+
+def test_start_rejects_an_unknown_channel(wired):
+    client, _, mgr, _ = wired
+    r = client.post("/api/session/start", json={"channel": "moon"})
+    assert r.status_code == 409
+    assert mgr.get_active(ALICE) is None
+
+
 def test_rejecting_resumes_the_meter_via_the_api(wired):
     client, _, mgr, clock = wired
     started = client.post("/api/session/start").json()

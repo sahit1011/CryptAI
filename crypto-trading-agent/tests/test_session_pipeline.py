@@ -12,7 +12,12 @@ import pytest
 from src.core.preferences import PreferencesStore
 from src.core.proposals import ProposalService
 from src.core.session_manager import SCANNING, SETUP_PROPOSED, SessionManager
-from src.core.session_pipeline import SharedSetupCache, build_analyze_fn
+from src.core.session_pipeline import (
+    CHANNEL_MIN_RR,
+    SharedSetupCache,
+    build_analyze_fn,
+    effective_prefs_for_channel,
+)
 from src.core.session_worker import (
     CYCLE_RAN,
     CYCLE_SKIPPED_NOT_SCANNING,
@@ -264,6 +269,58 @@ async def test_orphan_proposal_from_a_dead_session_does_not_starve_the_next(stor
     pending = proposals.get_pending(USER)
     assert pending["session_id"] == session["session_id"]  # the NEW proposal won
     assert mgr.get_active(USER)["status"] == SETUP_PROPOSED
+
+
+# --- channel differentiation -------------------------------------------------
+
+def test_effective_prefs_overlays_the_channel():
+    base = {"goal_horizon": "swing", "min_risk_reward": 1.5}
+    scalp = effective_prefs_for_channel(base, "scalp")
+    assert scalp["goal_horizon"] == "scalp"
+    # scalp floor is 1.2 < the user's 1.5, so the stricter user value wins (tighten-only).
+    assert scalp["min_risk_reward"] == 1.5
+
+    position = effective_prefs_for_channel(base, "position")
+    assert position["min_risk_reward"] == CHANNEL_MIN_RR["position"]  # 2.5 > 1.5
+
+
+def test_no_channel_leaves_prefs_untouched():
+    base = {"goal_horizon": "swing", "min_risk_reward": 1.5}
+    assert effective_prefs_for_channel(base, None) is base
+
+
+@pytest.mark.asyncio
+async def test_channel_gates_which_setups_qualify(stores):
+    """The same shared setup is proposable on a lenient channel and rejected on a strict
+    one — the channel doing real work, not decoration."""
+    mgr, prefs, proposals, cache = stores
+    # A setup with R:R exactly 2.0: entry 64000, stop 62000 (risk 2000), target 68000
+    # (reward 4000) => rr 2.0. Passes scalp/intraday/swing floors, fails position (2.5).
+    setup = {**SHARED_SETUP, "take_profit_levels": [{"price": 68000.0, "size": 1.0}]}
+    cache.put("BTCUSDT", [setup])
+
+    analyze = build_analyze_fn(
+        session_manager=mgr, proposal_service=proposals, setup_cache=cache
+    )
+
+    def _ctx(session_id, channel):
+        return {
+            "session_id": session_id, "user_id": USER,
+            "preferences": {**prefs.get(USER), "min_risk_reward": 1.0},  # low persona floor
+            "pulses": {}, "symbols": ["BTCUSDT"], "channel": channel,
+        }
+
+    # Scalp session: rr 2.0 clears the 1.2 floor -> proposed.
+    s1 = mgr.start(USER, channel="scalp")
+    setups, _ = await analyze(_ctx(s1["session_id"], "scalp"))
+    assert len(setups) == 1
+    mgr.end(s1["session_id"])
+
+    # Position session: rr 2.0 is below the 2.5 floor -> rejected, session keeps scanning.
+    s2 = mgr.start(USER, channel="position")
+    setups, _ = await analyze(_ctx(s2["session_id"], "position"))
+    assert setups == []
+    assert mgr.get_active(USER)["status"] == SCANNING
 
 
 @pytest.mark.asyncio

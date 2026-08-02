@@ -129,6 +129,9 @@ class SessionWorker:
             "preferences": prefs,
             "pulses": pulses,
             "symbols": symbols,
+            # The trading style chosen at session start; the pipeline overlays it on the
+            # persona (goal_horizon + a tighter R:R floor). None keeps the persona.
+            "channel": state.get("channel"),
         }
 
         usage = None

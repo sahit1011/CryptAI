@@ -124,10 +124,33 @@ class SessionManager:
         self.engine = create_engine(database_url, **pool_kwargs())
         SessionRow.__table__.create(self.engine, checkfirst=True)
         SessionEvent.__table__.create(self.engine, checkfirst=True)
+        self._ensure_schema()
         self.Session = sessionmaker(bind=self.engine)
         self.daily_quota_seconds = daily_quota_seconds
         self.cost_cap_micros = cost_cap_micros
         self._now = now_fn or _utc_now
+
+    def _ensure_schema(self) -> None:
+        """Add columns the model has but an existing `sessions` table lacks.
+
+        `checkfirst=True` creates the table only when absent — it never adds a column to
+        one that already exists. A production DB where SessionManager booted before this
+        column was introduced (or whose migrations haven't run) would be missing
+        `channel`, and every insert referencing it would fail. This idempotent
+        ADD-COLUMN-if-missing self-heal makes the code work regardless of alembic state;
+        the alembic migration (b2d3e4f5a6c7) remains the managed source of truth.
+        """
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(self.engine)
+        if "sessions" not in inspector.get_table_names():
+            return  # checkfirst will create it fresh with every column
+        existing = {c["name"] for c in inspector.get_columns("sessions")}
+        additive = {"channel": "VARCHAR(16)"}
+        for name, ddl_type in additive.items():
+            if name not in existing:
+                with self.engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {name} {ddl_type}"))
 
     # -- clock ---------------------------------------------------------------
 
@@ -181,13 +204,28 @@ class SessionManager:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def start(self, user_id: str, quota_seconds: Optional[int] = None) -> dict:
+    def start(
+        self,
+        user_id: str,
+        quota_seconds: Optional[int] = None,
+        channel: Optional[str] = None,
+    ) -> dict:
         """Begin a metered session.
 
         Refuses if the user already has a live session (one at a time — two concurrent
         sessions would double-spend the same daily quota) or if no time is left.
+
+        `channel` (scalp | intraday | swing | position) sets the trading style for this
+        session, overriding the user's persistent goal_horizon persona. None keeps the
+        persona default. An unknown channel is rejected rather than silently ignored.
         """
+        from src.core.preferences import GOAL_HORIZONS
+
         now = self._now()
+        if channel is not None and channel not in GOAL_HORIZONS:
+            raise SessionError(
+                f"unknown channel '{channel}'; expected one of {', '.join(GOAL_HORIZONS)}"
+            )
         remaining = self.remaining_today(user_id)
         if remaining <= 0:
             raise QuotaExhausted(
@@ -201,6 +239,7 @@ class SessionManager:
             session_id=str(uuid.uuid4()),
             user_id=user_id,
             status=SCANNING,
+            channel=channel,
             # Grant at most what is left today. An explicit request may ask for less
             # (a short session) but never more — clamping here is what makes the daily
             # quota real; without it a caller could pass quota_seconds above the cap and
@@ -473,6 +512,7 @@ class SessionManager:
             "session_id": row.session_id,
             "user_id": row.user_id,
             "status": row.status,
+            "channel": row.channel,
             "quota_seconds_granted": row.quota_seconds_granted,
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, row.quota_seconds_granted - elapsed),

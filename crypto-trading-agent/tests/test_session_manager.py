@@ -201,6 +201,57 @@ def test_explicit_quota_request_may_ask_for_less(mgr, clock):
     assert s["quota_seconds_granted"] == 600
 
 
+# --- channel -----------------------------------------------------------------
+
+def test_session_records_its_channel(mgr, clock):
+    s = mgr.start(USER, channel="scalp")
+    assert s["channel"] == "scalp"
+    assert mgr.get_active(USER)["channel"] == "scalp"
+
+
+def test_channel_defaults_to_none(mgr, clock):
+    s = mgr.start(USER)
+    assert s["channel"] is None
+
+
+def test_an_unknown_channel_is_rejected(mgr, clock):
+    with pytest.raises(SessionError):
+        mgr.start(USER, channel="hodl")
+    # And the rejected start left no session behind.
+    assert mgr.get_active(USER) is None
+
+
+def test_ensure_schema_adds_channel_to_a_preexisting_table(tmp_path, clock):
+    """The deploy-critical self-heal: a `sessions` table created before `channel`
+    existed (checkfirst never adds columns) must gain it on next SessionManager init,
+    regardless of whether the alembic migration has run."""
+    from sqlalchemy import create_engine, inspect, text
+
+    db = f"sqlite:///{tmp_path}/legacy.db"
+    # Simulate the legacy table: everything EXCEPT channel.
+    legacy = create_engine(db)
+    with legacy.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE sessions ("
+            "id INTEGER PRIMARY KEY, session_id VARCHAR(50), user_id VARCHAR(64), "
+            "status VARCHAR(24), quota_seconds_granted INTEGER, "
+            "metered_seconds_accrued INTEGER, clock_started_at DATETIME, "
+            "llm_tokens_used INTEGER, llm_cost_micros INTEGER, "
+            "llm_cost_cap_micros INTEGER, trading_day DATETIME, "
+            "cycles_completed INTEGER, started_at DATETIME, ended_at DATETIME, "
+            "end_reason VARCHAR(40))"
+        ))
+    assert "channel" not in {c["name"] for c in inspect(legacy).get_columns("sessions")}
+    legacy.dispose()
+
+    # Booting a SessionManager on that DB must add the column and then work.
+    mgr = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)
+    cols = {c["name"] for c in inspect(mgr.engine).get_columns("sessions")}
+    assert "channel" in cols
+    s = mgr.start(USER, channel="swing")
+    assert s["channel"] == "swing"
+
+
 def test_quota_resets_at_utc_midnight(mgr, clock):
     s = mgr.start(USER)
     clock.advance(1800)

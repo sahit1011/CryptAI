@@ -1155,6 +1155,10 @@ class SessionStartBody(BaseModel):
     # Lets a caller request less than their full remaining quota (e.g. a 10-minute
     # session). Never more: the manager clamps to what is actually left today.
     quota_seconds: Optional[int] = Field(default=None, ge=60, le=24 * 3600)
+    # Trading style for this session (scalp | intraday | swing | position), overriding
+    # the persistent goal_horizon persona. None keeps the persona default; an unknown
+    # value is rejected by the session manager.
+    channel: Optional[str] = Field(default=None, max_length=16)
 
 
 def _require_sessions():
@@ -1201,12 +1205,13 @@ async def start_session(
 
     mgr = _require_sessions()
     try:
-        return await asyncio.to_thread(mgr.start, user_id, body.quota_seconds)
+        return await asyncio.to_thread(mgr.start, user_id, body.quota_seconds, body.channel)
     except QuotaExhausted as e:
         # 429 rather than 403: this is a rate limit that resets, not a permission
         # problem the user can do anything about.
         raise HTTPException(status_code=429, detail=str(e))
     except SessionError as e:
+        # Covers both "already have a session" and "unknown channel"; both are 409.
         raise HTTPException(status_code=409, detail=str(e))
 
 

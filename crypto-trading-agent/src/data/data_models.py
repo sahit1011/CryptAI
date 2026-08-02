@@ -349,6 +349,11 @@ class Session(Base):
     #                executing | ended
     status = Column(String(24), nullable=False, default='scanning', index=True)
 
+    # The trading style chosen for THIS session (scalp | intraday | swing | position),
+    # overriding the persistent goal_horizon persona for synthesis. Nullable: a legacy or
+    # unspecified session falls back to the user's default goal_horizon.
+    channel = Column(String(16))
+
     # Durable metered clock
     quota_seconds_granted = Column(Integer, nullable=False, default=1800)  # free tier: 30 min
     metered_seconds_accrued = Column(Integer, nullable=False, default=0)
