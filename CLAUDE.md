@@ -5,19 +5,24 @@ Multi-agent crypto futures trading engine. Going 0→1 to public paying users.
 See `AGENTS.md` for the backend architecture map (agents, message bus, DB layout) —
 it is accurate and worth reading before touching `crypto-trading-agent/src`.
 
-## ⚠️ Work on `v2`, not `main`
+**Start here (2026-08-02):** `docs/PRD_CURRENT_STATE.md` — audited ground truth of what
+is built/deployed/broken — and `docs/HLD.md` — the target design, functional
+requirements, and M1–M6 roadmap. They supersede the entire Jan-2026 doc generation
+(`docs/prd.md`, `docs/COMPLETE_SPECIFICATION_SUMMARY.md`, `SETUP.md`, etc.).
 
-`main` is a stale 8-commit snapshot. **`v2` is the real project: 111 commits**, 121
-frontend source files vs main's 53, and it alone contains the terminal UI, onboarding,
-per-user positions API, RLS policy, and the modernized dependency set.
+## ⚠️ Branches: work on `feat/m0-foundation`
 
-`main`'s only exclusive files are cruft (`requirements_temp.txt` — UTF-16 garbage,
-`ict_detector_backup_corrupted.py`, temp logs) plus one superseded Alembic migration.
-`.github/workflows/keepalive.yml` says as much: *"if the default branch isn't v2 yet,
-merge/point it accordingly."*
+Three-branch reality (verified 2026-08-02):
+- **`feat/m0-foundation`** — the active branch: `v2` + 21 commits (sessions, proposals,
+  preferences, Rust signal engine). All new work lands here.
+- **`v2`** — what production Render actually deploys (probed: the live host 404s the
+  m0 session/preferences endpoints). The signal engine does not exist on it.
+- **`main`** — stale 8-commit snapshot, still the GitHub default. Its only exclusive
+  files are cruft plus the keepalive workflow copy.
 
-**Open task:** make `v2` the GitHub default branch, or merge it into `main`. Until
-then the keepalive cron and any branch-default automation run against stale code.
+**Open task (M1):** make the m0 line the default branch and repoint Render — until then
+every fix on this branch is silently absent from production, and the deployed `/health`
+still has the lying-probe bug that is already fixed here.
 
 ## Layout
 ```
@@ -120,12 +125,9 @@ Delta India *does* have one, and `DeltaExchangeClient.TESTNET_URL`
 (`cdn-ind.testnet.deltaex.org`) is correct. **Consequence: Delta is the reference live
 adapter; CoinDCX order placement stays unproven until a manual small-size prod smoke.**
 
-**`/health` lies, and `render.yaml:31` probes it.** It reports
-`"message_bus": message_bus is not None`, which is True even when the Redis connection
-failed — the object is constructed either way. A production instance with dead Redis
-reports healthy and keeps taking traffic. `/health/ready` is the honest one (correctly
-503s). Fix `/health` to check the connection, and point `healthCheckPath` at
-`/health/live` (its docstring already says a dead Redis must not restart the pod).
+**`/health` lied, and `render.yaml` probed it — FIXED on this branch** (commit
+`c793c0e`: `/health` now pings Redis, `render.yaml:35` probes `/health/live`). Still
+live in production, which deploys `v2` — the fix ships when Render is repointed (M1).
 
 **`/api/setups` is unauthenticated by design** — "setups are the same for everyone;
 only EXECUTION is per-user". That is exactly the model `docs/MULTI_TENANCY.md`
