@@ -237,6 +237,34 @@ class SessionManager:
         finally:
             db.close()
 
+    def active_sessions(self, limit: int = 200) -> List[dict]:
+        """Every live session across all tenants, oldest first.
+
+        The worker pool's discovery query. Bounded by `limit` so a runaway that somehow
+        creates thousands of sessions degrades into "we serve the oldest N" rather than
+        loading them all into memory — and the count is logged so the anomaly is visible
+        rather than silently truncated.
+        """
+        now = self._now()
+        db = self.Session()
+        try:
+            rows = (
+                db.query(SessionRow)
+                .filter(SessionRow.status != ENDED)
+                .order_by(SessionRow.started_at.asc())
+                .limit(limit + 1)
+                .all()
+            )
+            if len(rows) > limit:
+                logger.warning(
+                    f"{len(rows)}+ active sessions exceeds the {limit} pool cap; "
+                    f"serving the oldest {limit}"
+                )
+                rows = rows[:limit]
+            return [self._to_dict(r, now) for r in rows]
+        finally:
+            db.close()
+
     def get(self, session_id: str) -> Optional[dict]:
         now = self._now()
         db = self.Session()
