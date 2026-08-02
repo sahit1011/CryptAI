@@ -202,6 +202,12 @@ from `/api/trades` instead).
 
 ## 5. Confirmed bugs and security findings (ranked)
 
+> **Update 2026-08-02 (later the same day):** items 1–5 below are FIXED on branch
+> `fix/m1-foundation-bugs` (commits `4b87650`…`8ed5e91`), adversarially verified, with
+> regression tests. They remain LIVE IN PRODUCTION until Render is repointed (M1).
+> Items 6–10 are still open. Fix 2 requires setting `ADMIN_USER_IDS` (your Supabase
+> UUID) in Render before deploy, or the engine switch locks everyone out.
+
 1. **Session quota bypass — CONFIRMED by execution.** `POST /api/session/start` with
    `quota_seconds=86400` grants 24h against a 30-min daily quota; the explicit value is
    used unclamped (`session_manager.py:204`) and nothing re-checks `remaining_today`
