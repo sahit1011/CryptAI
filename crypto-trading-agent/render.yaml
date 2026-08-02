@@ -82,6 +82,12 @@ services:
         value: "false"
       - key: CYCLE_INTERVAL
         value: "180"
+      - key: SIGNAL_PLANE_ENABLED     # flip to "true" AFTER the signal-engine service is
+        value: "false"                # up and publishing market:pulse:* to this Redis.
+                                      # Wiring PulseClient to an absent engine fail-closes
+                                      # every session's pulse gate, so it stays off first.
+      - key: PLATFORM_SYMBOLS         # session universe default; keep ⊆ the engine's SYMBOLS
+        value: "BTCUSDT,ETHUSDT,SOLUSDT"
       - key: MULTI_USER_SEED_IDS      # optional owner/demo paper account(s)
         sync: false
       - key: POSTGRES_URL

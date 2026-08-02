@@ -1,0 +1,4 @@
+target/
+eval/
+*.md
+.git/
