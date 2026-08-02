@@ -35,8 +35,12 @@ class StateManager:
 
         # PostgreSQL for persistent state
         self.postgres_url = config.database.postgres_url.replace('postgresql://', 'postgresql+asyncpg://')
-        from src.utils.db import pool_kwargs
-        self.engine = create_async_engine(self.postgres_url, echo=False, **pool_kwargs())
+        # Also disable SQLAlchemy's asyncpg-dialect prepared-statement cache — the other
+        # half of pgbouncer transaction-mode safety, paired with statement_cache_size=0.
+        _sep = '&' if '?' in self.postgres_url else '?'
+        self.postgres_url = f"{self.postgres_url}{_sep}prepared_statement_cache_size=0"
+        from src.utils.db import async_pool_kwargs
+        self.engine = create_async_engine(self.postgres_url, echo=False, **async_pool_kwargs())
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )
