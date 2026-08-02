@@ -173,6 +173,7 @@ CHECK_SKIPPED = "skipped"   # no live price yet — cannot evaluate this tick
 @dataclass
 class _Snapshot:
     symbol: str
+    position_id: Optional[str]
     direction: str
     quantity: float
     entry_price: float
@@ -200,6 +201,12 @@ class PositionMonitorWorker:
         self.poll_seconds = poll_seconds
         self._now = now_fn or datetime.now
         self.state = MonitorState()
+        #: The position_id the current state belongs to. A monitor is keyed by
+        #: (user, symbol), but state (the profit peak, the adverse streak) belongs to a
+        #: specific POSITION — if one closes and a new one opens on the same symbol
+        #: before we observe the empty book, carrying the old peak would wrongly exit the
+        #: fresh position on its first tick. Reset when the identity changes.
+        self._position_id: Optional[str] = None
         self.checks = 0
 
     # -- data -----------------------------------------------------------------
@@ -235,6 +242,7 @@ class PositionMonitorWorker:
 
         return _Snapshot(
             symbol=self.symbol,
+            position_id=position_id,
             direction=str(pos.get("positionSide") or getattr(tracked, "direction", "") or "LONG"),
             quantity=abs(_to_float(pos.get("positionAmt"))),
             entry_price=_to_float(pos.get("entryPrice")) or getattr(tracked, "entry_price", 0.0),
@@ -264,6 +272,18 @@ class PositionMonitorWorker:
             return CHECK_CLOSED
         if not snap.current_price or snap.current_price <= 0 or snap.quantity <= 0:
             return CHECK_SKIPPED
+
+        # A different position now occupies this symbol (a close+reopen we never saw
+        # go empty): start its accounting fresh, or the previous position's profit peak
+        # would exit it immediately.
+        if snap.position_id != self._position_id:
+            if self._position_id is not None:
+                logger.info(
+                    f"[monitor] {self.session.user_id} {self.symbol} position changed "
+                    f"({self._position_id} -> {snap.position_id}); resetting state"
+                )
+            self._position_id = snap.position_id
+            self.state = MonitorState()
 
         self.checks += 1
         pulse = await self._pulse()
@@ -361,6 +381,9 @@ class MonitorSupervisor:
         self.discovery_seconds = discovery_seconds
         self.monitors: Dict[str, asyncio.Task] = {}
         self._shutdown = asyncio.Event()
+        #: Tenants we've already warned about having no usable get_positions, so the
+        #: "live positions are unmonitored" gap is logged once, not every 5s pass.
+        self._unmonitorable_warned: set = set()
 
     @staticmethod
     def _key(user_id: str, symbol: str) -> str:
@@ -390,7 +413,20 @@ class MonitorSupervisor:
             engine = getattr(session, "engine", None)
             if engine is None or not hasattr(engine, "get_positions"):
                 continue
-            for pos in engine.get_positions():
+            positions = engine.get_positions()
+            # LiveExecutionEngine.get_positions() is still a stub returning [] — so a
+            # connected auto-mode tenant with a real (testnet) position is NOT monitored.
+            # Surface that once per tenant rather than silently, so the coverage gap is
+            # operationally visible until live position discovery is wired.
+            if not positions and getattr(session, "is_live", False):
+                if user_id not in self._unmonitorable_warned:
+                    logger.warning(
+                        f"[monitor] {user_id} is on a live engine with no discoverable "
+                        f"positions — live positions are NOT yet monitored"
+                    )
+                    self._unmonitorable_warned.add(user_id)
+                continue
+            for pos in positions:
                 symbol = str(pos.get("symbol", "")).upper()
                 if not symbol:
                     continue

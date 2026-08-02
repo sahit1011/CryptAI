@@ -201,6 +201,40 @@ async def test_worker_skips_when_there_is_no_live_price(session):
 
 
 @pytest.mark.asyncio
+async def test_state_resets_when_a_new_position_reuses_the_symbol(session):
+    """The bleed regression: a monitor keyed by (user, symbol) carried the closed
+    position's profit peak into a fresh position on the same symbol, exiting it on its
+    first tick. Reproduces the exact sequence: run to a peak, close, reopen, check."""
+    await _book(session)
+    worker = PositionMonitorWorker(session, "BTCUSDT", now_fn=lambda: NOW)
+    first_id = session.engine.positions["BTCUSDT"].position_id
+    session.portfolio.positions[first_id].opened_at = NOW
+
+    # Position A runs to a ~+2% peak.
+    session.engine.current_prices["BTCUSDT"] = 64000.0 * 1.02
+    session.engine.positions["BTCUSDT"].current_price = 64000.0 * 1.02
+    assert await worker.check_once() == "hold"
+    assert worker.state.peak_fav > 0.015
+
+    # A closes; a brand-new B opens on the same symbol, healthy at ~+0.1%.
+    qty = session.engine.positions["BTCUSDT"].quantity
+    await session.engine.close_position("BTCUSDT", OrderSide.SELL, qty)
+    await session.engine.check_limit_orders("BTCUSDT", 64000.0)
+    await session.evaluate_and_book(SETUP)
+    second_id = session.engine.positions["BTCUSDT"].position_id
+    assert second_id != first_id
+    session.portfolio.positions[second_id].opened_at = NOW
+    session.engine.current_prices["BTCUSDT"] = 64000.0 * 1.001
+    session.engine.positions["BTCUSDT"].current_price = 64000.0 * 1.001
+
+    # The monitor's first observation of B must HOLD — the old peak was reset, not
+    # carried, so profit_protect does not fire on a fresh healthy position.
+    assert await worker.check_once() == "hold"
+    assert len(session.engine.get_positions()) == 1
+    assert worker.state.peak_fav < 0.01  # B's own small peak, not A's
+
+
+@pytest.mark.asyncio
 async def test_worker_exits_short_positions_with_a_buy(session):
     short = {**SETUP, "direction": "SHORT", "entry_price": 64000.0,
              "stop_loss": 66000.0, "take_profit_levels": [{"price": 60000.0, "size": 1.0}]}
@@ -247,6 +281,36 @@ async def test_supervisor_reaps_a_monitor_once_its_position_closes():
 
     assert await sup.discover_once() == 0
     assert sup.monitors == {}
+    await sup.stop()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_handles_a_live_engine_with_no_discoverable_positions():
+    """LiveExecutionEngine.get_positions() is still a stub returning []. A live-mode
+    tenant must not spawn a monitor and must not crash the pass — and the gap is warned
+    once, not every discovery tick."""
+    from types import SimpleNamespace
+
+    class _LiveEngine:
+        def get_positions(self):
+            return []
+
+    live_session = SimpleNamespace(
+        user_id="live-user", engine=_LiveEngine(), portfolio=None, is_live=True
+    )
+
+    class _Reg:
+        def active_user_ids(self):
+            return ["live-user"]
+
+        def session(self, uid):
+            return live_session
+
+    sup = MonitorSupervisor(_Reg())
+    assert await sup.discover_once() == 0
+    assert sup.monitors == {}
+    assert "live-user" in sup._unmonitorable_warned  # gap made visible
+    assert await sup.discover_once() == 0  # idempotent, no re-warn/crash
     await sup.stop()
 
 
