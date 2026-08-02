@@ -410,3 +410,36 @@ export async function approveProposal(): Promise<ApproveResult> {
 export async function rejectProposal(): Promise<TradingSession> {
     return sessionFetch("/api/session/reject", { method: "POST" });
 }
+
+// ---------------------------------------------------------------------------
+// Position monitors (M4) — the unmetered per-position watchers.
+// ---------------------------------------------------------------------------
+
+export interface MonitorStatus {
+    symbol: string;
+    position_id: string | null;
+    decision: "hold" | "exit";
+    reason: string | null;
+    checks: number;
+    favorable_pct: number;
+    peak_favorable_pct: number;
+    adverse_streak: number;
+    updated_at: string;
+}
+
+export interface MonitorEntry {
+    symbol: string;
+    monitored: boolean;
+    status: MonitorStatus | null;
+}
+
+/** Live monitor status for each of the caller's open positions. A symbol with no fresh
+ * status reads monitored:false — honest when the monitor is down or undeployed. */
+export async function getMonitors(): Promise<{ monitors: MonitorEntry[] }> {
+    const res = await fetch(`${API_URL}/api/monitors`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}

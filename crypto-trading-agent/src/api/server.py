@@ -1728,6 +1728,30 @@ async def get_user_positions(user_id: str = Depends(require_user)):
     return {"positions": positions, "source": "state"}
 
 
+@app.get("/api/monitors")
+async def get_user_monitors(user_id: str = Depends(require_user)):
+    """Live monitor status for each of the caller's open positions.
+
+    Joins their open symbols with the per-position status the monitor publishes
+    (`monitor:{user_id}:{symbol}`). A symbol with no fresh status reads as
+    `monitored: false` — honest when the monitor is down or the engine is undeployed,
+    rather than implying protection that isn't running.
+    """
+    if state_manager is None:
+        raise HTTPException(status_code=503, detail="State manager unavailable")
+    from src.core.monitor_worker import monitor_status_key
+
+    positions = await state_manager.get_positions(user_id=user_id)
+    symbols = {str(p.get("symbol", "")).upper() for p in positions if p.get("symbol")}
+    monitors = []
+    for symbol in sorted(symbols):
+        status = await state_manager.get(monitor_status_key(user_id, symbol))
+        monitors.append(
+            {"symbol": symbol, "monitored": status is not None, "status": status}
+        )
+    return {"monitors": monitors}
+
+
 class ClosePositionBody(BaseModel):
     symbol: str = Field(..., min_length=3, max_length=20)
     position_id: Optional[str] = Field(default=None, max_length=80)

@@ -11,16 +11,19 @@ import pytest
 
 from src.core.monitor_worker import (
     EXIT,
+    EXIT_STATUS_TTL_SECONDS,
     HOLD,
     REASON_CONDITIONS,
     REASON_PROFIT_PROTECT,
     REASON_TIME_STOP,
+    STATUS_TTL_SECONDS,
     MonitorConfig,
     MonitorState,
     MonitorSupervisor,
     PositionMonitorWorker,
     evaluate_position,
     favorable_return,
+    monitor_status_key,
 )
 from src.core.multi_user import UserRegistry, UserRiskConfig, UserSession
 from src.execution.paper_trading_engine import OrderSide
@@ -244,6 +247,76 @@ async def test_worker_exits_short_positions_with_a_buy(session):
     worker = PositionMonitorWorker(session, "BTCUSDT", now_fn=lambda: NOW + timedelta(minutes=40))
     assert await worker.check_once() == "exit"
     assert session.engine.get_positions() == []
+
+
+# --- status publishing -------------------------------------------------------
+
+class _FakeState:
+    """Records set() calls the way StateManager stores them (key without the state: prefix)."""
+
+    def __init__(self):
+        self.store: dict = {}
+        self.writes: list = []
+
+    async def set(self, key, value, ttl=None):
+        self.store[key] = value
+        self.writes.append((key, value, ttl))
+
+    async def get(self, key):
+        return self.store.get(key)
+
+
+@pytest.mark.asyncio
+async def test_worker_publishes_a_hold_status(session):
+    await _book(session)
+    pos_id = list(session.portfolio.positions)[0]
+    session.portfolio.positions[pos_id].opened_at = NOW
+    state = _FakeState()
+    worker = PositionMonitorWorker(session, "BTCUSDT", now_fn=lambda: NOW, state_manager=state)
+
+    assert await worker.check_once() == "hold"
+    key = monitor_status_key("user-mon", "BTCUSDT")
+    status = state.store[key]
+    assert status["decision"] == "hold"
+    assert status["reason"] is None
+    assert status["symbol"] == "BTCUSDT"
+    assert status["checks"] == 1
+    # A live hold status carries the short TTL so a dead worker goes stale, not stuck-on.
+    assert state.writes[-1][2] == STATUS_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_worker_publishes_an_exit_status_with_reason_and_longer_ttl(session):
+    await _book(session)
+    pos_id = list(session.portfolio.positions)[0]
+    session.portfolio.positions[pos_id].opened_at = NOW
+    state = _FakeState()
+    worker = PositionMonitorWorker(
+        session, "BTCUSDT", now_fn=lambda: NOW + timedelta(minutes=40), state_manager=state
+    )
+
+    assert await worker.check_once() == "exit"
+    status = state.store[monitor_status_key("user-mon", "BTCUSDT")]
+    assert status["decision"] == "exit"
+    assert status["reason"] == REASON_TIME_STOP
+    # Exit status lingers past the position it closed so the UI can show why.
+    assert state.writes[-1][2] == EXIT_STATUS_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_publishing_is_best_effort(session):
+    """A status-write failure must never affect the monitoring decision."""
+    class _BrokenState:
+        async def set(self, *a, **k):
+            raise RuntimeError("redis down")
+
+    await _book(session)
+    pos_id = list(session.portfolio.positions)[0]
+    session.portfolio.positions[pos_id].opened_at = NOW
+    worker = PositionMonitorWorker(
+        session, "BTCUSDT", now_fn=lambda: NOW, state_manager=_BrokenState()
+    )
+    assert await worker.check_once() == "hold"  # decision still made, no raise
 
 
 # --- the supervisor ----------------------------------------------------------

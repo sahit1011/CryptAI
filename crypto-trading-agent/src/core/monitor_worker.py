@@ -169,6 +169,19 @@ CHECK_EXITED = "exit"
 CHECK_CLOSED = "closed"     # position already gone (SL/TP filled, or a prior exit)
 CHECK_SKIPPED = "skipped"   # no live price yet — cannot evaluate this tick
 
+#: A live status key expires this long after the last check — so a dead worker's status
+#: goes stale rather than lying that a position is still watched.
+STATUS_TTL_SECONDS = 90
+#: An exit status lingers longer than the position it closed, so the UI can show WHY it
+#: just closed for a while after the position vanishes.
+EXIT_STATUS_TTL_SECONDS = 300
+
+
+def monitor_status_key(user_id: str, symbol: str) -> str:
+    """Redis (per-user, namespaced) key holding one position's live monitor status.
+    The API reads this back to show 'actively monitored' and the last decision."""
+    return f"monitor:{user_id}:{str(symbol).upper()}"
+
 
 @dataclass
 class _Snapshot:
@@ -193,6 +206,7 @@ class PositionMonitorWorker:
         config: Optional[MonitorConfig] = None,
         poll_seconds: int = DEFAULT_POLL_SECONDS,
         now_fn=None,
+        state_manager=None,
     ):
         self.session = session
         self.symbol = str(symbol).upper()
@@ -200,6 +214,9 @@ class PositionMonitorWorker:
         self.config = config or MonitorConfig()
         self.poll_seconds = poll_seconds
         self._now = now_fn or datetime.now
+        #: Optional Redis handle for publishing status the API can read. Best-effort:
+        #: a publish failure never affects the monitoring decision.
+        self.state_manager = state_manager or getattr(session, "state_manager", None)
         self.state = MonitorState()
         #: The position_id the current state belongs to. A monitor is keyed by
         #: (user, symbol), but state (the profit peak, the adverse streak) belongs to a
@@ -275,7 +292,9 @@ class PositionMonitorWorker:
 
         # A different position now occupies this symbol (a close+reopen we never saw
         # go empty): start its accounting fresh, or the previous position's profit peak
-        # would exit it immediately.
+        # would exit it immediately. This assumes position dicts carry a STABLE, UNIQUE
+        # id — true for the paper engine (POS_{order_id}); when live-position discovery
+        # is wired, that path must guarantee the same or two null-id positions collapse.
         if snap.position_id != self._position_id:
             if self._position_id is not None:
                 logger.info(
@@ -287,6 +306,7 @@ class PositionMonitorWorker:
 
         self.checks += 1
         pulse = await self._pulse()
+        fav = favorable_return(snap.direction, snap.entry_price, snap.current_price)
         decision, self.state = evaluate_position(
             direction=snap.direction,
             entry_price=snap.entry_price,
@@ -298,10 +318,34 @@ class PositionMonitorWorker:
             state=self.state,
             config=self.config,
         )
+        await self._publish_status(snap, decision, fav)
         if decision.action == EXIT:
             await self._exit(snap, decision.reason)
             return CHECK_EXITED
         return CHECK_HELD
+
+    async def _publish_status(self, snap: _Snapshot, decision: MonitorDecision, fav: float) -> None:
+        """Write this position's live monitor status for the API to read. Best-effort."""
+        if self.state_manager is None:
+            return
+        status = {
+            "symbol": snap.symbol,
+            "position_id": snap.position_id,
+            "decision": decision.action,
+            "reason": decision.reason or None,
+            "checks": self.checks,
+            "favorable_pct": round(fav * 100, 3),
+            "peak_favorable_pct": round(self.state.peak_fav * 100, 3),
+            "adverse_streak": self.state.adverse_streak,
+            "updated_at": self._now().isoformat(),
+        }
+        ttl = EXIT_STATUS_TTL_SECONDS if decision.action == EXIT else STATUS_TTL_SECONDS
+        try:
+            await self.state_manager.set(
+                monitor_status_key(self.session.user_id, self.symbol), status, ttl=ttl
+            )
+        except Exception as e:
+            logger.debug(f"[monitor] status publish failed for {self.symbol}: {e}")
 
     async def _exit(self, snap: _Snapshot, reason: str) -> None:
         """Reduce-only market close of the whole position. The engine's own close hook
@@ -373,12 +417,14 @@ class MonitorSupervisor:
         config: Optional[MonitorConfig] = None,
         poll_seconds: int = DEFAULT_POLL_SECONDS,
         discovery_seconds: int = DEFAULT_DISCOVERY_SECONDS,
+        state_manager=None,
     ):
         self.registry = registry
         self.pulse_client = pulse_client
         self.config = config or MonitorConfig()
         self.poll_seconds = poll_seconds
         self.discovery_seconds = discovery_seconds
+        self.state_manager = state_manager
         self.monitors: Dict[str, asyncio.Task] = {}
         self._shutdown = asyncio.Event()
         #: Tenants we've already warned about having no usable get_positions, so the
@@ -438,6 +484,7 @@ class MonitorSupervisor:
                     pulse_client=self.pulse_client,
                     config=self.config,
                     poll_seconds=self.poll_seconds,
+                    state_manager=self.state_manager,
                 )
                 self.monitors[key] = asyncio.get_running_loop().create_task(
                     worker.run(self._shutdown)

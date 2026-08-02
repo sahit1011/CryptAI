@@ -378,7 +378,9 @@ class MultiUserTradingDaemon:
         if self.registry is not None:
             from src.core.monitor_worker import MonitorSupervisor
             self.monitor_supervisor = MonitorSupervisor(
-                self.registry, pulse_client=self.pulse_client
+                self.registry,
+                pulse_client=self.pulse_client,
+                state_manager=self.state_manager,
             )
             self._monitor_task = asyncio.create_task(self.monitor_supervisor.run())
             plog.info("  └─ ✅ Position monitors online (unmetered)", agent="daemon")
