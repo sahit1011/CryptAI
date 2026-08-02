@@ -54,10 +54,21 @@ class MessageBus:
         self.running = False
 
     async def connect(self):
-        """Connect to Redis"""
+        """Connect to Redis, and verify the connection actually works.
+
+        `redis.from_url()` is LAZY — it builds a client without opening a socket, so it
+        succeeds against a Redis that is not running. This method used to report
+        "connected" on that basis alone, which meant callers could not distinguish a
+        reachable Redis from a dead one: the failure surfaced later and elsewhere, at
+        the first real command. The explicit ping makes "connected" mean connected.
+
+        Callers that must survive a Redis outage should catch this rather than rely on
+        it silently succeeding (the API's startup_event already degrades correctly).
+        """
         plog.method_entry("connect", agent="message_bus", phase="setup")
         try:
             self.redis_client = redis.from_url(self.redis_url)
+            await self.redis_client.ping()
             self.pubsub = self.redis_client.pubsub()
             plog.success(
                 "Message bus connected to Redis",

@@ -263,6 +263,238 @@ class SystemLog(Base):
         Index('idx_timestamp_level', 'timestamp', 'level'),
     )
 
+
+# ---------------------------------------------------------------------------
+# Session / preference / proposal layer  (see docs/MULTI_TENANCY.md)
+#
+# These five tables implement the tenancy split decided 2026-08-02:
+#   user_preferences · sessions · session_events · proposals   -> PER-USER plane
+#   pulse_snapshots                                            -> SHARED plane
+#
+# pulse_snapshots deliberately has NO user_id. That asymmetry is the tenancy
+# boundary made visible in the schema: if a query against it filters by user,
+# something has gone wrong architecturally.
+#
+# MONEY PRECISION DEBT: these tables use Float for prices and amounts to match
+# the existing `trades` / `trade_executions` columns they join against. The
+# workspace rule is integer minor units. Mixing Numeric here with Float there
+# would create conversion bugs at the boundary, so the correct fix is one
+# wholesale migration across ALL money columns, not a piecemeal start. Tracked,
+# not forgotten. `currency` columns are added now since INR settlement on the
+# Indian venues is additive and needed regardless.
+# ---------------------------------------------------------------------------
+
+class UserPreferences(Base):
+    """A user's trading persona — what their agent team optimises for.
+
+    Distinct from ``UserSettings``, which holds operational flags (mode, exchange,
+    onboarded) read by the daemon every cycle. Preferences are the richer, faster-
+    evolving set read once per SESSION to parameterise synthesis, sizing, and ranking.
+    Keeping them apart means preference migrations never touch the hot settings table.
+    Relationship is 1:1 with a user; absence means "use documented defaults".
+    """
+    __tablename__ = 'user_preferences'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, index=True, unique=True)  # Supabase UUID
+
+    # Capital & risk appetite
+    trading_capital = Column(Float, nullable=False, default=10000.0)
+    capital_currency = Column(String(8), nullable=False, default='USDT')
+    risk_appetite = Column(String(20), nullable=False, default='moderate')  # conservative/moderate/aggressive
+    max_risk_per_trade_pct = Column(Float, nullable=False, default=1.0)     # percent of capital
+    max_concurrent_positions = Column(Integer, nullable=False, default=1)
+    max_daily_trades = Column(Integer, nullable=False, default=3)
+    max_leverage = Column(Float, nullable=False, default=3.0)
+
+    # Goals — these drive the Ranker, not the risk engine. The risk engine may only
+    # ever SHRINK exposure; a stretch PnL target must never widen a limit above.
+    monthly_pnl_target_pct = Column(Float)
+    goal_horizon = Column(String(20), default='swing')      # scalp/intraday/swing/position
+    goal_notes = Column(String(500))                        # free text, fed to the Ranker
+
+    # Universe & strategy scope
+    symbol_universe = Column(JSON)          # ["BTCUSDT", ...]; null => platform default
+    allowed_strategies = Column(JSON)       # ["smc_ob", "fvg_fill", ...]; null => all
+    min_risk_reward = Column(Float, nullable=False, default=1.5)
+    min_confidence = Column(Float, nullable=False, default=0.6)
+    avoid_high_funding = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Session(Base):
+    """A metered analysis session — the unit the free-tier 30 min/day is spent from.
+
+    DURABLE CLOCK: never store a countdown. Elapsed time is always derived as
+    ``metered_seconds_accrued + (now - clock_started_at if clock_started_at else 0)``.
+    ``clock_started_at`` is set while SCANNING and NULLED whenever the clock pauses, so a
+    process restart mid-session loses at most the in-flight segment rather than the whole
+    session, and can never silently grant unlimited time.
+
+    The clock PAUSES at ``setup_proposed`` (decided 2026-08-02): a user is not charged for
+    deliberating. It resumes only if they reject and ask for more scanning.
+
+    MONITORING IS NEVER METERED. A session may end with quota exhausted while positions
+    stay open and monitored — that is a money-safety property, not a billing loophole.
+    """
+    __tablename__ = 'sessions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(50), unique=True, nullable=False, index=True)
+    user_id = Column(String(64), nullable=False, index=True)
+
+    # State machine: idle | scanning | setup_proposed | awaiting_approval |
+    #                executing | ended
+    status = Column(String(24), nullable=False, default='scanning', index=True)
+
+    # Durable metered clock
+    quota_seconds_granted = Column(Integer, nullable=False, default=1800)  # free tier: 30 min
+    metered_seconds_accrued = Column(Integer, nullable=False, default=0)
+    clock_started_at = Column(DateTime)          # non-null ONLY while actively metering
+
+    # Cost safety net — the minute quota is the product, this is the hard ceiling.
+    llm_tokens_used = Column(Integer, nullable=False, default=0)
+    llm_cost_micros = Column(Integer, nullable=False, default=0)   # micro-USD, integer
+    llm_cost_cap_micros = Column(Integer, nullable=False, default=500_000)  # $0.50/session
+
+    # Daily quota rollup. UTC date so the reset boundary is unambiguous; the UI renders
+    # it in the user's local timezone.
+    trading_day = Column(DateTime, nullable=False, index=True)
+
+    cycles_completed = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ended_at = Column(DateTime)
+    end_reason = Column(String(40))   # quota_exhausted | user_ended | cost_cap | error | trade_opened
+
+    __table_args__ = (
+        Index('idx_session_user_day', 'user_id', 'trading_day'),
+        Index('idx_session_user_status', 'user_id', 'status'),
+    )
+
+
+class SessionEvent(Base):
+    """Append-only audit trail of session state transitions and agent activity.
+
+    Doubles as the user-facing "agent feed" and as the forensic record for any dispute
+    about why a trade was proposed or placed. Append-only: never UPDATE or DELETE a row.
+    """
+    __tablename__ = 'session_events'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(50), nullable=False, index=True)
+    user_id = Column(String(64), nullable=False, index=True)
+
+    event_type = Column(String(40), nullable=False)   # state_change | agent_step | proposal | error
+    from_status = Column(String(24))
+    to_status = Column(String(24))
+    agent = Column(String(40))                        # which agent emitted this
+    message = Column(String(1000))
+    payload = Column(JSON)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index('idx_session_event_session_time', 'session_id', 'created_at'),
+    )
+
+
+class Proposal(Base):
+    """A trade setup surfaced to ONE user, with an explicit shelf life.
+
+    Crypto moves: a setup proposed at price X is not the same trade at X±0.5%. Every
+    proposal therefore carries ``expires_at`` AND ``invalidation_price``, and MUST be
+    re-validated at approval time (re-check price, spread, and risk limits before the
+    order is sent). Approving a stale proposal must refuse or re-size — never blind-fill.
+
+    ``pulse_ts`` records which shared-plane pulse this was synthesised from, so any
+    proposal can be traced back to the exact market facts that produced it.
+    """
+    __tablename__ = 'proposals'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proposal_id = Column(String(50), unique=True, nullable=False, index=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    session_id = Column(String(50), nullable=False, index=True)
+
+    symbol = Column(String(20), nullable=False)
+    direction = Column(String(10), nullable=False)          # LONG/SHORT
+    entry_price = Column(Float, nullable=False)
+    stop_loss = Column(Float, nullable=False)
+    take_profit_levels = Column(JSON)                       # [{"price": .., "size": ..}]
+
+    position_size = Column(Float)
+    risk_amount = Column(Float)
+    risk_currency = Column(String(8), nullable=False, default='USDT')
+    risk_reward_ratio = Column(Float)
+    leverage = Column(Float)
+
+    # Why this trade, for this user
+    confidence_score = Column(Float)
+    thesis = Column(String(4000))                           # LLM narrative w/ invalidation
+    strategy_type = Column(String(30))
+
+    # Traceability back to the shared plane
+    pulse_ts = Column(DateTime)
+    market_regime = Column(String(30))
+    tradability_score = Column(Integer)
+
+    # Shelf life
+    status = Column(String(20), nullable=False, default='proposed', index=True)
+    # proposed | approved | rejected | expired | invalidated | executed | failed
+    expires_at = Column(DateTime, nullable=False, index=True)
+    invalidation_price = Column(Float)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    decided_at = Column(DateTime)
+    trade_id = Column(String(50), index=True)               # set once executed
+
+    __table_args__ = (
+        Index('idx_proposal_user_status', 'user_id', 'status'),
+    )
+
+
+class PulseSnapshot(Base):
+    """SHARED-PLANE calibration log — every tradability score the signal engine emits.
+
+    NO user_id BY DESIGN. This is market truth, identical for every tenant.
+
+    Purpose is falsifiability. Forward-return columns are backfilled by the calibration
+    job so we can answer the only question that matters about a confidence score: do
+    high-score windows actually produce better risk-adjusted forward returns than low-score
+    ones? If they do not, the score is decoration and the weights must change. A scorer
+    shipped without this table is a scorer nobody can check.
+    """
+    __tablename__ = 'pulse_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    pulse_ts = Column(DateTime, nullable=False, index=True)
+    schema_version = Column(Integer, nullable=False, default=1)
+
+    regime = Column(String(30), nullable=False)
+    tradability = Column(Integer, nullable=False, index=True)
+    vetoes = Column(JSON)          # [] when clean; non-empty forces tradability 0
+    factors = Column(JSON)         # {trend_alignment: .., volatility_band: .., ...}
+    context = Column(JSON)         # {atr_pct: .., funding_rate: .., spread_bps: .., ...}
+
+    reference_price = Column(Float, nullable=False)   # price at pulse_ts, for fwd returns
+
+    # Backfilled by the calibration job — null until the window has elapsed.
+    fwd_return_15m = Column(Float)
+    fwd_return_1h = Column(Float)
+    fwd_return_4h = Column(Float)
+    max_favorable_1h = Column(Float)    # MFE, for R-multiple realism
+    max_adverse_1h = Column(Float)      # MAE, ditto
+    evaluated_at = Column(DateTime)
+
+    __table_args__ = (
+        Index('idx_pulse_symbol_ts', 'symbol', 'pulse_ts'),
+        Index('idx_pulse_score_ts', 'tradability', 'pulse_ts'),
+    )
+
+
 # Pydantic models for API/validation
 class TradeSetup(BaseModel):
     """Trade setup schema"""

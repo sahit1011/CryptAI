@@ -28,7 +28,11 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: starter
-    healthCheckPath: /health
+    # Liveness, deliberately — this probe decides whether Render restarts the pod, and a
+    # dead Redis must not trigger a restart loop (the API degrades rather than crashing).
+    # /health/live never checks dependencies. /health reports honest degraded status for
+    # humans; /health/ready 503s for load balancers. Do not point this at either of those.
+    healthCheckPath: /health/live
     autoDeploy: true
     envVars:
       - key: REDIS_URL

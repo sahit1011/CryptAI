@@ -379,6 +379,12 @@ trade_history_manager = None
 credential_vault = None
 # Per-user trading settings (mode + active exchange), created once at startup.
 user_settings_store = None
+# Metered analysis sessions and per-user trading persona (M2 control plane).
+session_manager = None
+preferences_store = None
+# Handle for the session clock loop, so shutdown can cancel it rather than leaking a
+# task that keeps ticking against a closing event loop.
+_session_tick_task = None
 
 
 # --- Market-channel subscribe protocol -----------------------------------------
@@ -592,6 +598,33 @@ async def startup_event():
         except Exception as e:
             logger.error(f"Failed to initialize UserSettingsStore: {e}")
 
+        # M2 control plane: metered sessions + per-user trading persona. Each is
+        # initialised independently so one failing store does not take out the other.
+        global session_manager, preferences_store
+        try:
+            from src.core.session_manager import SessionManager
+            session_manager = await asyncio.to_thread(
+                SessionManager, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize SessionManager: {e}")
+        try:
+            from src.core.preferences import PreferencesStore
+            preferences_store = await asyncio.to_thread(
+                PreferencesStore, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize PreferencesStore: {e}")
+
+        # The session clock. Started even if SessionManager failed above — the loop
+        # no-ops until the manager exists, and a later hot-fix does not need a restart.
+        global _session_tick_task
+        if _session_tick_task is None:
+            _session_tick_task = asyncio.get_running_loop().create_task(
+                _session_tick_loop()
+            )
+            logger.info(f"session clock started ({SESSION_TICK_SECONDS}s)")
+
         
         # Subscribe to all relevant agent channels
         channels = [
@@ -649,6 +682,14 @@ embedded_daemon = None
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down...")
+    global _session_tick_task
+    if _session_tick_task is not None:
+        _session_tick_task.cancel()
+        try:
+            await _session_tick_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _session_tick_task = None
     if embedded_daemon is not None:
         try:
             await embedded_daemon.stop()
@@ -1017,6 +1058,274 @@ async def set_settings(body: SettingsBody, user_id: str = Depends(require_user))
             body.onboarded,
         )
     except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- Server-authoritative session clock ----------------------------------------
+
+#: How often the server pushes the true remaining time and enforces the meters.
+SESSION_TICK_SECONDS = 5
+
+
+async def _session_tick_loop():
+    """Push authoritative session state to connected clients, and enforce the meters.
+
+    Two jobs, and the second is the important one.
+
+    The countdown a user sees must come from the server. A browser timer drifts, and a
+    background tab gets throttled or frozen entirely — so a client-side clock will
+    eventually disagree with the billing record, and the user will believe whichever one
+    is more generous.
+
+    More importantly, WITHOUT THIS NOTHING ENDS A SESSION. Both meters are enforced in
+    `tick()`, which until now only ran when a request came in. A user who starts a
+    session and shuts their laptop would leave it metering forever, and their whole
+    daily quota would silently drain. This loop is what makes the quota real.
+
+    Only users with an open socket are ticked, which is the cheap common case. A session
+    whose owner disconnects is caught on their next request or their next connect;
+    `used_today` is derived from stored timestamps, so no time is lost either way.
+    """
+    while True:
+        try:
+            await asyncio.sleep(SESSION_TICK_SECONDS)
+            await _session_tick_once()
+        except asyncio.CancelledError:
+            logger.info("session tick loop stopped")
+            return
+        except Exception as e:
+            # Never let the loop die: it is the only thing enforcing the quota.
+            logger.error(f"session tick loop error: {e}")
+
+
+async def _session_tick_once():
+    """One pass: enforce the meters for every connected tenant and push their state.
+
+    Split from the loop so it can be tested directly. Testing through the loop means
+    racing its sleep against task cancellation, which is both flaky and tests the timer
+    rather than the behaviour.
+    """
+    if session_manager is None:
+        return
+
+    user_ids = {uid for uid in manager.connections.values() if uid}
+    for user_id in user_ids:
+        try:
+            active = await asyncio.to_thread(session_manager.get_active, user_id)
+            if active is None:
+                continue
+            # tick() enforces both meters and may end the session.
+            state = await asyncio.to_thread(session_manager.tick, active["session_id"])
+            remaining_today = await asyncio.to_thread(
+                session_manager.remaining_today, user_id
+            )
+            await manager.broadcast({
+                "type": "session_tick",
+                "user_id": user_id,
+                "data": {
+                    "user_id": user_id,
+                    **state,
+                    "remaining_today_seconds": remaining_today,
+                },
+            })
+        except Exception as e:
+            # One tenant's failure must not stop enforcement for everyone else.
+            logger.warning(f"session tick failed for {user_id}: {e}")
+
+
+# --- Metered analysis sessions (M2 control plane) ------------------------------
+#
+# Every handler here resolves the session THROUGH the caller's user_id rather than
+# trusting a session_id from the request body. The backend connects as a privileged role
+# that bypasses RLS, so application-layer scoping is the only guard against one user
+# ending, approving, or reading another's session by guessing an id.
+
+class SessionStartBody(BaseModel):
+    # Lets a caller request less than their full remaining quota (e.g. a 10-minute
+    # session). Never more: the manager clamps to what is actually left today.
+    quota_seconds: Optional[int] = Field(default=None, ge=60, le=24 * 3600)
+
+
+def _require_sessions():
+    if session_manager is None:
+        raise HTTPException(status_code=503, detail="Session manager is not configured")
+    return session_manager
+
+
+async def _owned_session(user_id: str) -> Dict[str, Any]:
+    """The caller's own active session, or 404. Never takes an id from the client."""
+    mgr = _require_sessions()
+    active = await asyncio.to_thread(mgr.get_active, user_id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="No active session")
+    return active
+
+
+@app.get("/api/session")
+async def get_session(user_id: str = Depends(require_user)):
+    """The caller's active session plus today's remaining quota.
+
+    Returns `session: null` rather than 404 when idle — "you have no session" is a normal
+    state the dashboard renders, not an error.
+    """
+    mgr = _require_sessions()
+    active = await asyncio.to_thread(mgr.get_active, user_id)
+    remaining = await asyncio.to_thread(mgr.remaining_today, user_id)
+    used = await asyncio.to_thread(mgr.used_today, user_id)
+    return {
+        "session": active,
+        "daily_quota_seconds": mgr.daily_quota_seconds,
+        "used_today_seconds": used,
+        "remaining_today_seconds": remaining,
+    }
+
+
+@app.post("/api/session/start")
+async def start_session(
+    body: SessionStartBody = SessionStartBody(),
+    user_id: str = Depends(require_user),
+):
+    """Begin a metered session. 429 when the daily quota is spent."""
+    from src.core.session_manager import QuotaExhausted, SessionError
+
+    mgr = _require_sessions()
+    try:
+        return await asyncio.to_thread(mgr.start, user_id, body.quota_seconds)
+    except QuotaExhausted as e:
+        # 429 rather than 403: this is a rate limit that resets, not a permission
+        # problem the user can do anything about.
+        raise HTTPException(status_code=429, detail=str(e))
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/session/end")
+async def end_session(user_id: str = Depends(require_user)):
+    """End the caller's session early. Any open position keeps being monitored."""
+    from src.core.session_manager import USER_ENDED, SessionError
+
+    mgr = _require_sessions()
+    active = await _owned_session(user_id)
+    try:
+        return await asyncio.to_thread(mgr.end, active["session_id"], USER_ENDED, "ended by user")
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/session/approve")
+async def approve_proposal(user_id: str = Depends(require_user)):
+    """Manual mode: accept the pending proposal and move to execution.
+
+    Re-validation of price, spread, and risk limits happens in the execution path, not
+    here — a proposal approved minutes later is not the same trade, and this endpoint
+    must not be the thing that decides it still is.
+    """
+    from src.core.session_manager import IllegalTransition
+
+    mgr = _require_sessions()
+    active = await _owned_session(user_id)
+    try:
+        return await asyncio.to_thread(mgr.approve, active["session_id"])
+    except IllegalTransition as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/session/reject")
+async def reject_proposal(user_id: str = Depends(require_user)):
+    """Decline the pending proposal and resume scanning. Restarts the meter."""
+    from src.core.session_manager import IllegalTransition
+
+    mgr = _require_sessions()
+    active = await _owned_session(user_id)
+    try:
+        return await asyncio.to_thread(mgr.reject, active["session_id"])
+    except IllegalTransition as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/session/events")
+async def get_session_events(limit: int = 200, user_id: str = Depends(require_user)):
+    """The caller's live agent feed for their active session."""
+    mgr = _require_sessions()
+    active = await _owned_session(user_id)
+    events = await asyncio.to_thread(
+        mgr.events, active["session_id"], max(1, min(limit, 500))
+    )
+    return {"session_id": active["session_id"], "events": events}
+
+
+# --- Per-user trading preferences ---------------------------------------------
+
+class PreferencesBody(BaseModel):
+    """Partial update. Every field optional; only what is sent is changed.
+
+    Bounds here are input sanity only — the real ceiling is applied by the store, which
+    clamps against the caller's plan and an absolute hard cap. Preferences may only ever
+    tighten risk, never widen it.
+    """
+    model_config = {"extra": "forbid"}  # reject typos loudly rather than dropping them
+
+    trading_capital: Optional[float] = Field(default=None, gt=0)
+    capital_currency: Optional[str] = Field(default=None, max_length=8)
+    risk_appetite: Optional[str] = None
+    max_risk_per_trade_pct: Optional[float] = Field(default=None, gt=0)
+    max_concurrent_positions: Optional[int] = Field(default=None, ge=1)
+    max_daily_trades: Optional[int] = Field(default=None, ge=1)
+    max_leverage: Optional[float] = Field(default=None, gt=0)
+    monthly_pnl_target_pct: Optional[float] = Field(default=None, gt=0)
+    goal_horizon: Optional[str] = None
+    goal_notes: Optional[str] = Field(default=None, max_length=500)
+    symbol_universe: Optional[List[str]] = Field(default=None, max_length=50)
+    allowed_strategies: Optional[List[str]] = Field(default=None, max_length=50)
+    min_risk_reward: Optional[float] = Field(default=None, ge=1.0)
+    min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    avoid_high_funding: Optional[bool] = None
+
+
+def _plan_caps_for(user_id: str) -> Dict[str, float]:
+    """Risk ceilings from the caller's subscription tier."""
+    try:
+        from src.billing.plans import plan_for_user
+        plan = plan_for_user(user_id)
+        return {
+            "max_risk_per_trade_pct": plan.max_risk_per_trade * 100.0,
+            "max_concurrent_positions": float(plan.max_concurrent_positions),
+            "max_daily_trades": float(plan.max_daily_trades),
+        }
+    except Exception as e:
+        # Fail CLOSED: an unresolvable plan must not mean "no ceiling".
+        logger.warning(f"could not resolve plan caps for {user_id}: {e}; using free tier")
+        return {
+            "max_risk_per_trade_pct": 1.0,
+            "max_concurrent_positions": 1.0,
+            "max_daily_trades": 3.0,
+        }
+
+
+@app.get("/api/preferences")
+async def get_preferences(user_id: str = Depends(require_user)):
+    """The caller's trading persona, with conservative defaults when unset."""
+    if preferences_store is None:
+        raise HTTPException(status_code=503, detail="Preferences store is not configured")
+    return await asyncio.to_thread(preferences_store.get, user_id)
+
+
+@app.post("/api/preferences")
+async def set_preferences(body: PreferencesBody, user_id: str = Depends(require_user)):
+    """Partial update. Risk fields are clamped to the caller's plan; see the store."""
+    from src.core.preferences import PreferencesError
+
+    if preferences_store is None:
+        raise HTTPException(status_code=503, detail="Preferences store is not configured")
+
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        return await asyncio.to_thread(preferences_store.get, user_id)
+    try:
+        return await asyncio.to_thread(
+            preferences_store.set, user_id, updates, _plan_caps_for(user_id)
+        )
+    except PreferencesError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -1467,10 +1776,27 @@ async def close_all_positions(_auth: None = Depends(require_auth)):
 
 @app.get("/health")
 async def health_check():
+    """Human/dashboard status. Always 200 — this is a report, not a gate.
+
+    `message_bus` must reflect whether Redis is actually REACHABLE, not merely whether
+    the object was constructed. `startup_event` catches the connection failure and
+    carries on, so `message_bus is not None` stays True against a dead Redis and this
+    endpoint used to report a broken instance as fully healthy.
+
+    Gates live elsewhere and are unchanged: /health/live for liveness (never checks
+    dependencies), /health/ready for readiness (503s when deps are down).
+    """
+    try:
+        bus_ok = bool(message_bus) and bool(
+            await asyncio.wait_for(message_bus.redis_client.ping(), timeout=2)
+        )
+    except Exception:
+        bus_ok = False
+
     return {
-        "status": "online",
+        "status": "online" if bus_ok else "degraded",
         "connections": len(manager.active_connections),
-        "message_bus": message_bus is not None
+        "message_bus": bus_ok,
     }
 
 
