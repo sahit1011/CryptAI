@@ -174,6 +174,33 @@ def test_a_new_session_is_granted_only_the_time_that_remains(mgr, clock):
     assert s2["quota_seconds_granted"] == 300
 
 
+def test_explicit_quota_request_is_clamped_to_the_daily_cap(mgr, clock):
+    """The quota-bypass regression: an explicit quota_seconds must never exceed what is
+    left today. Before the fix, start(quota_seconds=86400) granted a 24h session against
+    the 1800s daily quota."""
+    s = mgr.start(USER, quota_seconds=86_400)
+    assert s["quota_seconds_granted"] == 1800
+
+    # And the tick meter then honours the clamp: the session ends at the daily cap.
+    clock.advance(1800)
+    assert mgr.tick(s["session_id"])["status"] == ENDED
+
+
+def test_explicit_quota_request_is_clamped_to_remaining_after_prior_use(mgr, clock):
+    s1 = mgr.start(USER)
+    clock.advance(1500)
+    mgr.end(s1["session_id"])  # 300s left today
+
+    s2 = mgr.start(USER, quota_seconds=86_400)
+    assert s2["quota_seconds_granted"] == 300
+
+
+def test_explicit_quota_request_may_ask_for_less(mgr, clock):
+    """Clamping is one-directional — a short 10-minute session is still honoured."""
+    s = mgr.start(USER, quota_seconds=600)
+    assert s["quota_seconds_granted"] == 600
+
+
 def test_quota_resets_at_utc_midnight(mgr, clock):
     s = mgr.start(USER)
     clock.advance(1800)

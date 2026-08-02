@@ -201,7 +201,11 @@ class SessionManager:
             session_id=str(uuid.uuid4()),
             user_id=user_id,
             status=SCANNING,
-            quota_seconds_granted=quota_seconds or min(self.daily_quota_seconds, remaining),
+            # Grant at most what is left today. An explicit request may ask for less
+            # (a short session) but never more — clamping here is what makes the daily
+            # quota real; without it a caller could pass quota_seconds above the cap and
+            # run a single session far past the daily allowance.
+            quota_seconds_granted=min(quota_seconds, remaining) if quota_seconds else remaining,
             metered_seconds_accrued=0,
             clock_started_at=now,  # scanning meters immediately
             llm_cost_cap_micros=self.cost_cap_micros,
