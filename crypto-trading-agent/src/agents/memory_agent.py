@@ -203,7 +203,8 @@ class MemoryAgent(BaseAgent):
                 market_regime=payload.get('market_regime', ''),
                 atr_at_entry=float(atr_at_entry),
                 smc_patterns=payload.get('smc_patterns'),
-                ict_setups=payload.get('ict_setups')
+                ict_setups=payload.get('ict_setups'),
+                user_id=payload.get('user_id'),
             )
             
             # Store in vector memory for similarity search

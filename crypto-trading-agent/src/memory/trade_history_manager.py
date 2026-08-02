@@ -210,15 +210,23 @@ class TradeHistoryManager:
         market_regime: str = "",
         atr_at_entry: float = 0.0,
         smc_patterns: Optional[List[str]] = None,
-        ict_setups: Optional[List[str]] = None
+        ict_setups: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> TradeRecord:
-        """Store a new trade record"""
+        """Store a new trade record.
+
+        `user_id` attributes the row to its owning tenant. Without it the row is
+        invisible to the owner's scoped reads (/api/trades filters by user_id) and
+        pools into unscoped service reads — a tenancy attribution bug, not cosmetics.
+        None is allowed only for the single-bot path.
+        """
         
         session = self.SessionLocal()
         
         try:
             trade = TradeRecord(
                 trade_id=trade_id,
+                user_id=user_id,
                 symbol=symbol,
                 direction=direction,
                 strategy_type=strategy_type,
