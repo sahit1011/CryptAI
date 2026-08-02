@@ -157,6 +157,10 @@ def test_a_second_concurrent_session_is_409(wired):
 
 
 def test_approve_and_reject_require_a_pending_proposal(wired):
+    """Approve is refused without a live Proposal row — the old contract (blindly flip
+    to EXECUTING) meant a UI could show "executing" while nothing executed. The full
+    proposal-backed approve path is pinned in tests/test_session_approve_flow.py.
+    """
     client, _, mgr, _ = wired
     started = client.post("/api/session/start").json()
 
@@ -166,8 +170,13 @@ def test_approve_and_reject_require_a_pending_proposal(wired):
     mgr.propose(started["session_id"])
     assert client.post("/api/session/reject").json()["status"] == "scanning"
 
+    # Paused session, but proposal_service is unwired in this fixture (init failure):
+    # approve answers 503 and leaves the clock paused — it must not misdiagnose the
+    # outage as "your proposal expired". The proposal-backed paths (including expiry →
+    # 409 + resume) are pinned in tests/test_session_approve_flow.py.
     mgr.propose(started["session_id"])
-    assert client.post("/api/session/approve").json()["status"] == "executing"
+    assert client.post("/api/session/approve").status_code == 503
+    assert mgr.get_active(ALICE)["status"] == "setup_proposed"
 
 
 def test_rejecting_resumes_the_meter_via_the_api(wired):

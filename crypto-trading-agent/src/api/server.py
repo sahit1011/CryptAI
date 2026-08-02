@@ -382,6 +382,7 @@ user_settings_store = None
 # Metered analysis sessions and per-user trading persona (M2 control plane).
 session_manager = None
 preferences_store = None
+proposal_service = None
 # Handle for the session clock loop, so shutdown can cancel it rather than leaking a
 # task that keeps ticking against a closing event loop.
 _session_tick_task = None
@@ -615,6 +616,14 @@ async def startup_event():
             )
         except Exception as e:
             logger.error(f"Failed to initialize PreferencesStore: {e}")
+        global proposal_service
+        try:
+            from src.core.proposals import ProposalService
+            proposal_service = await asyncio.to_thread(
+                ProposalService, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize ProposalService: {e}")
 
         # The session clock. Started even if SessionManager failed above — the loop
         # no-ops until the manager exists, and a later hot-fix does not need a restart.
@@ -1208,6 +1217,16 @@ async def end_session(user_id: str = Depends(require_user)):
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    # Ending with a proposal still on the table decides it: an orphaned PROPOSED row
+    # would hold the one-pending-per-user slot and haunt the next session's UI.
+    if proposal_service is not None:
+        from src.core.proposals import REJECTED
+
+        pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+        if pending is not None and pending.get("status") == "proposed":
+            await asyncio.to_thread(
+                proposal_service.mark, pending["proposal_id"], REJECTED
+            )
     try:
         return await asyncio.to_thread(mgr.end, active["session_id"], USER_ENDED, "ended by user")
     except SessionError as e:
@@ -1216,20 +1235,110 @@ async def end_session(user_id: str = Depends(require_user)):
 
 @app.post("/api/session/approve")
 async def approve_proposal(user_id: str = Depends(require_user)):
-    """Manual mode: accept the pending proposal and move to execution.
+    """Manual mode: approve the pending proposal; the daemon re-validates and executes.
 
-    Re-validation of price, spread, and risk limits happens in the execution path, not
-    here — a proposal approved minutes later is not the same trade, and this endpoint
-    must not be the thing that decides it still is.
+    Re-validation (shelf life, price drift, invalidation breach, re-size) and the
+    booking itself happen in the daemon — the process that owns live prices and the
+    user's engine. Ordering is deliberate: the command is dispatched while the session
+    is still SETUP_PROPOSED, because EXECUTING has no legal path back to SCANNING — if
+    re-validation refuses the fill, the session must resume scanning, not strand.
+
+    On success the session ENDS with reason `trade_opened` (free-tier v1: one executed
+    trade per session; the position's monitoring is unmetered and continues regardless).
     """
-    from src.core.session_manager import IllegalTransition
+    from src.core.session_manager import (
+        SETUP_PROPOSED,
+        TRADE_OPENED,
+        IllegalTransition,
+        SessionError,
+    )
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    session_id = active["session_id"]
+    if active.get("status") != SETUP_PROPOSED:
+        raise HTTPException(status_code=409, detail="No proposal is awaiting approval")
+    # Checked only once we actually need it: "no session" (404) and "nothing proposed"
+    # (409) are the specific, user-actionable answers and don't involve the service.
+    # With the service down, the honest answer is 503 with the clock left paused —
+    # NOT the old path that misreported it as an expired proposal.
+    if proposal_service is None:
+        raise HTTPException(
+            status_code=503, detail="Proposal service is not configured"
+        )
+
+    async def _close_as_trade_opened(message: str) -> dict:
+        try:
+            await asyncio.to_thread(mgr.approve, session_id, "proposal approved")
+            return await asyncio.to_thread(mgr.end, session_id, TRADE_OPENED, message)
+        except (IllegalTransition, SessionError) as e:
+            logger.warning(f"session {session_id} state race after execution: {e}")
+            return await asyncio.to_thread(mgr.get, session_id)
+
+    pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+    # get_pending returns a lapsed proposal WITH status "expired" (so callers can see
+    # why); only a still-proposed row may be dispatched for execution.
+    if pending is not None and pending.get("status") != "proposed":
+        pending = None
+    if pending is None:
+        # Paused session, no live proposal. Two very different causes: the proposal
+        # EXECUTED but the approve reply was lost (their money is in the market — the
+        # session must close as trade_opened, never resume and book a second trade),
+        # or it genuinely lapsed (resume scanning honestly).
+        latest = await asyncio.to_thread(
+            proposal_service.latest_for_session, user_id, session_id
+        )
+        if latest is not None and latest.get("status") == "executed":
+            session = await _close_as_trade_opened(
+                "trade executed — recovered after a lost approve reply"
+            )
+            return {
+                "session": session,
+                "execution": {"approved": True, "recovered": True,
+                              "execution_id": latest.get("trade_id")},
+                "proposal_id": latest["proposal_id"],
+            }
+        try:
+            await asyncio.to_thread(
+                mgr.reject, session_id, "proposal expired — resuming scan"
+            )
+        except (IllegalTransition, SessionError):
+            pass
+        raise HTTPException(status_code=409, detail="The proposal has expired")
+
+    result = await _dispatch_user_command({
+        "type": "approve_proposal",
+        "user_id": user_id,
+        "proposal_id": pending["proposal_id"],
+    })
+    if result is None:
+        # Daemon unreachable OR the reply outran the timeout. Change nothing: the
+        # clock stays paused and a retry lands in the recovery branch above if the
+        # booking actually went through.
+        raise HTTPException(
+            status_code=504, detail="Trading engine did not respond; try again"
+        )
+
+    if result.get("approved"):
+        session = await _close_as_trade_opened(
+            "trade executed — position monitoring continues"
+        )
+        return {"session": session, "execution": result, "proposal_id": pending["proposal_id"]}
+
+    reason = result.get("reason", "revalidation_failed")
+    if result.get("retryable"):
+        # The proposal is still live (price drifted, feed hiccup). Keep the clock
+        # paused and the proposal on the table: the user retries or rejects, and the
+        # sweeper resumes the session if the shelf life lapses. Resuming here instead
+        # created a dead zone — metering, unable to propose, unable to approve.
+        raise HTTPException(
+            status_code=409, detail=f"Not executed: {reason} — you can retry or reject"
+        )
     try:
-        return await asyncio.to_thread(mgr.approve, active["session_id"])
-    except IllegalTransition as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        await asyncio.to_thread(mgr.reject, session_id, f"approval declined: {reason}")
+    except (IllegalTransition, SessionError):
+        pass
+    raise HTTPException(status_code=409, detail=f"Not executed: {reason}")
 
 
 @app.post("/api/session/reject")
@@ -1239,10 +1348,30 @@ async def reject_proposal(user_id: str = Depends(require_user)):
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    if proposal_service is not None:
+        from src.core.proposals import REJECTED
+
+        pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+        if pending is not None and pending.get("status") == "proposed":
+            await asyncio.to_thread(
+                proposal_service.mark, pending["proposal_id"], REJECTED
+            )
     try:
         return await asyncio.to_thread(mgr.reject, active["session_id"])
     except IllegalTransition as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/proposals/pending")
+async def get_pending_proposal(user_id: str = Depends(require_user)):
+    """The caller's newest pending proposal, or `proposal: null` when there is none.
+
+    Null is a normal state the UI renders (no card), not an error.
+    """
+    if proposal_service is None:
+        raise HTTPException(status_code=503, detail="Proposal service is not configured")
+    pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+    return {"proposal": pending}
 
 
 @app.get("/api/session/events")
