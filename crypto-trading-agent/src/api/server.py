@@ -382,6 +382,9 @@ user_settings_store = None
 # Metered analysis sessions and per-user trading persona (M2 control plane).
 session_manager = None
 preferences_store = None
+# Handle for the session clock loop, so shutdown can cancel it rather than leaking a
+# task that keeps ticking against a closing event loop.
+_session_tick_task = None
 
 
 # --- Market-channel subscribe protocol -----------------------------------------
@@ -613,6 +616,15 @@ async def startup_event():
         except Exception as e:
             logger.error(f"Failed to initialize PreferencesStore: {e}")
 
+        # The session clock. Started even if SessionManager failed above — the loop
+        # no-ops until the manager exists, and a later hot-fix does not need a restart.
+        global _session_tick_task
+        if _session_tick_task is None:
+            _session_tick_task = asyncio.get_running_loop().create_task(
+                _session_tick_loop()
+            )
+            logger.info(f"session clock started ({SESSION_TICK_SECONDS}s)")
+
         
         # Subscribe to all relevant agent channels
         channels = [
@@ -670,6 +682,14 @@ embedded_daemon = None
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down...")
+    global _session_tick_task
+    if _session_tick_task is not None:
+        _session_tick_task.cancel()
+        try:
+            await _session_tick_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _session_tick_task = None
     if embedded_daemon is not None:
         try:
             await embedded_daemon.stop()
@@ -1039,6 +1059,78 @@ async def set_settings(body: SettingsBody, user_id: str = Depends(require_user))
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- Server-authoritative session clock ----------------------------------------
+
+#: How often the server pushes the true remaining time and enforces the meters.
+SESSION_TICK_SECONDS = 5
+
+
+async def _session_tick_loop():
+    """Push authoritative session state to connected clients, and enforce the meters.
+
+    Two jobs, and the second is the important one.
+
+    The countdown a user sees must come from the server. A browser timer drifts, and a
+    background tab gets throttled or frozen entirely — so a client-side clock will
+    eventually disagree with the billing record, and the user will believe whichever one
+    is more generous.
+
+    More importantly, WITHOUT THIS NOTHING ENDS A SESSION. Both meters are enforced in
+    `tick()`, which until now only ran when a request came in. A user who starts a
+    session and shuts their laptop would leave it metering forever, and their whole
+    daily quota would silently drain. This loop is what makes the quota real.
+
+    Only users with an open socket are ticked, which is the cheap common case. A session
+    whose owner disconnects is caught on their next request or their next connect;
+    `used_today` is derived from stored timestamps, so no time is lost either way.
+    """
+    while True:
+        try:
+            await asyncio.sleep(SESSION_TICK_SECONDS)
+            await _session_tick_once()
+        except asyncio.CancelledError:
+            logger.info("session tick loop stopped")
+            return
+        except Exception as e:
+            # Never let the loop die: it is the only thing enforcing the quota.
+            logger.error(f"session tick loop error: {e}")
+
+
+async def _session_tick_once():
+    """One pass: enforce the meters for every connected tenant and push their state.
+
+    Split from the loop so it can be tested directly. Testing through the loop means
+    racing its sleep against task cancellation, which is both flaky and tests the timer
+    rather than the behaviour.
+    """
+    if session_manager is None:
+        return
+
+    user_ids = {uid for uid in manager.connections.values() if uid}
+    for user_id in user_ids:
+        try:
+            active = await asyncio.to_thread(session_manager.get_active, user_id)
+            if active is None:
+                continue
+            # tick() enforces both meters and may end the session.
+            state = await asyncio.to_thread(session_manager.tick, active["session_id"])
+            remaining_today = await asyncio.to_thread(
+                session_manager.remaining_today, user_id
+            )
+            await manager.broadcast({
+                "type": "session_tick",
+                "user_id": user_id,
+                "data": {
+                    "user_id": user_id,
+                    **state,
+                    "remaining_today_seconds": remaining_today,
+                },
+            })
+        except Exception as e:
+            # One tenant's failure must not stop enforcement for everyone else.
+            logger.warning(f"session tick failed for {user_id}: {e}")
 
 
 # --- Metered analysis sessions (M2 control plane) ------------------------------
