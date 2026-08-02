@@ -314,6 +314,30 @@ class ProposalService:
         finally:
             db.close()
 
+    def latest_for_session(
+        self, user_id: str, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """The newest proposal belonging to one session, regardless of status.
+
+        Exists for the executed-but-reply-lost recovery path: a dispatch timeout after
+        the daemon booked leaves the proposal EXECUTED while the API saw nothing —
+        callers must be able to distinguish "your trade is open" from "it expired"
+        before resuming a session that could then book a second trade.
+        """
+        db = self.Session()
+        try:
+            row = (
+                db.query(Proposal)
+                .filter(
+                    Proposal.user_id == user_id, Proposal.session_id == session_id
+                )
+                .order_by(Proposal.created_at.desc())
+                .first()
+            )
+            return self._to_dict(row) if row else None
+        finally:
+            db.close()
+
     def get(self, proposal_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """Scoped by user_id: a proposal id from another tenant must not resolve."""
         db = self.Session()

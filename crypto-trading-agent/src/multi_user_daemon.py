@@ -230,6 +230,71 @@ class MultiUserTradingDaemon:
             f"vault={'on' if self.vault else 'off'} | settings={'on' if self.settings_store else 'off'}",
             agent="daemon",
         )
+        self.initialize_session_plane()
+
+    def initialize_session_plane(self):
+        """M2 control plane: metered sessions do real work in THIS process.
+
+        Each store is optional (matching the daemon's fault-tolerant style): a failed
+        init disables the session pipeline but never takes down broadcast trading.
+        The pool itself starts in start() once the loop is running.
+        """
+        self.session_manager = None
+        self.preferences_store = None
+        self.proposal_service = None
+        self.setup_cache = None
+        self.worker_pool = None
+        try:
+            from src.core.preferences import PreferencesStore
+            from src.core.proposals import ProposalService
+            from src.core.session_manager import SessionManager
+            from src.core.session_pipeline import SharedSetupCache, build_analyze_fn
+            from src.core.session_worker import SessionWorkerPool
+
+            db_url = self.config.database.postgres_url
+            self.session_manager = SessionManager(db_url)
+            self.preferences_store = PreferencesStore(db_url)
+            self.proposal_service = ProposalService(db_url)
+            self.setup_cache = SharedSetupCache()
+
+            # The signal plane is opt-in until the Rust engine is deployed: wiring the
+            # client against an absent engine would fail-closed EVERY session (correct
+            # per invariant 2, useless while the engine has no host). Flip the env when
+            # market:pulse:* is live in this Redis.
+            pulse_client = None
+            if os.getenv("SIGNAL_PLANE_ENABLED", "").strip().lower() == "true":
+                from src.signals.pulse_client import PulseClient
+                redis_client = getattr(self.message_bus, "redis", None)
+                if redis_client is not None:
+                    pulse_client = PulseClient(redis_client)
+                else:
+                    plog.warning(
+                        "SIGNAL_PLANE_ENABLED but message bus has no redis client; "
+                        "sessions will run ungated",
+                        agent="daemon",
+                    )
+
+            self.worker_pool = SessionWorkerPool(
+                self.session_manager,
+                self.preferences_store,
+                build_analyze_fn(
+                    session_manager=self.session_manager,
+                    proposal_service=self.proposal_service,
+                    setup_cache=self.setup_cache,
+                ),
+                pulse_client=pulse_client,
+                kill_switch=self.engine_switch,
+            )
+            plog.info(
+                f"  └─ ✅ Session plane ready | pulse_gating="
+                f"{'on' if pulse_client else 'off (engine undeployed)'}",
+                agent="daemon",
+            )
+        except Exception as e:
+            plog.warning(
+                f"Session plane unavailable ({e}); metered sessions will not run analysis",
+                agent="daemon",
+            )
 
     def _build_live_engine(self, user_id: str):
         """Build a LIVE per-user trading engine from the tenant's vault keys (Phase C).
@@ -294,6 +359,166 @@ class MultiUserTradingDaemon:
         # when the live price crosses them, positions mark to market, and the
         # UI's uPnL stays current — without a human touching anything.
         self._tick_task = asyncio.create_task(self._price_tick_loop())
+        # Session plane: one worker per ACTIVE session (metered, per-user), plus the
+        # sweeper that expires lapsed proposals and un-pauses their sessions.
+        self._pool_task = None
+        self._sweeper_task = None
+        if self.worker_pool is not None:
+            self._pool_task = asyncio.create_task(self.worker_pool.run())
+            self._sweeper_task = asyncio.create_task(self._proposal_sweep_loop())
+
+    async def _approve_proposal(self, session, user_id: str, message: dict) -> dict:
+        """Approval-time re-validation, then execution through the user's own session.
+
+        The shelf-life/price-drift/invalidation gates (ProposalService.revalidate) run
+        HERE, against this process's live price — a proposal approved minutes after it
+        was made is not the same trade, and the thing that decides whether it still is
+        must see current prices. Refusals are honest: no live price means no fill.
+        """
+        # `retryable` is the API's contract for what to do with the session on refusal:
+        # True → the proposal is still PROPOSED (transient condition: price drift, no
+        # price feed) so the session must STAY paused and the user may retry; False →
+        # the proposal is decided/absent, resume scanning. Without the flag the API
+        # resumed scanning on every refusal, stranding a still-live proposal in a state
+        # nothing could reach (the price_moved dead zone).
+        if self.proposal_service is None or self.preferences_store is None:
+            return {"approved": False, "reason": "session_plane_unavailable",
+                    "retryable": True}
+
+        proposal_id = str((message or {}).get("proposal_id") or "")
+        proposal = (
+            await asyncio.to_thread(self.proposal_service.get, proposal_id, user_id)
+            if proposal_id
+            else await asyncio.to_thread(self.proposal_service.get_pending, user_id)
+        )
+        if proposal is None or proposal.get("status") != "proposed":
+            return {"approved": False, "reason": "no_pending_proposal",
+                    "retryable": False}
+
+        symbol = proposal["symbol"]
+        prices = getattr(getattr(session, "engine", None), "current_prices", None) or {}
+        price = prices.get(symbol)
+        if not price or float(price) <= 0:
+            return {"approved": False, "reason": "no_live_price", "retryable": True}
+
+        prefs = await asyncio.to_thread(self.preferences_store.get, user_id)
+        reval = await asyncio.to_thread(
+            lambda: self.proposal_service.revalidate(
+                proposal_id=proposal["proposal_id"],
+                user_id=user_id,
+                current_price=float(price),
+                prefs=prefs,
+            )
+        )
+        if not reval.ok:
+            # revalidate marks EXPIRED/INVALIDATED itself; those are terminal. Anything
+            # else (price drift, transient sizing refusal) left the row PROPOSED.
+            still_proposed = (
+                await asyncio.to_thread(
+                    self.proposal_service.get, proposal["proposal_id"], user_id
+                )
+                or {}
+            ).get("status") == "proposed"
+            return {"approved": False, "reason": reval.reason,
+                    "retryable": still_proposed}
+
+        setup = {
+            "symbol": symbol,
+            "direction": proposal["direction"],
+            "entry_price": proposal["entry_price"],
+            "stop_loss": proposal["stop_loss"],
+            "take_profit_levels": proposal["take_profit_levels"],
+            "recommended_position_size": reval.position_size,
+            "risk_amount": proposal["risk_amount"],
+            # A None score would auto-reject at the risk gate's confidence floor; the
+            # human's approval IS the confidence here (same rule as manual tickets).
+            "confidence_score": (
+                proposal["confidence_score"]
+                if proposal.get("confidence_score") is not None else 1.0
+            ),
+            "market_regime": proposal.get("market_regime"),
+            "strategy_type": proposal.get("strategy_type"),
+            "metadata": {
+                "proposal_id": proposal["proposal_id"],
+                "session_id": proposal["session_id"],
+            },
+        }
+        result = await session.evaluate_and_book(setup)
+
+        from src.core.proposals import EXECUTED, REJECTED
+        if result.get("approved"):
+            await asyncio.to_thread(
+                self.proposal_service.mark,
+                proposal["proposal_id"], EXECUTED, result.get("execution_id"),
+            )
+            if reval.resized:
+                result["resized"] = True
+                result["original_size"] = reval.original_size
+        else:
+            # The trade the user approved was not available (risk gate or execution
+            # refused). Mark it decided rather than leaving it to be re-approved.
+            await asyncio.to_thread(
+                self.proposal_service.mark, proposal["proposal_id"], REJECTED
+            )
+            result.setdefault(
+                "reason", "; ".join(result.get("reasons") or []) or "execution_rejected"
+            )
+            result["retryable"] = False
+        return result
+
+    async def _sweep_once(self) -> None:
+        """One sweep pass: expire lapsed proposals, then repair paused sessions.
+
+        Restores the invariant that a pending proposal and a paused session imply each
+        other. A paused session with no live proposal resumes scanning — UNLESS its own
+        proposal was EXECUTED (the approve reply was lost in flight): then the trade is
+        already open and the session must end as trade_opened, not resume and book a
+        second one.
+        """
+        from src.core.session_manager import SETUP_PROPOSED, TRADE_OPENED, SessionError
+
+        expired = await asyncio.to_thread(self.proposal_service.expire_stale)
+        if expired:
+            plog.info(f"[sessions] expired {expired} lapsed proposal(s)", agent="daemon")
+        for session in await asyncio.to_thread(self.session_manager.active_sessions):
+            if session.get("status") != SETUP_PROPOSED:
+                continue
+            pending = await asyncio.to_thread(
+                self.proposal_service.get_pending, session["user_id"]
+            )
+            # get_pending returns a lapsed row marked "expired", not None.
+            if pending is not None and pending.get("status") == "proposed":
+                continue
+            latest = await asyncio.to_thread(
+                self.proposal_service.latest_for_session,
+                session["user_id"], session["session_id"],
+            )
+            try:
+                if latest is not None and latest.get("status") == "executed":
+                    await asyncio.to_thread(
+                        self.session_manager.approve, session["session_id"],
+                        "recovered: proposal was executed",
+                    )
+                    await asyncio.to_thread(
+                        self.session_manager.end, session["session_id"], TRADE_OPENED,
+                        "trade executed — approve reply was lost; recovered by sweep",
+                    )
+                else:
+                    await asyncio.to_thread(
+                        self.session_manager.reject,
+                        session["session_id"],
+                        "proposal expired — resuming scan",
+                    )
+            except SessionError:
+                pass  # racing an approve/end; the machine stays consistent
+
+    async def _proposal_sweep_loop(self, interval_seconds: int = 30):
+        while self.running:
+            try:
+                await self._sweep_once()
+            except Exception as e:
+                plog.warning(f"[sessions] sweep pass failed: {e}", agent="daemon")
+            await asyncio.sleep(interval_seconds)
 
     async def _handle_user_command(self, message):
         """Tenant-scoped commands from the API (bus channel `user_commands`).
@@ -309,7 +534,10 @@ class MultiUserTradingDaemon:
         try:
             cmd = (message or {}).get("type")
             user_id = (message or {}).get("user_id")
-            if not user_id or cmd not in ("close_position", "close_all", "execute_setup", "cancel_order"):
+            if not user_id or cmd not in (
+                "close_position", "close_all", "execute_setup", "cancel_order",
+                "approve_proposal",
+            ):
                 return
             from src.execution.paper_trading_engine import OrderSide
 
@@ -328,6 +556,14 @@ class MultiUserTradingDaemon:
                     await self._reply_command(message, {"approved": False, "error": "malformed setup"})
                     return
                 result = await session.evaluate_and_book(setup)
+                await self._reply_command(message, result)
+                return
+
+            # --- approve_proposal: re-validate at the LIVE price, then execute.
+            # The API owns the session state machine; this process owns prices,
+            # proposals, and the user's engine — so the money decision happens here.
+            if cmd == "approve_proposal":
+                result = await self._approve_proposal(session, user_id, message)
                 await self._reply_command(message, result)
                 return
 
@@ -527,6 +763,10 @@ class MultiUserTradingDaemon:
             if valid:
                 await self._publish_setups(valid)
                 all_setups.extend(valid)
+                # Session workers propose from this cache — per-user judgment over
+                # shared facts. Stamped so stale setups age out (session_pipeline).
+                if self.setup_cache is not None:
+                    self.setup_cache.put(sym, valid)
         return all_setups
 
     async def _publish_setups(self, setups):
@@ -581,6 +821,19 @@ class MultiUserTradingDaemon:
                 await self._tick_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if getattr(self, "worker_pool", None) is not None:
+            try:
+                await self.worker_pool.stop()
+            except Exception as e:
+                plog.warning(f"worker pool stop error: {e}", agent="daemon")
+        for task_name in ("_pool_task", "_sweeper_task"):
+            task = getattr(self, task_name, None)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         for agent in (self.memory_agent, self.strategy_agent, self.analysis_agent, self.data_agent):
             if agent:
                 try:
