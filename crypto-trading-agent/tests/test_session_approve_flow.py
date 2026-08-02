@@ -159,6 +159,28 @@ def test_lost_reply_recovery_never_books_twice(wired):
     assert dispatched == []  # nothing re-sent to the daemon; no double-book
 
 
+def test_reject_after_lost_reply_never_books_twice(wired):
+    """The residual hole from the lost-reply fix: approve learned the recovery check,
+    reject did not — so after a 504 the user clicking 'reject' on the stale card
+    resumed scanning with an EXECUTED proposal, and the session could book a second
+    trade. Reject must close the session as trade_opened, exactly like approve."""
+    client, mgr, prefs, proposals, clock, dispatched, reply = wired
+    session, proposal = _proposed_session(mgr, prefs, proposals)
+    from src.core.proposals import EXECUTED
+    proposals.mark(proposal["proposal_id"], EXECUTED, "TRADE-11")
+
+    r = client.post("/api/session/reject")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ended"
+    assert body["end_reason"] == TRADE_OPENED
+    # The executed proposal stays executed; nothing was re-dispatched.
+    assert proposals.get(proposal["proposal_id"], ALICE)["status"] == EXECUTED
+    assert dispatched == []
+    # And with the session ended, no worker can propose into it again.
+    assert mgr.get_active(ALICE) is None
+
+
 def test_ending_a_session_decides_its_pending_proposal(wired):
     """An orphaned PROPOSED row from an ended session held the one-pending slot and
     haunted the next session's UI for the length of its TTL."""

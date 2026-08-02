@@ -1343,11 +1343,23 @@ async def approve_proposal(user_id: str = Depends(require_user)):
 
 @app.post("/api/session/reject")
 async def reject_proposal(user_id: str = Depends(require_user)):
-    """Decline the pending proposal and resume scanning. Restarts the meter."""
-    from src.core.session_manager import IllegalTransition
+    """Decline the pending proposal and resume scanning. Restarts the meter.
+
+    Carries the same executed-recovery check as approve: after a lost approve reply
+    the proposal is EXECUTED while the UI still shows its card, and "reject" is at
+    least as likely a click as "retry". Resuming the scan there would let the session
+    book a SECOND trade — instead the session closes honestly as trade_opened.
+    """
+    from src.core.session_manager import (
+        SETUP_PROPOSED,
+        TRADE_OPENED,
+        IllegalTransition,
+        SessionError,
+    )
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    session_id = active["session_id"]
     if proposal_service is not None:
         from src.core.proposals import REJECTED
 
@@ -1356,8 +1368,22 @@ async def reject_proposal(user_id: str = Depends(require_user)):
             await asyncio.to_thread(
                 proposal_service.mark, pending["proposal_id"], REJECTED
             )
+        elif active.get("status") == SETUP_PROPOSED:
+            latest = await asyncio.to_thread(
+                proposal_service.latest_for_session, user_id, session_id
+            )
+            if latest is not None and latest.get("status") == "executed":
+                try:
+                    await asyncio.to_thread(mgr.approve, session_id, "proposal approved")
+                    return await asyncio.to_thread(
+                        mgr.end, session_id, TRADE_OPENED,
+                        "trade executed — recovered on reject after a lost approve reply",
+                    )
+                except (IllegalTransition, SessionError) as e:
+                    logger.warning(f"session {session_id} recovery race on reject: {e}")
+                    return await asyncio.to_thread(mgr.get, session_id)
     try:
-        return await asyncio.to_thread(mgr.reject, active["session_id"])
+        return await asyncio.to_thread(mgr.reject, session_id)
     except IllegalTransition as e:
         raise HTTPException(status_code=409, detail=str(e))
 
