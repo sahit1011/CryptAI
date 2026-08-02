@@ -255,7 +255,10 @@ class MultiUserTradingDaemon:
         if os.getenv("SIGNAL_PLANE_ENABLED", "").strip().lower() == "true":
             try:
                 from src.signals.pulse_client import PulseClient
-                redis_client = getattr(self.message_bus, "redis", None)
+                # MessageBus exposes its client as `redis_client` (it is None until
+                # connect()); `redis` is only the module alias, so reading that name
+                # silently yielded None and left pulse gating permanently off.
+                redis_client = getattr(self.message_bus, "redis_client", None)
                 if redis_client is not None:
                     self.pulse_client = PulseClient(redis_client)
                 else:
