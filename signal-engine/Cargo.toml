@@ -18,7 +18,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+# tls-native-tls is required for `rediss://` URLs — any managed Redis reached over the
+# public internet (Render external, Upstash, Redis Cloud) mandates TLS. Harmless for a
+# plain `redis://` internal URL, so it is always on rather than feature-gated per host.
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "tls-native-tls", "tokio-native-tls-comp"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

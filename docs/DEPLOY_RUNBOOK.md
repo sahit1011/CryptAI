@@ -1,5 +1,33 @@
 # CryptAI — Deploy Runbook (fix/m1-foundation-bugs → production)
 
+> ## STATUS: executed 2026-08-03 — Phases 1 & 3 are LIVE
+>
+> | Piece | State | Where |
+> |---|---|---|
+> | Backend + embedded daemon | ✅ live on `fix/m1-foundation-bugs` | `cryptai-backend.onrender.com` (Render free, `RUN_DAEMON_IN_API=true`) |
+> | Database | ✅ Supabase **transaction pooler** (`:6543`) | pool exhaustion fixed, 0 errors post-flip |
+> | Frontend | ✅ live, new UI | `cryptai-app.vercel.app` (`dpl_CeSyfKpGtUobfgvgdX1D9x6KCuZr`) |
+> | Signal engine | ⛔ **not deployed** — no free always-on host | see "Signal engine hosting" below |
+>
+> Verified live: `/health/ready` → `{redis:true, database:true}`; `/api/session`,
+> `/api/monitors`, `/api/preferences`, `/api/proposals/pending` → 401 (exist, auth-gated);
+> CORS preflight from the Vercel origin → 200; logs show `✅ Daemon started` +
+> `✅ Position monitors online (unmetered)`.
+>
+> Money gates confirmed untouched: `USE_TESTNET=true`, `LIVE_TRADING_CONFIRMED=false`,
+> `ENABLE_EXECUTION` unset → paper only.
+>
+> ### Signal engine hosting (the one open item)
+> Render **free** allows only web services (no background workers); **starter** requires a
+> card. The engine also serves no HTTP port and must never sleep, so a free Render web
+> service does not fit either. `SIGNAL_PLANE_ENABLED` stays `false`, which is a designed,
+> safe no-op: sessions, proposals, execution and monitors all work; only the
+> market-condition pulse gate is inactive. Options when ready: add a card and use a Render
+> starter worker (~$7/mo, internal Redis, simplest); host free elsewhere (needs
+> `rediss://` TLS — already added to `Cargo.toml` — plus opening Render Redis's
+> `ipAllowList`, which exposes it publicly); or run it locally against the external Redis
+> URL purely to validate the pulse layer.
+
 > Purpose: ship the verified `fix/m1-foundation-bugs` build (M1 fixes + M2 sessions +
 > M4 monitor + preferences/channels) to production, replacing the stale `v2` code Render
 > runs today. Phased and **reversible** — each phase has a rollback and a verification.
@@ -100,13 +128,17 @@ this is a logs check on your side; paste me the relevant lines and I'll confirm.
 
 ---
 
-## Phase 3 — Deploy the frontend and wire it together
+## Phase 3 — Point the (existing) frontend at the new backend
+
+Your frontend is already on Vercel, so this is an **env-var update + redeploy**, not a new
+project. Confirm the env below matches, then trigger a redeploy so the client picks up any
+change and rebuilds against the new backend contract.
 
 **Steps (you):**
 
-1. **Vercel** → New Project → import the repo → **Root Directory: `frontend`** (framework
-   auto-detects Next.js).
-2. **Env vars:**
+1. **Vercel** → your existing project → Settings → Environment Variables. (If it was
+   created before the monorepo split, confirm Root Directory is `frontend`.)
+2. **Env vars — set/confirm:**
    - `NEXT_PUBLIC_SUPABASE_URL` = `https://<ref>.supabase.co`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = Supabase → Settings → API → anon key
    - `NEXT_PUBLIC_API_URL` = `https://cryptai-backend.onrender.com`
