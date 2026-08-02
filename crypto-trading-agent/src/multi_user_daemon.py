@@ -66,8 +66,10 @@ class MultiUserTradingDaemon:
         self.registry: Optional[UserRegistry] = None
         self.coordinator: Optional[MultiUserCoordinator] = None
         self.engine_switch = None  # EngineSwitch, set once Redis is up
+        self.monitor_supervisor = None  # MonitorSupervisor, set in start()
         self._loop_task: Optional[asyncio.Task] = None
         self._tick_task: Optional[asyncio.Task] = None
+        self._monitor_task: Optional[asyncio.Task] = None
         self._was_on = None  # tracks on/off transitions for one-time log lines
 
     # ------------------------------------------------------------------ setup
@@ -244,6 +246,26 @@ class MultiUserTradingDaemon:
         self.proposal_service = None
         self.setup_cache = None
         self.worker_pool = None
+        # The shared signal plane is opt-in until the Rust engine has a host: wiring the
+        # client against an absent engine would fail-closed EVERY session (invariant 2)
+        # and starve the monitors of pulse reads. Flip SIGNAL_PLANE_ENABLED once
+        # market:pulse:* is live in this Redis. Both the session pipeline and the
+        # position monitors consume this one client.
+        self.pulse_client = None
+        if os.getenv("SIGNAL_PLANE_ENABLED", "").strip().lower() == "true":
+            try:
+                from src.signals.pulse_client import PulseClient
+                redis_client = getattr(self.message_bus, "redis", None)
+                if redis_client is not None:
+                    self.pulse_client = PulseClient(redis_client)
+                else:
+                    plog.warning(
+                        "SIGNAL_PLANE_ENABLED but message bus has no redis client; "
+                        "sessions and monitors will run ungated",
+                        agent="daemon",
+                    )
+            except Exception as e:
+                plog.warning(f"PulseClient unavailable ({e}); running ungated", agent="daemon")
         try:
             from src.core.preferences import PreferencesStore
             from src.core.proposals import ProposalService
@@ -257,23 +279,6 @@ class MultiUserTradingDaemon:
             self.proposal_service = ProposalService(db_url)
             self.setup_cache = SharedSetupCache()
 
-            # The signal plane is opt-in until the Rust engine is deployed: wiring the
-            # client against an absent engine would fail-closed EVERY session (correct
-            # per invariant 2, useless while the engine has no host). Flip the env when
-            # market:pulse:* is live in this Redis.
-            pulse_client = None
-            if os.getenv("SIGNAL_PLANE_ENABLED", "").strip().lower() == "true":
-                from src.signals.pulse_client import PulseClient
-                redis_client = getattr(self.message_bus, "redis", None)
-                if redis_client is not None:
-                    pulse_client = PulseClient(redis_client)
-                else:
-                    plog.warning(
-                        "SIGNAL_PLANE_ENABLED but message bus has no redis client; "
-                        "sessions will run ungated",
-                        agent="daemon",
-                    )
-
             self.worker_pool = SessionWorkerPool(
                 self.session_manager,
                 self.preferences_store,
@@ -282,12 +287,12 @@ class MultiUserTradingDaemon:
                     proposal_service=self.proposal_service,
                     setup_cache=self.setup_cache,
                 ),
-                pulse_client=pulse_client,
+                pulse_client=self.pulse_client,
                 kill_switch=self.engine_switch,
             )
             plog.info(
                 f"  └─ ✅ Session plane ready | pulse_gating="
-                f"{'on' if pulse_client else 'off (engine undeployed)'}",
+                f"{'on' if self.pulse_client else 'off (engine undeployed)'}",
                 agent="daemon",
             )
         except Exception as e:
@@ -366,6 +371,17 @@ class MultiUserTradingDaemon:
         if self.worker_pool is not None:
             self._pool_task = asyncio.create_task(self.worker_pool.run())
             self._sweeper_task = asyncio.create_task(self._proposal_sweep_loop())
+        # Position monitors — deliberately independent of the session plane above:
+        # monitoring open positions is unconditional money-safety, so it starts whenever
+        # the registry exists, even if the proposal/session stores failed to init.
+        self._monitor_task = None
+        if self.registry is not None:
+            from src.core.monitor_worker import MonitorSupervisor
+            self.monitor_supervisor = MonitorSupervisor(
+                self.registry, pulse_client=self.pulse_client
+            )
+            self._monitor_task = asyncio.create_task(self.monitor_supervisor.run())
+            plog.info("  └─ ✅ Position monitors online (unmetered)", agent="daemon")
 
     async def _approve_proposal(self, session, user_id: str, message: dict) -> dict:
         """Approval-time re-validation, then execution through the user's own session.
@@ -826,7 +842,12 @@ class MultiUserTradingDaemon:
                 await self.worker_pool.stop()
             except Exception as e:
                 plog.warning(f"worker pool stop error: {e}", agent="daemon")
-        for task_name in ("_pool_task", "_sweeper_task"):
+        if getattr(self, "monitor_supervisor", None) is not None:
+            try:
+                await self.monitor_supervisor.stop()
+            except Exception as e:
+                plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task"):
             task = getattr(self, task_name, None)
             if task:
                 task.cancel()
