@@ -5,6 +5,7 @@ import { Plug, Settings2, Sparkles } from "lucide-react";
 import { SectionHeader } from "../ui/SectionHeader";
 import { Card } from "@/components/ui/card";
 import { TradingModeSelector } from "../ui/TradingModeSelector";
+import { TradingPersona } from "../ui/TradingPersona";
 import { EngineControl } from "../ui/EngineControl";
 import { ConnectExchangeSection } from "./ConnectExchangeSection";
 import { getSettings, type TradingMode } from "@/lib/api";
@@ -32,6 +33,9 @@ export function SettingsSection() {
 
             {/* AI engine control (owner only; renders null for other users) */}
             <EngineControl />
+
+            {/* Trading persona — the preferences the session pipeline synthesises against */}
+            <TradingPersona />
 
             {/* Trading mode */}
             <Card className="mb-8 gap-4 p-5">

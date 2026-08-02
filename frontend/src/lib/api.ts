@@ -443,3 +443,52 @@ export async function getMonitors(): Promise<{ monitors: MonitorEntry[] }> {
     if (!res.ok) throw new Error(await backendError(res));
     return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Trading preferences (the per-user persona the session pipeline reads).
+// ---------------------------------------------------------------------------
+
+export type RiskAppetite = "conservative" | "moderate" | "aggressive";
+export type GoalHorizon = "scalp" | "intraday" | "swing" | "position";
+
+export interface TradingPreferences {
+    trading_capital: number;
+    capital_currency: string;
+    risk_appetite: RiskAppetite;
+    max_risk_per_trade_pct: number;
+    max_concurrent_positions: number;
+    max_daily_trades: number;
+    max_leverage: number;
+    monthly_pnl_target_pct: number | null;
+    goal_horizon: GoalHorizon;
+    goal_notes: string | null;
+    symbol_universe: string[] | null;
+    allowed_strategies: string[] | null;
+    min_risk_reward: number;
+    min_confidence: number;
+    avoid_high_funding: boolean;
+}
+
+/** The caller's trading persona (conservative defaults when unset). */
+export async function getPreferences(): Promise<TradingPreferences> {
+    const res = await fetch(`${API_URL}/api/preferences`, {
+        headers: await authHeaders(),
+        cache: "no-store",
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
+
+/** Partial update — only send what changed. Risk fields are clamped server-side to the
+ * caller's plan and an absolute hard cap (preferences may only tighten risk, never widen). */
+export async function savePreferences(
+    updates: Partial<TradingPreferences>,
+): Promise<TradingPreferences> {
+    const res = await fetch(`${API_URL}/api/preferences`, {
+        method: "POST",
+        headers: await authHeaders(true),
+        body: JSON.stringify(updates),
+    });
+    if (!res.ok) throw new Error(await backendError(res));
+    return res.json();
+}
