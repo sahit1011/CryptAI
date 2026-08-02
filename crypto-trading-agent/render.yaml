@@ -54,6 +54,9 @@ services:
         sync: false
       - key: API_AUTH_TOKEN           # service/admin token (close-positions, etc.)
         sync: false
+      - key: ADMIN_USER_IDS           # REQUIRED: comma-separated Supabase UUIDs of owners.
+        sync: false                   # Fail-closed: if empty, NO end-user can control the
+                                      # engine (you lock yourself out). Set your own UUID.
       - key: API_CORS_ORIGINS         # your frontend origin, e.g. https://cryptai.vercel.app
         sync: false
       - key: OPENROUTER_API_KEY       # LLM key powering analysis/strategy/insights

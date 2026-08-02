@@ -944,16 +944,18 @@ ADMIN_USER_IDS = {u.strip() for u in os.getenv("ADMIN_USER_IDS", "").split(",") 
 
 
 def require_admin(principal: Dict[str, Any] = Depends(current_principal)) -> str:
-    """Require an admin. The service token is always admin; end-users must be allow-listed."""
-    # Service token (no user_id, authenticated via API_AUTH_TOKEN) is trusted. In local
-    # dev with no auth configured, the anonymous principal is also allowed through.
+    """Require an admin. The service token is always admin; end-users must be allow-listed.
+
+    Fail-closed: when ADMIN_USER_IDS is empty in a deployment where auth IS configured,
+    NO end-user is an admin — the owner must add their Supabase UUID to ADMIN_USER_IDS.
+    The `anonymous` principal only exists when no auth is configured at all (local dev),
+    so it stays admin there without opening a hole in production. Mirrors get_engine's
+    `is_admin`.
+    """
+    # Service token (API_AUTH_TOKEN) is trusted; anonymous exists only in no-auth dev.
     if principal.get("kind") in ("service", "anonymous"):
         return principal.get("kind")
     user_id = principal.get("user_id")
-    # If no allow-list is configured, admin control is open (dev). Once ADMIN_USER_IDS
-    # is set (prod), only those UUIDs pass — mirrors get_engine's `is_admin`.
-    if not ADMIN_USER_IDS and user_id:
-        return user_id
     if user_id and user_id in ADMIN_USER_IDS:
         return user_id
     raise HTTPException(
@@ -1354,10 +1356,11 @@ async def get_engine(principal: Dict[str, Any] = Depends(current_principal)):
     sw = _engine_switch()
     status_obj = await sw.status() if sw else {"enabled": False, "expires_in_seconds": None, "enabled_by": None}
     uid = principal.get("user_id")
-    # Admin if: service/anonymous principal, allow-list unset (dev), or listed owner.
+    # Admin if: service/anonymous principal (anonymous exists only in no-auth dev), or a
+    # listed owner UUID. Fail-closed: an empty ADMIN_USER_IDS grants no end-user admin —
+    # must stay in lockstep with require_admin above, or the toggle shows but 403s.
     status_obj["is_admin"] = (
         principal.get("kind") in ("service", "anonymous")
-        or not ADMIN_USER_IDS
         or (uid is not None and uid in ADMIN_USER_IDS)
     )
     return status_obj
