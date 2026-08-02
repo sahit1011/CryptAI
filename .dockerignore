@@ -1,0 +1,25 @@
+# Build context is the REPO ROOT (see ./Dockerfile), so keep the upload small and
+# deterministic — without this, frontend/node_modules and signal-engine/target alone
+# add hundreds of MB to every deploy.
+.git
+.github
+**/node_modules
+**/.next
+**/target
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+frontend
+docs
+*.md
+**/.env
+**/.env.*
+!**/.env.example
+**/logs
+**/data/snapshots
+**/.claude
+**/.agent
+signal-engine/eval

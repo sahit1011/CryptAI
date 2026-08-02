@@ -659,6 +659,21 @@ async def startup_event():
     # service but no free background workers, and it's all asyncio anyway. A keep-alive
     # ping (see .github/workflows/keepalive.yml) prevents the idle spin-down. Failure
     # is isolated: a daemon that can't start must never take the API down.
+    # Shared signal plane as a child process. Free-tier deployments cannot afford a
+    # second always-on service, so the engine ships in this image and runs here; see
+    # src/core/signal_engine_process.py. Supervised and non-fatal — a dead engine means
+    # sessions run ungated (documented no-op), never a down API.
+    if os.getenv("RUN_SIGNAL_ENGINE_IN_API", "false").lower() == "true":
+        global _signal_engine_task
+        try:
+            from src.core.signal_engine_process import run_signal_engine
+            _signal_engine_task = asyncio.get_running_loop().create_task(
+                run_signal_engine(_signal_engine_shutdown)
+            )
+            logger.info("signal engine supervisor started in the API process")
+        except Exception as e:
+            logger.error(f"signal engine setup failed (API continues without it): {e}")
+
     if os.getenv("RUN_DAEMON_IN_API", "false").lower() == "true":
         global embedded_daemon
         try:
@@ -687,10 +702,23 @@ async def startup_event():
 # In-process daemon instance when RUN_DAEMON_IN_API=true (else None).
 embedded_daemon = None
 
+# Signal-engine child-process supervisor when RUN_SIGNAL_ENGINE_IN_API=true.
+_signal_engine_task = None
+_signal_engine_shutdown = asyncio.Event()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down...")
+    global _signal_engine_task
+    if _signal_engine_task is not None:
+        _signal_engine_shutdown.set()   # lets the supervisor terminate the child cleanly
+        _signal_engine_task.cancel()
+        try:
+            await _signal_engine_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _signal_engine_task = None
     global _session_tick_task
     if _session_tick_task is not None:
         _session_tick_task.cancel()
