@@ -842,6 +842,30 @@ class DeltaExchangeClient(ExchangeClient):
         res = await self._request("POST", "/v2/orders", body=body)
         return self._to_order(res, symbol, side, order_type)
 
+    @staticmethod
+    def _map_state(res: dict) -> OrderStatus:
+        """Map a Delta order 'state' + fill sizes onto our OrderStatus enum.
+
+        Delta uses state ∈ {open, pending, closed, cancelled}. 'closed' means the order
+        is no longer active — a full fill OR a fully cancelled/expired order — so
+        disambiguate with filled_size. There is no PENDING member (referencing it was a
+        hard crash on every non-filled order): a resting/unacknowledged order is NEW.
+        """
+        state = str(res.get("state") or "").lower()
+        filled = float(res.get("filled_size", 0) or 0)
+        size = float(res.get("size", 0) or 0)
+        if state in ("cancelled", "canceled"):
+            return OrderStatus.CANCELED
+        if state == "closed":
+            if size > 0 and filled >= size:
+                return OrderStatus.FILLED
+            if filled > 0:
+                return OrderStatus.PARTIALLY_FILLED
+            return OrderStatus.CANCELED
+        if filled > 0 and size > 0 and filled < size:
+            return OrderStatus.PARTIALLY_FILLED
+        return OrderStatus.NEW
+
     def _to_order(self, res: dict, symbol: str, side: OrderSide, order_type: str) -> Order:
         now = datetime.now()
         return Order(
@@ -852,7 +876,7 @@ class DeltaExchangeClient(ExchangeClient):
             order_type=OrderType.MARKET if "market" in order_type else OrderType.LIMIT,
             price=float(res["limit_price"]) if res.get("limit_price") else None,
             quantity=float(res.get("size", 0) or 0),
-            status=OrderStatus.FILLED if res.get("state") == "closed" else OrderStatus.PENDING,
+            status=self._map_state(res),
             filled_quantity=float(res.get("filled_size", 0) or 0),
             average_price=float(res.get("average_fill_price") or 0),
             created_at=now, updated_at=now,
