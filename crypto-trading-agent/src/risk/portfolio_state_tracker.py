@@ -364,9 +364,12 @@ class PortfolioStateTracker:
                 'entry_price': position.entry_price,
                 'exit_price': exit_price,
                 'pnl': round(final_pnl, 2),
+                # Guarded: a zero risk_amount (possible for hand-sized tickets before
+                # sizing was derived upstream) must not turn a close into a crash that
+                # skips the _persist() below.
                 'pnl_percentage': round(
                     (final_pnl / position.risk_amount) * 100, 2
-                ),
+                ) if position.risk_amount > 0 else 0.0,
                 'duration': (
                     datetime.now() - position.opened_at
                 ).total_seconds(),

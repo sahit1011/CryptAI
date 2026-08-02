@@ -363,26 +363,14 @@ class DeterministicRiskCalculator:
 
     async def _check_daily_trade_count(self, result: RiskValidationResult):
         """Check if daily trade limit reached"""
-        
+
         snapshot = await self.portfolio_tracker.get_current_snapshot()
-        
-        # NOTE: This assumes snapshot has daily_trades_count or we need to fetch it
-        # Since PortfolioSnapshot might not have it, we might need to rely on PortfolioStateTracker
-        # For now, let's assume PortfolioStateTracker tracks it or we can get it from snapshot if we add it
-        # If not available, we skip or implement tracking in PortfolioStateTracker
-        
-        # Let's check PortfolioSnapshot definition in another file if needed, but for now
-        # we'll assume we can get it from tracker or snapshot.
-        # Actually, let's implement a method in PortfolioStateTracker to get daily trade count
-        # But since we can't edit that file right now, let's assume we can access it via snapshot
-        # or we'll skip if not available.
-        
-        # Wait, I should have checked PortfolioStateTracker.
-        # Let's assume we can get it. If not, I'll need to add it to PortfolioStateTracker later.
-        # For this edit, I'll add the check logic assuming the data is available or will be.
-        
-        daily_trades = getattr(snapshot, 'daily_trades_count', 0)
-        
+
+        # PortfolioSnapshot's field is `daily_trades` (incremented by the tracker's
+        # close_position). The old name here, `daily_trades_count`, doesn't exist on the
+        # snapshot, so getattr silently returned 0 and the cap never rejected a trade.
+        daily_trades = getattr(snapshot, 'daily_trades', 0)
+
         if daily_trades >= self.risk_params.max_daily_trades:
             result.add_rejection(
                 f"Daily trade limit reached: {daily_trades}/{self.risk_params.max_daily_trades}"
