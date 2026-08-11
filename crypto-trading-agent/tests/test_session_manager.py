@@ -10,6 +10,7 @@ import pytest
 
 from src.core.session_manager import (
     ADDITIVE_SESSION_COLUMNS,
+    CAPACITY_LOST,
     COST_CAP,
     ENDED,
     EXECUTING,
@@ -500,3 +501,60 @@ def test_events_are_scoped_to_their_session(mgr, clock):
     mgr.log_agent_step(b["session_id"], "x", "only in b")
     messages = [e["message"] for e in mgr.events(a["session_id"])]
     assert "only in b" not in messages
+
+
+# --- capacity loss refunds the unproven time ---------------------------------
+
+def test_capacity_loss_refunds_time_since_the_last_cycle(mgr, clock):
+    """A scan whose analysis dies buys nothing after the agents' last report. That dead
+    stretch is handed back — charging for it is the capacity bug arriving one step late."""
+    s = mgr.start(USER)
+    clock.advance(60)
+    mgr.record_cycle(s["session_id"])   # proof of work at t+60
+    clock.advance(40)                   # engine dies; 40s of nothing
+
+    ended = mgr.end_for_capacity_loss(s["session_id"])
+
+    assert ended["status"] == ENDED
+    assert ended["end_reason"] == CAPACITY_LOST
+    assert ended["seconds_refunded"] == 40
+    # Charged only up to the last proven cycle.
+    assert ended["elapsed_seconds"] == 60
+    # And the refund returns to today's balance, not just the session's.
+    assert mgr.remaining_today(USER) == 1800 - 60
+
+
+def test_capacity_loss_with_no_cycle_refunds_the_whole_scan(mgr, clock):
+    """A scan that never reported a cycle produced nothing at all."""
+    s = mgr.start(USER)
+    clock.advance(25)
+
+    ended = mgr.end_for_capacity_loss(s["session_id"])
+
+    assert ended["seconds_refunded"] == 25
+    assert ended["elapsed_seconds"] == 0
+    assert mgr.remaining_today(USER) == 1800
+
+
+def test_a_refund_can_never_mint_time(mgr, clock):
+    """Clamped to what was actually accrued: a clock skew or a stale last_cycle_at must
+    not hand back more than the session ever spent."""
+    s = mgr.start(USER)
+    clock.advance(10)
+    mgr.propose(s["session_id"])   # clock pauses; accrual stops at 10s
+    clock.advance(600)             # ten minutes of unmetered deliberation
+
+    ended = mgr.end_for_capacity_loss(s["session_id"])
+
+    assert ended["seconds_refunded"] <= 10
+    assert ended["elapsed_seconds"] >= 0
+    assert mgr.remaining_today(USER) <= 1800
+
+
+def test_ending_for_capacity_loss_twice_is_harmless(mgr, clock):
+    s = mgr.start(USER)
+    clock.advance(30)
+    first = mgr.end_for_capacity_loss(s["session_id"])
+    again = mgr.end_for_capacity_loss(s["session_id"])
+    # Second call is a no-op read, not a second refund.
+    assert again["seconds_refunded"] == first["seconds_refunded"]

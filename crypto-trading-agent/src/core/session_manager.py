@@ -65,6 +65,9 @@ COST_CAP = "cost_cap"
 USER_ENDED = "user_ended"
 TRADE_OPENED = "trade_opened"
 ERROR = "error"
+#: Analysis capacity died while the user was scanning. Distinct from `error` because it
+#: is not the user's session that failed, and the UI owes them a refund line for it.
+CAPACITY_LOST = "capacity_lost"
 
 #: Seconds between cycles within one session, when SESSION_CYCLE_SECONDS is unset.
 DEFAULT_CYCLE_SECONDS = 180
@@ -115,6 +118,10 @@ DEFAULT_COST_CAP_MICROS = 500_000  # $0.50 per session
 ADDITIVE_SESSION_COLUMNS: Dict[str, str] = {
     "channel": "VARCHAR(16)",
     "last_cycle_at": "TIMESTAMP",
+    # DEFAULT 0 in the DDL as well as the model: rows that predate the column are read
+    # back by code that treats it as an int, and a NULL there would surface as a refund
+    # of "unknown" on an old session's receipt.
+    "seconds_refunded": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -437,6 +444,50 @@ class SessionManager:
     def end(self, session_id: str, reason: str = USER_ENDED, message: str = "") -> dict:
         return self._transition(session_id, ENDED, end_reason=reason, message=message)
 
+    def end_for_capacity_loss(self, session_id: str) -> dict:
+        """End a scan whose analysis went offline, refunding the unproven time.
+
+        A scanning session accrues seconds on wall-clock. When capacity dies, those
+        seconds buy nothing — charging them is the bug the capacity gate exists to
+        prevent, arriving one step later. Everything after the agents' last report is
+        therefore handed back: `last_cycle_at` is the newest moment we hold PROOF that
+        work happened, so it is the honest boundary. A session that never reported a
+        cycle refunds from `started_at` — it produced nothing at all.
+
+        The refund is clamped to what was actually accrued, so it can never mint time.
+        """
+        now = self._now()
+        db = self.Session()
+        try:
+            row = db.query(SessionRow).filter_by(session_id=session_id).first()
+            if row is None:
+                raise NoActiveSession(f"no session {session_id}")
+            if row.status == ENDED:
+                return self._to_dict(row, now)
+
+            # Settle first so metered_seconds_accrued holds every second spent; the
+            # refund is then a subtraction from a known total rather than a race with
+            # a still-running clock.
+            self._pause_clock(row, now)
+            mark = row.last_cycle_at or row.started_at
+            dead = int((now - mark).total_seconds()) if mark else 0
+            refund = max(0, min(dead, int(row.metered_seconds_accrued or 0)))
+            row.metered_seconds_accrued -= refund
+            row.seconds_refunded = int(row.seconds_refunded or 0) + refund
+            db.commit()
+        finally:
+            db.close()
+
+        logger.info(
+            f"session {session_id}: analysis capacity lost, refunded {refund}s of dead time"
+        )
+        return self._transition(
+            session_id,
+            ENDED,
+            end_reason=CAPACITY_LOST,
+            message=f"analysis went offline — {refund}s returned",
+        )
+
     # -- enforcement ---------------------------------------------------------
 
     def tick(self, session_id: str) -> dict:
@@ -600,7 +651,7 @@ class SessionManager:
             "expected_cycle_seconds": configured_cycle_seconds(),
             # Mid-scan capacity refunds are not implemented yet; always 0 so the receipt
             # renders an honest zero rather than an absent field the UI has to guess at.
-            "seconds_refunded": 0,
+            "seconds_refunded": int(row.seconds_refunded or 0),
             "trading_day": row.trading_day.date().isoformat() if row.trading_day else None,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "ended_at": row.ended_at.isoformat() if row.ended_at else None,

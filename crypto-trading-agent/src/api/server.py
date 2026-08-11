@@ -1229,14 +1229,29 @@ async def _session_tick_once():
     if session_manager is None:
         return
 
+    from src.core.session_manager import SCANNING
+
     user_ids = {uid for uid in manager.connections.values() if uid}
+    # One capacity read per pass, not per tenant: it is a global property, and the gate
+    # must not turn into N Redis round-trips as tenants scale.
+    capacity_down = not (await _analysis_capacity())["available"]
+
     for user_id in user_ids:
         try:
             active = await asyncio.to_thread(session_manager.get_active, user_id)
             if active is None:
                 continue
-            # tick() enforces both meters and may end the session.
-            state = await asyncio.to_thread(session_manager.tick, active["session_id"])
+            # Capacity outranks the meters: a scan against a dead engine buys nothing,
+            # so end it and hand back the unproven time rather than letting tick()
+            # quietly charge for it. Only SCANNING is affected — a paused session
+            # deciding on a plan needs no capacity and must not be disturbed.
+            if capacity_down and active.get("status") == SCANNING:
+                state = await asyncio.to_thread(
+                    session_manager.end_for_capacity_loss, active["session_id"]
+                )
+            else:
+                # tick() enforces both meters and may end the session.
+                state = await asyncio.to_thread(session_manager.tick, active["session_id"])
             remaining_today = await asyncio.to_thread(
                 session_manager.remaining_today, user_id
             )
