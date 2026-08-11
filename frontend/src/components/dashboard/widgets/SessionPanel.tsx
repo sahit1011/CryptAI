@@ -7,22 +7,43 @@ import { Button } from "@/components/ui/button";
 import { LoadingState } from "@/components/ui/states";
 import { cn } from "@/lib/utils";
 import { useSession } from "@/hooks/useSession";
-import { formatClock, sessionPhase } from "@/lib/session";
+import { formatClock, isHeartbeatStale, type SessionPhase } from "@/lib/session";
 import { TRADING_STYLES } from "@/lib/preferences";
 import { getPreferences, type GoalHorizon } from "@/lib/api";
 import { ProposalCard } from "./ProposalCard";
 
 /*
- * SessionPanel — the metered-session control surface.
+ * SessionPanel — the scan console.
  *
- * Start a session (free tier: a daily quota), watch the clock spend only while
- * the swarm is scanning, decide on the proposal it surfaces, and see the trade
- * open. The server clock is authoritative (useSession polls every 5s); this
- * ticks locally between polls so the timer reads smoothly.
+ * Find a trade (free tier: a daily allowance of scan time), watch the clock spend only
+ * while your agents are scanning, decide on the plan it surfaces, and see the trade
+ * open. The server clock is authoritative (useSession polls every 5s); this ticks
+ * locally between polls so the timer reads smoothly.
+ *
+ * Honesty rules this component exists to keep (docs/UX_SPEC.md §5):
+ *  - Never claim the agents are working without a fresh timestamp proving it. Silence
+ *    is reported as silence, not narrated as progress.
+ *  - When analysis is offline the Start control is ABSENT, not disabled: a greyed
+ *    button invites "why can't I press this", and the honest answer is about capacity,
+ *    not about the user.
+ *  - Say what is and is not costing scan time in every state, not in a tooltip.
  */
 
+/** The three-verb model, stated wherever the meter is visible. Scanning is the only
+ * thing that spends; deciding and watching are free. This is the whole pricing model,
+ * so it is never hidden behind a hover. */
+function MeterLegend() {
+    return (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+            <span className="text-foreground">Scanning</span> uses your scan time.{" "}
+            <span className="text-foreground">Deciding</span> doesn&apos;t — the clock stops the
+            moment a plan lands. <span className="text-foreground">Watching</span> never does.
+        </p>
+    );
+}
+
 export function SessionPanel() {
-    const { overview, proposal, loading, error, notice, busy, start, end, approve, reject } =
+    const { overview, phase, capacity, proposal, loading, error, notice, busy, start, end, approve, reject } =
         useSession();
 
     // The channel to start with — seeded from the user's persona default, overridable
@@ -55,8 +76,10 @@ export function SessionPanel() {
         );
     }
 
-    const phase = overview ? sessionPhase(overview) : "idle";
     const session = overview?.session ?? null;
+    // Judged from last_cycle_at, not from the phase: a scanning session whose agents
+    // have gone quiet must stop being described as working.
+    const stale = isHeartbeatStale(session);
 
     const dailyRemaining = overview?.remaining_today_seconds ?? 0;
     const liveElapsed = (session?.elapsed_seconds ?? 0) + (session?.status === "scanning" ? tick : 0);
@@ -85,10 +108,27 @@ export function SessionPanel() {
                 {/* IDLE — pick a style, then start */}
                 {phase === "idle" ? (
                     <div className="flex flex-col gap-4 py-2">
-                        <p className="text-center text-xs text-muted-foreground">
-                            {formatClock(dailyRemaining)} of analysis time left today. The clock only
-                            runs while the swarm is scanning — it pauses when a setup is on the table.
-                        </p>
+                        {/* Readiness rows: everything that has to be true before a scan can
+                            produce anything, stated before the user spends time on it. */}
+                        <dl className="divide-y divide-border/60 rounded-lg border border-border/60 text-xs">
+                            <div className="flex items-center justify-between px-3 py-2">
+                                <dt className="text-muted-foreground">Analysis</dt>
+                                <dd className="font-medium text-profit">online</dd>
+                            </div>
+                            <div className="flex items-center justify-between px-3 py-2">
+                                <dt className="text-muted-foreground">Scan time today</dt>
+                                <dd className="font-medium tabular-nums text-foreground">
+                                    {formatClock(dailyRemaining)} of{" "}
+                                    {formatClock(overview?.daily_quota_seconds ?? 0)} left
+                                </dd>
+                            </div>
+                            <div className="flex items-center justify-between px-3 py-2">
+                                <dt className="text-muted-foreground">Style</dt>
+                                <dd className="font-medium text-foreground">
+                                    {TRADING_STYLES.find((s) => s.value === channel)?.label ?? channel}
+                                </dd>
+                            </div>
+                        </dl>
                         <div>
                             <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                                 Trading style this session
@@ -103,15 +143,23 @@ export function SessionPanel() {
                                             onClick={() => setChannel(s.value)}
                                             aria-pressed={active}
                                             disabled={busy}
-                                            title={s.blurb}
                                             className={cn(
-                                                "rounded-lg border px-3 py-2 text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60",
+                                                "flex flex-col gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60",
                                                 active
                                                     ? "border-accent/40 bg-accent-muted/40 text-foreground"
                                                     : "border-border bg-elevated/30 text-muted-foreground hover:text-foreground",
                                             )}
                                         >
-                                            {s.label}
+                                            {/* Holding period and the R:R bar on the face, not in a
+                                                title= — a tooltip is invisible on mobile and to
+                                                anyone who never hovers. */}
+                                            <span className="text-sm font-medium">{s.label}</span>
+                                            <span className="text-[10px] leading-tight text-muted-foreground">
+                                                {s.horizon}
+                                            </span>
+                                            <span className="text-[10px] leading-tight text-muted-foreground">
+                                                needs {s.minRR.toFixed(1)}:1
+                                            </span>
                                         </button>
                                     );
                                 })}
@@ -125,6 +173,25 @@ export function SessionPanel() {
                             <Play className="size-4" />
                             {busy ? "Starting…" : "Start session"}
                         </Button>
+                    </div>
+                ) : null}
+
+                {/* BLOCKED — analysis capacity is down. No Start button at all: the
+                    honest answer is about our capacity, not the user's quota. */}
+                {phase === "blocked" ? (
+                    <div className="flex flex-col gap-2 py-4 text-center">
+                        <Radar className="mx-auto size-8 text-muted-foreground/50" />
+                        <p className="text-sm font-medium text-foreground">Market analysis is offline.</p>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                            No new trade plans can be produced until it&apos;s back.{" "}
+                            <span className="text-foreground">Your scan time is safe</span> — nothing
+                            is being counted. Trades you already have are still being watched.
+                        </p>
+                        {capacity?.eta_seconds ? (
+                            <p className="text-[11px] text-muted-foreground">
+                                Expected back in about {formatClock(capacity.eta_seconds)}.
+                            </p>
+                        ) : null}
                     </div>
                 ) : null}
 
@@ -167,10 +234,23 @@ export function SessionPanel() {
                             elapsed={liveElapsed}
                             granted={session?.quota_seconds_granted ?? 0}
                         />
-                        <p className="text-center text-xs text-muted-foreground">
-                            The agents are analysing live conditions against your preferences. A setup
-                            will appear here the moment one qualifies.
-                        </p>
+                        {/* Evidence, not reassurance. The sentence this replaced ("The agents
+                            are analysing live conditions…") rendered identically whether a
+                            sweep had just finished or nothing had run in ten minutes — it was
+                            the known bug in sentence form. */}
+                        {stale ? (
+                            <p className="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+                                <span className="text-foreground">No word from your agents.</span>{" "}
+                                Your clock is paused until they report back.
+                            </p>
+                        ) : (
+                            <p className="text-center text-xs text-muted-foreground">
+                                {session?.cycles_completed
+                                    ? `${session.cycles_completed} sweep${session.cycles_completed === 1 ? "" : "s"} so far — nothing has cleared your bar yet.`
+                                    : "First sweep is running. A plan appears here the moment one clears your bar."}
+                            </p>
+                        )}
+                        <MeterLegend />
                     </div>
                 ) : null}
 
@@ -213,13 +293,14 @@ export function SessionPanel() {
     );
 }
 
-function PhaseBadge({ phase }: { phase: ReturnType<typeof sessionPhase> }) {
-    const map: Record<string, { label: string; cls: string }> = {
-        idle: { label: "Idle", cls: "bg-muted/60 text-muted-foreground" },
-        exhausted: { label: "Quota spent", cls: "bg-muted/60 text-muted-foreground" },
+function PhaseBadge({ phase }: { phase: SessionPhase }) {
+    const map: Record<SessionPhase, { label: string; cls: string }> = {
+        idle: { label: "Ready", cls: "bg-muted/60 text-muted-foreground" },
+        blocked: { label: "Analysis offline", cls: "bg-muted/60 text-muted-foreground" },
+        exhausted: { label: "No scan time left", cls: "bg-muted/60 text-muted-foreground" },
         scanning: { label: "Scanning", cls: "bg-accent/15 text-accent" },
-        proposal: { label: "Awaiting you", cls: "bg-profit/15 text-profit" },
-        executing: { label: "Executing", cls: "bg-accent/15 text-accent" },
+        proposal: { label: "Your call", cls: "bg-profit/15 text-profit" },
+        executing: { label: "Placing", cls: "bg-accent/15 text-accent" },
     };
     const { label, cls } = map[phase] ?? map.idle;
     return (

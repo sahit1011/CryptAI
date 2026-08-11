@@ -9,15 +9,23 @@ import type { GoalHorizon, RiskAppetite, TradingPreferences } from "@/lib/api";
 export interface TradingStyle {
     value: GoalHorizon;
     label: string;
+    /** How long trades of this style are held — shown on the button face. */
+    horizon: string;
     blurb: string;
+    /** Minimum reward:risk a plan must clear for this style. Mirrors the backend's
+     * CHANNEL_MIN_RR (src/core/session_pipeline.py), which is the authority — it is
+     * duplicated here only to label the choice BEFORE a scan starts. The backend
+     * applies it tighten-only against the user's own floor, so a stricter personal
+     * setting still wins; this number is the floor the style adds, not a promise. */
+    minRR: number;
 }
 
 /** The four trading styles (the "channels" of the vision) as a persistent default. */
 export const TRADING_STYLES: TradingStyle[] = [
-    { value: "scalp", label: "Scalp", blurb: "Minutes. Many small, fast trades." },
-    { value: "intraday", label: "Intraday", blurb: "Hours. In and out within the day." },
-    { value: "swing", label: "Swing", blurb: "Days. Ride a multi-session move." },
-    { value: "position", label: "Position", blurb: "Weeks. Fewer, larger convictions." },
+    { value: "scalp", label: "Scalp", horizon: "Minutes", minRR: 1.2, blurb: "Minutes. Many small, fast trades." },
+    { value: "intraday", label: "Intraday", horizon: "Hours", minRR: 1.5, blurb: "Hours. In and out within the day." },
+    { value: "swing", label: "Swing", horizon: "Days", minRR: 2.0, blurb: "Days. Ride a multi-session move." },
+    { value: "position", label: "Position", horizon: "Weeks", minRR: 2.5, blurb: "Weeks. Fewer, larger convictions." },
 ];
 
 export const RISK_APPETITES: { value: RiskAppetite; label: string }[] = [
