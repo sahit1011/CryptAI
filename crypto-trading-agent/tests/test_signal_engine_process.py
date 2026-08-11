@@ -49,9 +49,12 @@ async def test_runs_a_real_child_and_forwards_its_output(monkeypatch, tmp_path):
         await asyncio.wait_for(task, timeout=10)
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
-    # Let the subprocess transport finish closing before the loop tears down, otherwise
-    # its __del__ fires post-close and logs a spurious "Event loop is closed".
-    await asyncio.sleep(0.2)
+    # No settling sleep here on purpose. This used to need one, because the supervisor
+    # left the subprocess transport for the GC to close and its __del__ then fired after
+    # the loop had torn down ("Event loop is closed") — a flake that failed whichever
+    # test happened to be running at collection time, not this one. run_signal_engine
+    # now closes the transport itself, so teardown is deterministic and a sleep would
+    # only hide a regression.
 
     assert any("signal engine started" in m for m in seen)
     assert any("pulse published" in m for m in seen), seen
@@ -89,3 +92,40 @@ async def test_a_crashing_engine_is_retried_with_backoff_not_a_tight_loop(monkey
     # Exactly one attempt: it crashed, then waited on the (long) backoff instead of
     # immediately respawning.
     assert len(starts) == 1, f"expected one spawn before backoff, got {len(starts)}"
+
+
+@pytest.mark.asyncio
+async def test_a_dying_engine_still_gets_its_last_words_logged(monkeypatch, tmp_path):
+    """A crashing child's final stdout must survive its exit.
+
+    On a free instance the engine is the component most likely to die of resource
+    limits, so the line it writes on the way out is the one worth having; `rc=1` alone
+    says nothing.
+
+    Honest scope: this pins the requirement, it is NOT a regression test. Checked against
+    the old cancel-on-exit supervisor and it passed there too — the pump is already
+    scheduled and reads the buffered line before the cancel lands, so the race it loses
+    is one this test cannot reliably provoke. The defect that fix actually closes is the
+    leaked subprocess transport, which surfaces as a GC-timed "Event loop is closed"
+    charged to an unrelated test.
+    """
+    script = tmp_path / "dying-engine"
+    script.write_text("#!/bin/sh\necho 'redis connection refused'\nexit 1\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("SIGNAL_ENGINE_BIN", str(script))
+    monkeypatch.setattr(sep, "_BACKOFF_START_S", 3600)  # park on backoff after one crash
+
+    seen = []
+    monkeypatch.setattr(sep.logger, "info", lambda m, *a, **k: seen.append(str(m)))
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(sep.run_signal_engine(shutdown))
+    await asyncio.sleep(0.8)
+    shutdown.set()
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=10)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+    assert any("redis connection refused" in m for m in seen), seen

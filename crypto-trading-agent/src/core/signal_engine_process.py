@@ -32,6 +32,10 @@ DEFAULT_BINARY = "/usr/local/bin/signal-engine"
 _BACKOFF_START_S = 5
 _BACKOFF_MAX_S = 60
 
+#: How long to keep reading a dead child's stdout before giving up on it. Short: the
+#: child has already exited, so EOF is imminent unless a grandchild inherited the pipe.
+_DRAIN_TIMEOUT_S = 5
+
 
 def _binary_path() -> Optional[str]:
     explicit = os.getenv("SIGNAL_ENGINE_BIN")
@@ -52,6 +56,41 @@ async def _pump_logs(stream: asyncio.StreamReader) -> None:
         text = line.decode("utf-8", "replace").rstrip()
         if text:
             logger.info(f"[signal-engine] {text}")
+
+
+async def _close_out(pump: Optional[asyncio.Task], proc) -> None:
+    """Read a finished child's last lines, then release its pipes.
+
+    The demonstrated bug is the transport, not the pump. Cancelling the pump — which is
+    what this used to do — races the child's final stdout, which is the reason it died;
+    measured, the reader usually wins that race, so treat this half as hardening rather
+    than a fixed defect.
+
+    Leaving the pump cancelled also leaves the subprocess transport unfinished, and that
+    part is not theoretical. The transport then closes from
+    `__del__` at GC time instead, which is nondeterministic: if the event loop has shut
+    down by then it raises `RuntimeError: Event loop is closed` from whatever happens to
+    be running. Under supervision each respawn leaked another one.
+
+    The close is in a `finally` so it still runs when this is called from a cancelled
+    supervisor — the drain's first `await` re-raises immediately in that case, and the
+    pipes must be released anyway.
+    """
+    try:
+        if pump is not None and not pump.done():
+            try:
+                await asyncio.wait_for(pump, timeout=_DRAIN_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        if pump is not None:
+            pump.cancel()
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:  # pragma: no cover - closing must never mask the exit
+                pass
 
 
 async def run_signal_engine(shutdown: Optional[asyncio.Event] = None) -> None:
@@ -94,8 +133,7 @@ async def run_signal_engine(shutdown: Optional[asyncio.Event] = None) -> None:
                 proc.kill()
             raise
         finally:
-            if pump is not None:
-                pump.cancel()
+            await _close_out(pump, proc)
 
         if shutdown is not None and shutdown.is_set():
             return
