@@ -323,6 +323,94 @@ async def test_channel_gates_which_setups_qualify(stores):
     assert mgr.get_active(USER)["status"] == SCANNING
 
 
+# --- per-user synthesis ------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_synthesis_can_pick_a_different_trade_than_the_confidence_sort(stores):
+    """Same chart, different trade — the product's core claim. Without synthesis the
+    highest-confidence candidate wins for everyone; with it, this user's agent picks the
+    one that suits them."""
+    mgr, prefs, proposals, cache = stores
+    # Both clear the user's 0.6 confidence floor, so the only thing separating them is
+    # whose judgment picks — which is exactly what synthesis is for.
+    weaker_but_suitable = {**SHARED_SETUP, "confidence_score": 0.65}
+    stronger = {
+        **SHARED_SETUP, "symbol": "ETHUSDT", "entry_price": 2500.0, "stop_loss": 2400.0,
+        "take_profit_levels": [{"price": 2800.0, "size": 1.0}], "confidence_score": 0.95,
+    }
+    cache.put("BTCUSDT", [weaker_but_suitable])
+    cache.put("ETHUSDT", [stronger])
+
+    async def choose_btc(candidates, prefs_, pulses, positions, channel):
+        pick = next(c for c in candidates if c["symbol"] == "BTCUSDT")
+        return {**pick, "thesis": "It did. It suits you. It breaks here."}, \
+               {"input_tokens": 1000, "output_tokens": 50}, "chosen"
+
+    session = mgr.start(USER)
+    analyze = build_analyze_fn(
+        session_manager=mgr, proposal_service=proposals, setup_cache=cache,
+        synthesize=choose_btc,
+    )
+    setups, usage = await analyze({
+        "session_id": session["session_id"], "user_id": USER,
+        "preferences": prefs.get(USER), "pulses": {}, "symbols": ["BTCUSDT", "ETHUSDT"],
+    })
+
+    assert len(setups) == 1
+    assert setups[0]["symbol"] == "BTCUSDT", "synthesis was overridden by the confidence sort"
+    assert setups[0]["thesis"] == "It did. It suits you. It breaks here."
+    # The usage must reach the caller, or the session cost cap guards nothing.
+    assert usage == {"input_tokens": 1000, "output_tokens": 50}
+
+
+@pytest.mark.asyncio
+async def test_synthesis_declining_produces_no_proposal_but_still_bills(stores):
+    """'None of these fit you' is a real answer. The tokens it cost are still billed."""
+    mgr, prefs, proposals, cache = stores
+    cache.put("BTCUSDT", [SHARED_SETUP])
+
+    async def decline(candidates, prefs_, pulses, positions, channel):
+        return None, {"input_tokens": 900, "output_tokens": 8}, "declined"
+
+    session = mgr.start(USER)
+    analyze = build_analyze_fn(
+        session_manager=mgr, proposal_service=proposals, setup_cache=cache,
+        synthesize=decline,
+    )
+    setups, usage = await analyze({
+        "session_id": session["session_id"], "user_id": USER,
+        "preferences": prefs.get(USER), "pulses": {}, "symbols": ["BTCUSDT"],
+    })
+
+    assert setups == []
+    assert proposals.get_pending(USER) is None
+    assert usage == {"input_tokens": 900, "output_tokens": 8}
+    assert mgr.get_active(USER)["status"] == SCANNING  # clock keeps running, still scanning
+
+
+@pytest.mark.asyncio
+async def test_a_broken_synthesizer_falls_back_to_the_deterministic_pick(stores):
+    """A user paying scan time must still get an answer when the model is unavailable."""
+    mgr, prefs, proposals, cache = stores
+    cache.put("BTCUSDT", [SHARED_SETUP])
+
+    async def broken(candidates, prefs_, pulses, positions, channel):
+        return None, None, "llm_error"
+
+    session = mgr.start(USER)
+    analyze = build_analyze_fn(
+        session_manager=mgr, proposal_service=proposals, setup_cache=cache,
+        synthesize=broken,
+    )
+    setups, _ = await analyze({
+        "session_id": session["session_id"], "user_id": USER,
+        "preferences": prefs.get(USER), "pulses": {}, "symbols": ["BTCUSDT"],
+    })
+
+    assert len(setups) == 1, "the deterministic fallback did not produce a proposal"
+    assert setups[0]["symbol"] == "BTCUSDT"
+
+
 @pytest.mark.asyncio
 async def test_user_risk_prefs_can_reject_what_the_market_offers(stores):
     """A setup below the user's own R:R floor dies at THEIR gate, and the session keeps

@@ -113,11 +113,22 @@ def build_analyze_fn(
     proposal_service,
     setup_cache: SharedSetupCache,
     freshness_seconds: float = DEFAULT_SETUP_FRESHNESS_SECONDS,
+    synthesize=None,
 ):
-    """The production AnalyzeFn: cached shared setups -> one per-user proposal.
+    """The production AnalyzeFn: shared candidates -> ONE proposal for THIS user.
 
-    Returns (proposals, usage) per the session_worker contract. usage is None in M2
-    (see module docstring).
+    Returns `(proposals, usage)` per the session_worker contract.
+
+    `synthesize` (optional, from `src.core.synthesis`) is what makes the choice personal:
+    given the candidates plus this user's persona, holdings and the live conditions, it
+    picks the one that fits them and writes the thesis. Without it — no LLM configured,
+    or the call failed — the pick falls back to highest model confidence, which is the
+    same trade for everyone. That fallback is deliberate: a user paying scan time must
+    still get an answer when the model is unavailable.
+
+    `usage` is the provider's token usage from that call, handed to the worker so it can
+    bill the session's cost cap. Before synthesis existed nothing produced usage, which is
+    why the cap guarded a number that never moved.
     """
 
     async def analyze(context: Dict[str, Any]) -> tuple:
@@ -164,10 +175,42 @@ def build_analyze_fn(
             )
             return [], None
 
-        # Best candidate takes the single proposal slot.
+        # Who gets the single proposal slot? Ask the user's own agent first; fall back to
+        # raw model confidence, which is the same answer for everybody.
+        usage = None
         setup, pulse = max(
             candidates, key=lambda c: float(c[0].get("confidence_score") or 0.0)
         )
+        if synthesize is not None:
+            by_setup = {id(c[0]): c[1] for c in candidates}
+            chosen, usage, outcome = await synthesize(
+                [c[0] for c in candidates],
+                prefs,
+                pulses,
+                context.get("open_positions"),
+                context.get("channel"),
+            )
+            if outcome == "declined":
+                # The user's agent looked at their book, their goals and these candidates
+                # and said none of them fit. That is a real answer and the product's whole
+                # premise — surface it and spend no more of their clock this cycle.
+                session_manager.log_agent_step(
+                    session_id,
+                    "synthesis",
+                    "none of this cycle's candidates fit your rules right now",
+                    {"candidates": len(candidates)},
+                )
+                return [], usage
+            if chosen is not None:
+                # Keep the pulse that belongs to the CHOSEN setup, not the ranked one —
+                # they can be different symbols, and the proposal records the pulse it
+                # was built against.
+                setup = chosen
+                pulse = by_setup.get(id(candidates[0][0]), pulse)
+                for original, original_pulse in candidates:
+                    if original.get("symbol") == chosen.get("symbol"):
+                        pulse = original_pulse
+                        break
 
         # ProposalService.create floats each take-profit; shared setups carry
         # {price, size} dicts. Normalize to bare prices without mutating the cache.
@@ -197,7 +240,7 @@ def build_analyze_fn(
                 f"candidate {setup.get('symbol')} rejected by your risk preferences",
                 {"symbol": setup.get("symbol")},
             )
-            return [], None
+            return [], usage
 
         # Pause the clock; the user is deciding now. run_cycle checked SCANNING before
         # calling us, so this transition is legal barring an admin race (which raises
@@ -212,6 +255,6 @@ def build_analyze_fn(
             f"proposal {proposal['proposal_id']} created for {user_id} "
             f"in session {session_id}"
         )
-        return [proposal], None
+        return [proposal], usage
 
     return analyze
