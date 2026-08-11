@@ -7,7 +7,7 @@ import { Value, PnL } from "@/components/ui/value";
 import { Button } from "@/components/ui/button";
 import { cn, safeNum } from "@/lib/utils";
 import { formatClock, shelfLifeSeconds } from "@/lib/session";
-import type { Proposal } from "@/lib/api";
+import { getExchangeKeys, type Proposal } from "@/lib/api";
 
 /*
  * ProposalCard — the AI's setup on the table, with the shelf-life clock ticking.
@@ -22,20 +22,38 @@ interface ProposalCardProps {
     busy: boolean;
     onApprove: () => void;
     onReject: () => void;
-    /** Where an approval sends the order. Defaults to the practice desk, which is the
-     * platform default and the only destination live trading is not gated off. */
-    destination?: "practice" | "delta_test";
 }
 
-export function ProposalCard({
-    proposal,
-    busy,
-    onApprove,
-    onReject,
-    destination = "practice",
-}: ProposalCardProps) {
+/** Where an approval actually sends the order, mirroring the backend's own rule.
+ *
+ * `_build_user_engine` routes to the LIVE exchange whenever stored credentials exist —
+ * it does not consult trading_mode — so connected keys, not a preference, decide this.
+ * A prop with a "practice" default was worse than the vague label it replaced: it stated
+ * a destination confidently and would have read "Place on practice account" while the
+ * order went to a real exchange. Never assert the destination from a default; derive it,
+ * and stay neutral until it is known. */
+function useOrderDestination(): "practice" | "exchange" | "unknown" {
+    const [dest, setDest] = useState<"practice" | "exchange" | "unknown">("unknown");
+    useEffect(() => {
+        let cancelled = false;
+        getExchangeKeys()
+            .then((s) => !cancelled && setDest(s.connected ? "exchange" : "practice"))
+            .catch(() => { /* unknown — the neutral label is the honest one */ });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+    return dest;
+}
+
+export function ProposalCard({ proposal, busy, onApprove, onReject }: ProposalCardProps) {
+    const destination = useOrderDestination();
     const destinationLabel =
-        destination === "delta_test" ? "Place on Delta (test)" : "Place on practice account";
+        destination === "exchange"
+            ? "Place on your exchange (test)"
+            : destination === "practice"
+              ? "Place on practice account"
+              : "Place this trade";
     const isLong = proposal.direction === "LONG";
     const DirIcon = isLong ? ArrowUpRight : ArrowDownRight;
 
@@ -162,7 +180,13 @@ export function ProposalCard({
 
             <p className="flex items-center gap-1.5 border-t border-border/60 px-4 py-2 text-[11px] text-muted-foreground">
                 <ShieldAlert className="size-3 shrink-0" />
-                Re-checked against the live price on approval — a drifted setup is refused, not filled.
+                Re-checked against the live price on approval — a drifted setup is refused, not
+                filled.
+                {destination === "exchange"
+                    ? " This goes to your connected exchange in test mode: a real exchange, fake money."
+                    : destination === "practice"
+                      ? " This goes to your practice account — virtual money, real prices."
+                      : ""}
             </p>
         </div>
     );
