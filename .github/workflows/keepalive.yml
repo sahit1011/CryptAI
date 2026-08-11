@@ -1,12 +1,27 @@
-# Keep the free-tier backend awake.
+# Keep the free-tier backend awake — and say so when it isn't.
 #
 # Render's free web services spin down after ~15 minutes without traffic, which would
-# pause the embedded trading daemon (RUN_DAEMON_IN_API=true). This pings the liveness
-# endpoint every ~10 minutes so the instance — and the trading cycles — stay up.
-# GitHub Actions cron is free and uses only seconds of runner time per ping.
+# pause the embedded trading daemon (RUN_DAEMON_IN_API=true) along with every session
+# worker and position monitor. This pings liveness every ~10 minutes so the instance —
+# and the trading cycles — stay up. GitHub Actions cron is free and uses seconds of
+# runner time per ping.
 #
-# NOTE: scheduled workflows run on the repo's DEFAULT branch. If the default branch
-# isn't v2 yet, merge/point it accordingly for this to fire.
+# WHY THIS CAN NOW FAIL
+#
+# It used to end every run with `|| true` and an explicit "never fail" policy, so the one
+# automated check pointed at production was structurally incapable of going red. It spent
+# a suspended outage printing `503` into a log nobody reads while reporting success — the
+# same failure mode as a /health endpoint that returns healthy by construction.
+#
+# The distinction it now draws is between "slow" and "dead":
+#   • a timeout or a cold-start 5xx is NOT a failure — waking the service is the whole
+#     point of the ping, and the first probe after a spin-down is expected to be ugly.
+#     So a bad first attempt is retried, not reported.
+#   • a service still not serving after the retry window IS a failure. That is a
+#     suspension, a crashloop, or a bad deploy, and none of those fix themselves.
+#
+# NOTE: scheduled workflows run on the repo's DEFAULT branch (currently v2). A change
+# here only takes effect once it lands there.
 name: keepalive
 
 on:
@@ -17,12 +32,37 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - name: Ping backend liveness
+        env:
+          URL: https://cryptai-backend.onrender.com/health/live
+          # Generous enough to cover a cold start (~1 min), short enough that a genuine
+          # outage is reported within one cron interval rather than the next.
+          ATTEMPTS: "4"
+          SLEEP_SECONDS: "30"
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
-            https://cryptai-backend.onrender.com/health/live || true)
-          echo "backend /health/live -> $code"
-          # A cold start can take ~1 min; the request itself is the wake-up call,
-          # so even a slow/failed first probe has done its job. Never fail the run.
+          set -uo pipefail
+          code=000
+          for i in $(seq 1 "$ATTEMPTS"); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "$URL" || echo 000)
+            echo "attempt $i/$ATTEMPTS: $URL -> $code"
+            [ "$code" = "200" ] && break
+            [ "$i" -lt "$ATTEMPTS" ] && sleep "$SLEEP_SECONDS"
+          done
+
+          if [ "$code" = "200" ]; then
+            echo "backend is awake"
+            exit 0
+          fi
+
+          # Distinguish the causes in the log, because they need different responses:
+          # a suspension is a billing/dashboard action, a 5xx is a deploy or crash, and
+          # 000 is the service never answering at all.
+          echo "::error::backend did not serve /health/live after $ATTEMPTS attempts (last=$code)"
+          case "$code" in
+            503) echo "::error::503 — service suspended, or unhealthy at the edge. Check the Render dashboard (billing / suspension)." ;;
+            000) echo "::error::no response — DNS, TLS, or the service is fully down." ;;
+            *)   echo "::error::HTTP $code — deploy failure or crashloop. Check Render logs." ;;
+          esac
+          exit 1

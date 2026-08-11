@@ -1,37 +1,73 @@
-# Render Blueprint — CryptAI backend (API + multi-user daemon + Redis).
+# Render Blueprint — CryptAI backend, FREE-TIER topology ($0/month).
 #
-# Deploys the trading backend to a public URL. Postgres and Auth live on Supabase
-# (already provisioned), so this blueprint provisions only:
-#   • cryptai-redis    — managed Redis (message bus + per-user state)
-#   • cryptai-backend  — FastAPI API (public HTTPS URL + WebSocket)
-#   • cryptai-daemon   — the multi-user trading daemon (background worker)
+# ONE service, by necessity. Render's free plan allows only web services (no background
+# workers) and meters ~750 instance-hours/month across ALL free services combined. One
+# always-on service is ~730h, so exactly one fits. A second free service would exceed the
+# allowance and put the whole account at risk of suspension.
 #
-# The frontend deploys separately (Vercel or a Render web service) — see DEPLOY.md.
+# Everything therefore runs inside the API process tree, using patterns the codebase
+# already supports and tests:
+#   • the Rust signal engine  -> child process (src/core/signal_engine_process.py)
+#   • the multi-user daemon   -> asyncio task  (RUN_DAEMON_IN_API=true)
+# Both are built into the repo-root Dockerfile, which exists for exactly this reason.
 #
-# SETUP: In the Render dashboard, connect this repo and create resources from this
-# Blueprint. Then fill the secret env vars marked `sync: false` (values are NOT stored
-# in git): POSTGRES_URL (Supabase session pooler), SUPABASE_URL, VAULT_ENC_KEY,
-# API_AUTH_TOKEN, an LLM key, and API_CORS_ORIGINS (your frontend URL).
+# The rest of the stack is already free: Supabase (Postgres + auth), Vercel (frontend),
+# GitHub Actions (keepalive cron).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE THREE THINGS THAT WILL BITE YOU ON FREE
+#
+# 1. IT SLEEPS after ~15 minutes without HTTP traffic. .github/workflows/keepalive.yml
+#    pings every 10 minutes to prevent that, so the cron is now LOAD-BEARING, not a
+#    nicety: if it stops, the service sleeps, and sleeping kills the session workers and
+#    position monitors along with it. GitHub cron is best-effort and can run late, so
+#    expect occasional sleeps and a ~1 minute cold start on wake.
+#
+# 2. numInstances MUST stay 1. SessionWorkerPool is a singleton by DEPLOYMENT TOPOLOGY,
+#    not by construction — there is no leader election. Two instances would each
+#    discover the same active sessions and run duplicate workers: double LLM spend,
+#    double cycles, and racing writes to the same session rows. Free plan cannot scale
+#    anyway, which is the only reason this is currently safe.
+#
+# 3. Free Redis is small and EVICTS. Pulse keys carry a 120s TTL so they expire on their
+#    own, but do not add unbounded keys without checking headroom.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHEN TO GO BACK TO PAID
+#
+# Split the daemon into its own `type: worker` service (plan: starter) the moment any of
+# these is true: real money is enabled, sleeping becomes unacceptable, or you need to
+# scale the API. Restoring it means re-adding the worker block and setting
+# RUN_DAEMON_IN_API=false — the daemon runs standalone via `python -m src.multi_user_daemon`.
+#
+# SETUP: connect this repo in the Render dashboard and create from Blueprint, then fill
+# every `sync: false` secret (they are deliberately not in git).
 
 services:
-  # --- Redis (message bus + per-user state) --------------------------------------
+  # --- Redis (message bus, engine switch, market:pulse:*) ------------------------
   - type: redis
     name: cryptai-redis
-    plan: starter            # free tier evicts; starter keeps appendonly durability
-    maxmemoryPolicy: noeviction
-    ipAllowList: []          # internal-only (reachable by the services below)
+    plan: free
+    # allkeys-lru rather than noeviction: on a small free instance, noeviction makes
+    # writes FAIL when full, which takes down the message bus. Evicting a cold key
+    # degrades gracefully instead — and the pulse keys that dominate traffic carry a
+    # 120s TTL, so they age out without ever needing eviction.
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []          # internal-only
 
-  # --- FastAPI backend (public API + WebSocket) ----------------------------------
+  # --- The whole backend: API + signal engine + daemon ---------------------------
   - type: web
     name: cryptai-backend
     runtime: docker
+    # Repo-root Dockerfile: builds the Rust engine AND the Python backend into one
+    # image. crypto-trading-agent/Dockerfile is kept for docker-compose/standalone.
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter
-    # Liveness, deliberately — this probe decides whether Render restarts the pod, and a
-    # dead Redis must not trigger a restart loop (the API degrades rather than crashing).
+    plan: free
+    # Liveness, deliberately. This probe decides whether Render restarts the pod, and a
+    # dead Redis must not trigger a restart loop — the API degrades rather than crashing.
     # /health/live never checks dependencies. /health reports honest degraded status for
-    # humans; /health/ready 503s for load balancers. Do not point this at either of those.
+    # humans; /health/ready 503s for load balancers. Do not point this at either.
     healthCheckPath: /health/live
     autoDeploy: true
     envVars:
@@ -41,11 +77,29 @@ services:
         value: "0.0.0.0"
       - key: ENVIRONMENT
         value: production
+
+      # ---- money-safety gates: BOTH must stay false until live trading is validated --
       - key: USE_TESTNET
         value: "true"
       - key: LIVE_TRADING_CONFIRMED   # SAFETY GATE — never flip without validation
         value: "false"
-      # ---- secrets: set these in the Render dashboard (sync:false = not in git) ----
+
+      # ---- in-process components (the free-tier topology) ---------------------------
+      - key: RUN_DAEMON_IN_API        # session worker pool + position monitors in-process
+        value: "true"
+      - key: CYCLE_INTERVAL
+        value: "180"
+      - key: SESSION_CYCLE_SECONDS    # published to clients as expected_cycle_seconds;
+        value: "180"                  # keep equal to CYCLE_INTERVAL or the UI's staleness
+                                      # check measures against a cadence nobody uses.
+      - key: SIGNAL_PLANE_ENABLED     # "true" only once the engine publishes market:pulse:*
+        value: "false"                # to THIS Redis. Enabling it against an absent engine
+                                      # fail-closes every session's pulse gate, and the
+                                      # failure is silent — sessions just never scan.
+      - key: PLATFORM_SYMBOLS         # session universe default; keep ⊆ the engine's SYMBOLS
+        value: "BTCUSDT,ETHUSDT,SOLUSDT"
+
+      # ---- secrets: set in the Render dashboard (sync:false = not in git) -----------
       - key: POSTGRES_URL             # Supabase session pooler URI
         sync: false
       - key: SUPABASE_URL             # https://<ref>.supabase.co (verifies user JWTs)
@@ -57,44 +111,9 @@ services:
       - key: ADMIN_USER_IDS           # REQUIRED: comma-separated Supabase UUIDs of owners.
         sync: false                   # Fail-closed: if empty, NO end-user can control the
                                       # engine (you lock yourself out). Set your own UUID.
-      - key: API_CORS_ORIGINS         # your frontend origin, e.g. https://cryptai.vercel.app
+      - key: API_CORS_ORIGINS         # frontend origin, e.g. https://cryptai-app.vercel.app
         sync: false
-      - key: OPENROUTER_API_KEY       # LLM key powering analysis/strategy/insights
-        sync: false
-
-  # --- Multi-user trading daemon (background worker) -----------------------------
-  - type: worker
-    name: cryptai-daemon
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    dockerCommand: python -m src.multi_user_daemon
-    plan: starter
-    autoDeploy: true
-    envVars:
-      - key: REDIS_URL
-        fromService: { name: cryptai-redis, type: redis, property: connectionString }
-      - key: ENVIRONMENT
-        value: production
-      - key: USE_TESTNET
-        value: "true"
-      - key: LIVE_TRADING_CONFIRMED
-        value: "false"
-      - key: CYCLE_INTERVAL
-        value: "180"
-      - key: SIGNAL_PLANE_ENABLED     # flip to "true" AFTER the signal-engine service is
-        value: "false"                # up and publishing market:pulse:* to this Redis.
-                                      # Wiring PulseClient to an absent engine fail-closes
-                                      # every session's pulse gate, so it stays off first.
-      - key: PLATFORM_SYMBOLS         # session universe default; keep ⊆ the engine's SYMBOLS
-        value: "BTCUSDT,ETHUSDT,SOLUSDT"
+      - key: OPENROUTER_API_KEY       # LLM key. Without one, /api/session/start returns
+        sync: false                   # 503 capacity_unavailable — analysis cannot run.
       - key: MULTI_USER_SEED_IDS      # optional owner/demo paper account(s)
-        sync: false
-      - key: POSTGRES_URL
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: VAULT_ENC_KEY
-        sync: false
-      - key: OPENROUTER_API_KEY
         sync: false
