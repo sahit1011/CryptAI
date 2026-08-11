@@ -345,6 +345,9 @@ class MultiUserTradingDaemon:
                     synthesize=self._build_synthesizer(),
                 ),
                 pulse_client=self.pulse_client,
+                # Lets each worker read its user's open positions, so synthesis can see
+                # what they already hold instead of always being told "none".
+                state_manager=self.state_manager,
                 # Deliberately NOT kill_switch=self.engine_switch. A started scan is
                 # already authorized: the capacity gate on POST /api/session/start
                 # refuses one outright (503, no row, no clock) when analysis is off, so

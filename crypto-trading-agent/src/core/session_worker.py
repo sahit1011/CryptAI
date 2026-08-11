@@ -97,6 +97,7 @@ class SessionWorker:
         pulse_client=None,
         cycle_seconds: Optional[int] = None,
         max_pulse_age_ms: int = DEFAULT_MAX_PULSE_AGE_MS,
+        state_manager=None,
     ):
         self.sessions = session_manager
         self.preferences = preferences_store
@@ -107,7 +108,22 @@ class SessionWorker:
         self.cycle_seconds = cycle_seconds or configured_cycle_seconds()
         self.max_pulse_age_ms = max_pulse_age_ms
         self.budget = SessionBudget(session_manager, self.session_id)
+        self.state_manager = state_manager
         self.cycles_run = 0
+
+    async def _open_positions(self) -> list:
+        """This user's live positions, for portfolio-aware selection. Best-effort.
+
+        Returns [] when unavailable — a book we cannot read must degrade to "we don't
+        know what you hold", never to a failed cycle on the user's metered time.
+        """
+        if self.state_manager is None:
+            return []
+        try:
+            return await self.state_manager.get_positions(user_id=self.user_id) or []
+        except Exception as e:
+            logger.debug(f"could not read positions for {self.user_id}: {e}")
+            return []
 
     # -- one cycle -----------------------------------------------------------
 
@@ -144,6 +160,10 @@ class SessionWorker:
             # The trading style chosen at session start; the pipeline overlays it on the
             # persona (goal_horizon + a tighter R:R floor). None keeps the persona.
             "channel": state.get("channel"),
+            # What they already hold. Without this the synthesis prompt renders
+            # "already holding: none" for everyone and can offer a setup that doubles or
+            # opposes a live position — portfolio-aware selection was the point.
+            "open_positions": await self._open_positions(),
         }
 
         usage = None
@@ -270,6 +290,7 @@ class SessionWorkerPool:
         cycle_seconds: Optional[int] = None,
         discovery_seconds: int = DEFAULT_DISCOVERY_SECONDS,
         kill_switch=None,
+        state_manager=None,
     ):
         self.sessions = session_manager
         self.preferences = preferences_store
@@ -278,6 +299,7 @@ class SessionWorkerPool:
         self.cycle_seconds = cycle_seconds or configured_cycle_seconds()
         self.discovery_seconds = discovery_seconds
         self.kill_switch = kill_switch
+        self.state_manager = state_manager
         self.workers: Dict[str, asyncio.Task] = {}
         self._shutdown = asyncio.Event()
 
@@ -330,6 +352,7 @@ class SessionWorkerPool:
                 self.analyze_fn,
                 pulse_client=self.pulse_client,
                 cycle_seconds=self.cycle_seconds,
+                state_manager=self.state_manager,
             )
             self.workers[session_id] = asyncio.get_running_loop().create_task(
                 worker.run(self._shutdown)

@@ -52,18 +52,36 @@ def test_prompt_survives_missing_pulses_and_no_positions():
 # --- parsing the reply --------------------------------------------------------
 
 def test_picks_the_named_candidate_and_keeps_the_thesis():
-    idx, thesis = parse_choice('{"choice": 2, "thesis": "Price rejected the high. The stop sits above structure. A close back inside invalidates it."}', 2)
+    verdict, idx, thesis = parse_choice('{"choice": 2, "thesis": "Price rejected the high. The stop sits above structure. A close back inside invalidates it."}', 2)
+    assert verdict == "picked"
     assert idx == 1  # 1-based in the protocol, 0-based to the caller
     assert thesis.startswith("Price rejected")
 
 
 def test_a_decline_is_a_valid_answer():
-    assert parse_choice('{"choice": null, "thesis": ""}', 2) == (None, "")
+    verdict, idx, _ = parse_choice('{"choice": null, "thesis": ""}', 2)
+    assert (verdict, idx) == ("declined", None)
+
+
+@pytest.mark.parametrize("raw,why", [
+    ("Candidate 1 suits this trader: the pullback already happened.", "prose, no JSON"),
+    ('{"choice": 1, "thesis": "it happened', "truncated mid-JSON by max_tokens"),
+    ('{"thesis": "no choice key"}', "missing the choice key"),
+    ('{"choice": "two"}', "non-numeric choice"),
+    ('{"choice": 7}', "out of range"),
+])
+def test_an_unreadable_reply_is_never_reported_as_a_decline(raw, why):
+    """The blocker this pins: a free instruct model answering in prose, or a reply cut off
+    by max_tokens, was being shown to the user as 'none of these fit your rules' — a
+    judgment their agent never made, on a metered cycle."""
+    verdict, idx, _ = parse_choice(raw, 2)
+    assert verdict == "unreadable", f"{why} was misread as a considered answer"
+    assert idx is None
 
 
 def test_json_wrapped_in_prose_or_fences_is_still_read():
-    idx, _ = parse_choice('Sure!\n```json\n{"choice": 1, "thesis": "a. b. c."}\n```', 2)
-    assert idx == 0
+    verdict, idx, _ = parse_choice('Sure!\n```json\n{"choice": 1, "thesis": "a. b. c."}\n```', 2)
+    assert (verdict, idx) == ("picked", 0)
 
 
 @pytest.mark.parametrize("raw", [
@@ -71,13 +89,13 @@ def test_json_wrapped_in_prose_or_fences_is_still_read():
     '[1, 2]',
 ])
 def test_unusable_replies_degrade_to_no_pick(raw):
-    assert parse_choice(raw, 2)[0] is None
+    assert parse_choice(raw, 2)[0] == "unreadable"
 
 
 @pytest.mark.parametrize("bad_index", [0, 3, -1, 99])
 def test_an_out_of_range_choice_is_refused(bad_index):
     """A model naming candidate 7 of 2 must not index into the list."""
-    assert parse_choice(f'{{"choice": {bad_index}, "thesis": "x"}}', 2)[0] is None
+    assert parse_choice(f'{{"choice": {bad_index}, "thesis": "x"}}', 2)[0] == "unreadable"
 
 
 @pytest.mark.parametrize("thesis", [
@@ -89,15 +107,15 @@ def test_an_out_of_range_choice_is_refused(bad_index):
 ])
 def test_a_forecasting_thesis_is_dropped_but_the_choice_survives(thesis):
     """The selection is still useful; the forecast is the thing that would mislead."""
-    idx, out = parse_choice(f'{{"choice": 1, "thesis": "{thesis}"}}', 2)
-    assert idx == 0, "the pick should survive a bad thesis"
+    verdict, idx, out = parse_choice(f'{{"choice": 1, "thesis": "{thesis}"}}', 2)
+    assert (verdict, idx) == ("picked", 0), "the pick should survive a bad thesis"
     assert out == "", f"prediction language leaked: {thesis!r}"
 
 
 def test_ordinary_past_tense_reasoning_is_kept():
     ok = "Price swept the low and reclaimed it. The stop sits under that wick, which suits your 1% risk. A close below invalidates the reclaim."
     assert not BANNED.search(ok)
-    assert parse_choice(f'{{"choice": 1, "thesis": "{ok}"}}', 2)[1] == ok
+    assert parse_choice(f'{{"choice": 1, "thesis": "{ok}"}}', 2)[2] == ok
 
 
 # --- the synthesizer ----------------------------------------------------------
@@ -193,7 +211,11 @@ async def test_rotation_falls_through_a_pulled_model():
     chat = build_openai_compatible_chat(client, ["dead:free", "alive:free"])
     text, usage = await chat([{"role": "user", "content": "x"}])
     assert comp.tried == ["dead:free", "alive:free"]
-    assert "choice" in text and usage == {"input_tokens": 10, "output_tokens": 4}
+    assert "choice" in text
+    # Normalized to the names SessionBudget bills, and tagged with the model that
+    # actually served — the fallback model, not the first one tried.
+    assert usage["input_tokens"] == 10 and usage["output_tokens"] == 4
+    assert usage["model"] == "alive:free"
 
 
 @pytest.mark.asyncio
@@ -247,3 +269,86 @@ async def test_no_candidates_short_circuits_before_paying_for_a_call():
     setup, usage, outcome = await build_synthesizer(chat)([], PREFS, PULSES)
     assert (setup, usage, outcome) == (None, None, "no_candidates")
     assert not called, "asked the model to choose among nothing"
+
+
+# --- the meter actually moves -------------------------------------------------
+#
+# The blocker these pin: usage was handed back in the provider's OWN shape
+# (prompt_tokens/completion_tokens), while SessionBudget.record_response reads Anthropic
+# names. Every lookup missed, so every synthesis call booked ZERO while the commit claimed
+# the cost cap finally guarded a real number. The earlier tests passed a hand-written
+# {"input_tokens": ...} dict — a shape production never produces — which is exactly why
+# they proved threading and not billing.
+
+class _OpenAIUsage:
+    """The real OpenAI/OpenRouter CompletionUsage field names."""
+
+    def __init__(self, prompt_tokens, completion_tokens):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = prompt_tokens + completion_tokens
+
+
+@pytest.mark.asyncio
+async def test_openai_usage_is_translated_into_what_the_budget_bills():
+    from src.core.synthesis import build_openai_compatible_chat
+
+    comp = _FakeCompletions({})
+    comp.create = lambda model, messages, max_tokens, temperature: type("R", (), {
+        "choices": [type("C", (), {"message": type("M", (), {
+            "content": '{"choice": 1, "thesis": "a. b. c."}'})()})()],
+        "usage": _OpenAIUsage(1500, 400),
+    })()
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": comp})()})()
+
+    _, usage = await build_openai_compatible_chat(client, ["m:free"])([{"role": "u", "content": "x"}])
+    assert usage["input_tokens"] == 1500, "prompt_tokens was not translated"
+    assert usage["output_tokens"] == 400, "completion_tokens was not translated"
+
+
+def test_the_budget_books_a_real_charge_from_that_shape():
+    """End of the chain: a normalized usage dict must move llm_cost_micros off zero."""
+    from src.core.session_budget import cost_micros
+
+    charged = cost_micros("claude-sonnet-5", input_tokens=1500, output_tokens=400)
+    assert charged > 0, "a priced model booked nothing"
+
+
+def test_free_models_cost_nothing_instead_of_the_unknown_tier():
+    """A :free model priced at the $10/$50 unknown fallback would end a session on the
+    cost cap for spend that never happened — the cap firing hardest on the deployment
+    paying least."""
+    from src.core.session_budget import cost_micros, pricing_for
+
+    free = pricing_for("nvidia/nemotron-3-super-120b-a12b:free")
+    assert (free.input_per_mtok, free.output_per_mtok) == (0.0, 0.0)
+    assert cost_micros("nvidia/nemotron-3-super-120b-a12b:free", 1_000_000, 500_000) == 0
+    # A genuinely unknown paid model still gets the conservative fallback.
+    assert cost_micros("some/unlisted-paid-model", 1_000_000, 0) > 0
+
+
+@pytest.mark.parametrize("forecast", [
+    "BTC will likely reach 70000 before the stop.",   # adverb defeated the first version
+    "This should hit TP1 within the session.",         # 'should hit' was uncovered
+    "Price is going to hit 70k.",
+    "I expect a move to 70k.",                         # forecast verb, no target verb
+    "The trend will continue higher.",
+    "This will break out of the range.",
+    "Highly likely to reach target 1.",
+    "We anticipate a retest.",
+])
+def test_the_forecast_lint_is_not_defeated_by_an_adverb_or_a_synonym(forecast):
+    """A review found every one of these sailing through the first regex, which required
+    the future-tense word and the price verb to be adjacent."""
+    assert BANNED.search(forecast), f"forecast leaked to the user: {forecast!r}"
+
+
+@pytest.mark.parametrize("legitimate", [
+    "Price swept the low and reclaimed it. The stop sits under that wick. A close below invalidates the reclaim.",
+    "The range held twice. Entry sits at its lower edge, which suits your 1% risk. Losing that edge kills it.",
+    "Volume expanded on the break and price retested it. This fits your swing horizon. A close back inside is the invalidation.",
+    "Funding flipped negative while price held. That suits your conservative sizing. A reclaim of the high ends the thesis.",
+])
+def test_the_lint_does_not_eat_ordinary_past_tense_reasoning(legitimate):
+    """A lint that blocks real theses is worse than none — it silently empties the card."""
+    assert not BANNED.search(legitimate), f"false positive: {legitimate!r}"

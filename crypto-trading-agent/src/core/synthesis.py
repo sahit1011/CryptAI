@@ -42,9 +42,22 @@ from loguru import logger
 #: walk-forward eval refuted regime-as-direction. A thesis containing these is rejected
 #: rather than shown, because a confident-sounding forecast is the one thing that would
 #: make a user over-trust the system.
+#: An adverb defeated the first version of this ("will LIKELY reach"), and so did any
+#: verb it did not enumerate ("should hit", "going to hit"). Adjacency is the wrong shape
+#: for the rule: what makes a sentence a forecast is a future-tense construction anywhere
+#: near a price verb, so allow filler between the two rather than listing every phrasing.
+_FILLER = r"(?:\s+\w+){0,3}\s+"
+_TARGET_VERB = r"(?:hit|reach|touch|test|break|rally|climb|drop|fall|rise|go|continue|bounce)"
 BANNED = re.compile(
-    r"\b(will\s+(?:hit|reach|go|rise|fall|moon)|should\s+reach|guaranteed|certain(?:ly)?|"
-    r"sure\s+thing|expect\s+(?:it\s+)?to\s+(?:hit|reach)|predict|moon)\b",
+    r"\b(?:"
+    rf"(?:will|would|shall|gonna|going\s+to|should|ought\s+to|expects?\s+to|likely\s+to)"
+    rf"{_FILLER}?{_TARGET_VERB}"
+    # "I expect a move to 70k" has no target verb at all — the forecast lives in the
+    # verb itself, so first-person expectation is banned outright.
+    r"|expects?\b|anticipates?\b"
+    r"|guaranteed|certain(?:ly)?|sure\s+thing|surely|definitely|"
+    r"predicts?|prediction|forecasts?|highly\s+likely|moon"
+    r")\b",
     re.I,
 )
 
@@ -128,50 +141,101 @@ def build_messages(
     ]
 
 
-def parse_choice(raw: str, candidate_count: int) -> Tuple[Optional[int], str]:
-    """Extract (zero-based index, thesis) from a model reply. Pure and defensive.
+#: How `parse_choice` read the reply. The distinction matters more than it looks: a
+#: DECLINE is the agent's judgment and is shown to the user as such, while UNREADABLE is
+#: our failure to parse and must fall back silently to the deterministic pick. Collapsing
+#: them tells the user "none of these fit your rules" — a decision their agent never
+#: made — every time a free model answers in prose or gets truncated mid-JSON.
+PICKED = "picked"
+DECLINED = "declined"
+UNREADABLE = "unreadable"
 
-    Returns (None, "") for a decline, malformed JSON, or an out-of-range index — every
-    one of which must degrade to the deterministic path rather than raise into a metered
-    cycle. A thesis carrying prediction language is dropped while the choice is kept: the
-    selection is still useful, the forecast is not.
+
+def parse_choice(raw: str, candidate_count: int) -> Tuple[str, Optional[int], str]:
+    """Read a model reply into (verdict, zero-based index, thesis). Pure and defensive.
+
+    Never raises: everything unexpected is UNREADABLE, because this runs inside a metered
+    cycle. A thesis carrying prediction language is dropped while the choice is kept — the
+    selection is still useful, the forecast is the part that would mislead.
     """
-    if not raw:
-        return None, ""
-    text = raw.strip()
+    if not raw or not raw.strip():
+        return UNREADABLE, None, ""
     # Models wrap JSON in prose or fences often enough that finding the object is worth
     # more than insisting on a clean reply.
-    match = re.search(r"\{.*\}", text, re.S)
+    match = re.search(r"\{.*\}", raw.strip(), re.S)
     if not match:
-        return None, ""
+        return UNREADABLE, None, ""
     try:
         obj = json.loads(match.group(0))
     except (ValueError, TypeError):
-        return None, ""
+        return UNREADABLE, None, ""
     if not isinstance(obj, dict):
-        return None, ""
+        return UNREADABLE, None, ""
+    if "choice" not in obj:
+        return UNREADABLE, None, ""
 
     choice = obj.get("choice")
     if choice is None:
-        return None, ""
+        # An explicit null is the model using the escape hatch the prompt offers. That is
+        # a real answer and the only case the user should be told about.
+        return DECLINED, None, ""
     try:
         idx = int(choice) - 1
     except (TypeError, ValueError):
-        return None, ""
+        return UNREADABLE, None, ""
     if idx < 0 or idx >= candidate_count:
-        return None, ""
+        # Naming candidate 7 of 2 is a broken reply, not a considered decline.
+        return UNREADABLE, None, ""
 
     thesis = obj.get("thesis")
     thesis = thesis.strip() if isinstance(thesis, str) else ""
     if thesis and BANNED.search(thesis):
         logger.info("synthesis thesis rejected: prediction language")
         thesis = ""
-    return idx, thesis
+    return PICKED, idx, thesis
 
 
 #: (messages, ) -> (reply_text, usage_object_or_None). Injected so this module never
 #: depends on a provider SDK and stays unit-testable.
 ChatFn = Callable[[List[Dict[str, str]]], Awaitable[Tuple[str, Any]]]
+
+
+def _normalize_usage(usage: Any, model: str) -> Optional[Dict[str, Any]]:
+    """Translate a provider's usage object into the shape `SessionBudget` bills.
+
+    `SessionBudget.record_response` reads ANTHROPIC field names (`input_tokens`,
+    `output_tokens`, `cache_read_input_tokens`). The OpenAI-compatible SDK returns
+    `prompt_tokens` / `completion_tokens`, so every lookup missed and every synthesis call
+    booked ZERO — the cost cap guarded a constant while claiming to guard real spend.
+    Translating here, where the provider shape is known, keeps that knowledge out of the
+    generic meter.
+
+    `model` is carried in the dict because the worker reads the model name off usage to
+    price the call; without it every call prices as UNKNOWN ($10/$50 per Mtok), which
+    would end a free-model session on the cost cap for spend that never happened.
+    """
+    if usage is None:
+        return None
+
+    def pick(*names: str) -> int:
+        for name in names:
+            value = getattr(usage, name, None)
+            if value is None and isinstance(usage, dict):
+                value = usage.get(name)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    return {
+        "model": model,
+        "input_tokens": pick("input_tokens", "prompt_tokens"),
+        "output_tokens": pick("output_tokens", "completion_tokens"),
+        "cache_read_input_tokens": pick("cache_read_input_tokens", "cached_tokens"),
+        "cache_creation_input_tokens": pick("cache_creation_input_tokens"),
+    }
 
 
 def build_openai_compatible_chat(client, models: List[str], max_tokens: int = 400):
@@ -220,7 +284,7 @@ def build_openai_compatible_chat(client, models: List[str], max_tokens: int = 40
                 # An empty body is a dead free slot, not an answer. Keep walking.
                 logger.debug(f"synthesis model {model} returned an empty body")
                 continue
-            return text, getattr(response, "usage", None)
+            return text, _normalize_usage(getattr(response, "usage", None), model)
 
         if last_error is not None:
             raise last_error
@@ -254,10 +318,14 @@ def build_synthesizer(chat: ChatFn, model: str = "unknown"):
             logger.warning(f"synthesis call failed ({e}); falling back to the ranked pick")
             return None, None, "llm_error"
 
-        idx, thesis = parse_choice(reply, len(candidates))
-        if idx is None:
-            # A deliberate decline and an unparseable reply are different events, but the
-            # caller treats both the same: no per-user pick this cycle.
+        verdict, idx, thesis = parse_choice(reply, len(candidates))
+        if verdict == UNREADABLE:
+            # OUR failure, not the agent's judgment. Free instruct models answer in prose
+            # and a max_tokens cut truncates mid-JSON, so this is routine — it must fall
+            # back to the deterministic pick, never surface as "none of these fit you".
+            logger.info("synthesis reply unreadable; falling back to the ranked pick")
+            return None, usage, "llm_error"
+        if verdict == DECLINED:
             return None, usage, "declined"
 
         chosen = dict(candidates[idx])

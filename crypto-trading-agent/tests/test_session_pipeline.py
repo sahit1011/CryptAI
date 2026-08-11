@@ -389,6 +389,37 @@ async def test_synthesis_declining_produces_no_proposal_but_still_bills(stores):
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_model_reply_falls_back_instead_of_faking_a_decline(stores):
+    """End-to-end version of the blocker: a free model answering in prose must yield a
+    proposal from the deterministic pick, and must NOT write 'none of these fit your
+    rules' into the user's session feed — that is a judgment their agent never made."""
+    from src.core.synthesis import build_synthesizer
+
+    mgr, prefs, proposals, cache = stores
+    cache.put("BTCUSDT", [SHARED_SETUP])
+
+    async def prose(messages):
+        return "Candidate 1 looks reasonable for this trader.", {"input_tokens": 900,
+                                                                 "output_tokens": 20}
+
+    session = mgr.start(USER)
+    analyze = build_analyze_fn(
+        session_manager=mgr, proposal_service=proposals, setup_cache=cache,
+        synthesize=build_synthesizer(prose),
+    )
+    setups, usage = await analyze({
+        "session_id": session["session_id"], "user_id": USER,
+        "preferences": prefs.get(USER), "pulses": {}, "symbols": ["BTCUSDT"],
+    })
+
+    assert len(setups) == 1, "an unreadable reply cost the user a cycle"
+    events = mgr.events(session["session_id"])
+    messages = " ".join(str(e.get("message", "")) for e in events)
+    assert "fit your rules" not in messages, "fabricated an agent decline"
+    assert usage is not None, "tokens were spent but not billed"
+
+
+@pytest.mark.asyncio
 async def test_a_broken_synthesizer_falls_back_to_the_deterministic_pick(stores):
     """A user paying scan time must still get an answer when the model is unavailable."""
     mgr, prefs, proposals, cache = stores
