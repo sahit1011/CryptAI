@@ -234,6 +234,59 @@ class MultiUserTradingDaemon:
         )
         self.initialize_session_plane()
 
+    def _build_synthesizer(self):
+        """The per-user chooser, or None to fall back to the deterministic pick.
+
+        Returns None whenever no provider is configured — synthesis is an enhancement,
+        and a session must still produce a proposal on a deployment with no LLM key.
+
+        Uses the SYNC OpenAI client against OpenRouter deliberately: AsyncOpenAI
+        misbehaves there (see strategy_agent), and `build_openai_compatible_chat` runs it
+        off the event loop so one user's call cannot stall every other session's worker.
+        """
+        try:
+            from src.core.synthesis import build_openai_compatible_chat, build_synthesizer
+
+            api_key = getattr(self.config.llm, "openrouter_api_key", None)
+            if not api_key:
+                plog.warning(
+                    "no OpenRouter key — setups will be picked deterministically, "
+                    "identically for every user",
+                    agent="daemon",
+                )
+                return None
+
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                timeout=float(getattr(self.config.llm, "timeout", None) or 60),
+            )
+            # The SAME rotation the agents use. OpenRouter's free catalogue rotates and
+            # 429s, so a pinned model is a single point of failure that has already made
+            # this engine silently produce nothing once.
+            models = list(getattr(self.config.llm, "openrouter_free_models", None) or [])
+            if not models:
+                plog.warning(
+                    "no OpenRouter models configured; deterministic picks only",
+                    agent="daemon",
+                )
+                return None
+            plog.info(
+                f"  └─ ✅ Per-user synthesis on | {len(models)} model(s), first {models[0]}",
+                agent="daemon",
+            )
+            return build_synthesizer(
+                build_openai_compatible_chat(client, models), model=models[0]
+            )
+        except Exception as e:
+            plog.warning(
+                f"synthesis unavailable ({e}); falling back to the deterministic pick",
+                agent="daemon",
+            )
+            return None
+
     def initialize_session_plane(self):
         """M2 control plane: metered sessions do real work in THIS process.
 
@@ -289,6 +342,7 @@ class MultiUserTradingDaemon:
                     session_manager=self.session_manager,
                     proposal_service=self.proposal_service,
                     setup_cache=self.setup_cache,
+                    synthesize=self._build_synthesizer(),
                 ),
                 pulse_client=self.pulse_client,
                 # Deliberately NOT kill_switch=self.engine_switch. A started scan is

@@ -174,6 +174,61 @@ def parse_choice(raw: str, candidate_count: int) -> Tuple[Optional[int], str]:
 ChatFn = Callable[[List[Dict[str, str]]], Awaitable[Tuple[str, Any]]]
 
 
+def build_openai_compatible_chat(client, models: List[str], max_tokens: int = 400):
+    """A `ChatFn` over an OpenAI-style client (OpenRouter, OpenAI, Groq).
+
+    `models` is tried in order and the first usable completion wins. That is not
+    belt-and-braces: OpenRouter's `:free` catalogue rotates and rate-limits hard, so any
+    single free model can be pulled, 429, or hand back an empty body at any moment —
+    pinning one has already made this engine silently produce nothing once. The same
+    rotation list the agents use (`config.llm.openrouter_free_models`) is passed in here.
+
+    The client is called in a worker thread because the codebase deliberately uses the
+    SYNC OpenAI client for OpenRouter (see `strategy_agent`: AsyncOpenAI misbehaves
+    against it), and blocking the daemon's event loop would stall every other session's
+    worker, the monitors and the paper tick loop along with it.
+
+    `max_tokens` is small on purpose: the reply is one integer and three sentences.
+    Output tokens are the expensive half and this runs once per cycle per active session,
+    so the ceiling is what keeps a per-session cost bounded.
+    """
+    import asyncio as _asyncio
+
+    async def chat(messages: List[Dict[str, str]]) -> Tuple[str, Any]:
+        last_error: Optional[Exception] = None
+        for model in models:
+            def _call(m=model):
+                return client.chat.completions.create(
+                    model=m,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=0.2,  # a selection, not a creative writing exercise
+                )
+
+            try:
+                response = await _asyncio.to_thread(_call)
+            except Exception as e:  # 429, model pulled, provider error — try the next
+                last_error = e
+                logger.debug(f"synthesis model {model} unavailable: {e}")
+                continue
+
+            choices = getattr(response, "choices", None) or []
+            text = ""
+            if choices:
+                text = getattr(getattr(choices[0], "message", None), "content", "") or ""
+            if not text.strip():
+                # An empty body is a dead free slot, not an answer. Keep walking.
+                logger.debug(f"synthesis model {model} returned an empty body")
+                continue
+            return text, getattr(response, "usage", None)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no synthesis model returned a usable completion")
+
+    return chat
+
+
 def build_synthesizer(chat: ChatFn, model: str = "unknown"):
     """A per-user chooser over shared candidates.
 

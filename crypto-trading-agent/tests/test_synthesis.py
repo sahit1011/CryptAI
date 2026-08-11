@@ -156,6 +156,85 @@ async def test_a_decline_reports_itself_and_still_bills_the_tokens():
     assert usage == {"input_tokens": 800, "output_tokens": 5}
 
 
+# --- the OpenRouter rotation --------------------------------------------------
+
+class _FakeCompletions:
+    """Minimal stand-in for client.chat.completions with per-model behaviour."""
+
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+        self.tried = []
+
+    def create(self, model, messages, max_tokens, temperature):
+        self.tried.append(model)
+        outcome = self.behaviour.get(model, "ok")
+        if outcome == "raise":
+            raise RuntimeError(f"{model} is 429ing")
+        body = "" if outcome == "empty" else '{"choice": 1, "thesis": "a. b. c."}'
+        return type("R", (), {
+            "choices": [type("C", (), {"message": type("M", (), {"content": body})()})()],
+            "usage": {"input_tokens": 10, "output_tokens": 4},
+        })()
+
+
+def _client(behaviour):
+    comp = _FakeCompletions(behaviour)
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": comp})()})()
+    return client, comp
+
+
+@pytest.mark.asyncio
+async def test_rotation_falls_through_a_pulled_model():
+    """A pinned free model that gets pulled is what made this engine silently produce
+    nothing before — the rotation must walk past it."""
+    from src.core.synthesis import build_openai_compatible_chat
+
+    client, comp = _client({"dead:free": "raise", "alive:free": "ok"})
+    chat = build_openai_compatible_chat(client, ["dead:free", "alive:free"])
+    text, usage = await chat([{"role": "user", "content": "x"}])
+    assert comp.tried == ["dead:free", "alive:free"]
+    assert "choice" in text and usage == {"input_tokens": 10, "output_tokens": 4}
+
+
+@pytest.mark.asyncio
+async def test_an_empty_body_counts_as_a_dead_slot():
+    """Free slots answer 200 with an empty body; treating that as an answer yields a
+    silent no-op instead of a fallback."""
+    from src.core.synthesis import build_openai_compatible_chat
+
+    client, comp = _client({"hollow:free": "empty", "alive:free": "ok"})
+    chat = build_openai_compatible_chat(client, ["hollow:free", "alive:free"])
+    text, _ = await chat([{"role": "user", "content": "x"}])
+    assert comp.tried == ["hollow:free", "alive:free"]
+    assert "choice" in text
+
+
+@pytest.mark.asyncio
+async def test_the_first_healthy_model_wins_and_the_rest_are_untouched():
+    from src.core.synthesis import build_openai_compatible_chat
+
+    client, comp = _client({})
+    chat = build_openai_compatible_chat(client, ["a:free", "b:free", "c:free"])
+    await chat([{"role": "user", "content": "x"}])
+    assert comp.tried == ["a:free"], "paid for models it did not need"
+
+
+@pytest.mark.asyncio
+async def test_every_model_failing_raises_so_the_caller_falls_back():
+    """The synthesizer catches this and uses the deterministic pick — but it must SEE
+    a failure rather than a silent empty answer."""
+    from src.core.synthesis import build_openai_compatible_chat
+
+    client, _ = _client({"a:free": "raise", "b:free": "raise"})
+    chat = build_openai_compatible_chat(client, ["a:free", "b:free"])
+    with pytest.raises(Exception):
+        await chat([{"role": "user", "content": "x"}])
+
+    # …and the synthesizer turns that into the documented fallback, not a crash.
+    setup, usage, outcome = await build_synthesizer(chat)(CANDIDATES, PREFS, PULSES)
+    assert (setup, usage, outcome) == (None, None, "llm_error")
+
+
 @pytest.mark.asyncio
 async def test_no_candidates_short_circuits_before_paying_for_a_call():
     called = False
