@@ -15,7 +15,19 @@
 # GitHub Actions (keepalive cron).
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# THE THREE THINGS THAT WILL BITE YOU ON FREE
+# THE FOUR THINGS THAT WILL BITE YOU ON FREE
+#
+# 0. THE 750-HOUR ALLOWANCE IS PER WORKSPACE, NOT PER SERVICE — and this one has
+#    already caused a production outage. On 2026-08-10 every service in the workspace
+#    was suspended with suspenders=["billing"]: cryptai-backend, cryptai-redis,
+#    klaro-backend and SlackBot-Content-Creation-Assistant, ALL of them already on
+#    plan:free. Three always-on free web services is ~2190 instance-hours against a
+#    ~750h allowance, and Render bills the overage; an unpaid overage suspends the
+#    whole workspace, free services included.
+#
+#    So: a billing suspension is NOT fixed by moving to free, because free is where
+#    it happens. CryptAI must be the ONLY always-on free service in this workspace.
+#    Before adding another free service anywhere in the account, do the hours maths.
 #
 # 1. IT SLEEPS after ~15 minutes without HTTP traffic. .github/workflows/keepalive.yml
 #    pings every 10 minutes to prevent that, so the cron is now LOAD-BEARING, not a
@@ -44,8 +56,10 @@
 # every `sync: false` secret (they are deliberately not in git).
 
 services:
-  # --- Redis (message bus, engine switch, market:pulse:*) ------------------------
-  - type: redis
+  # --- Key Value / Redis (message bus, engine switch, market:pulse:*) ------------
+  # `keyvalue` is the current spec name; `redis` is a deprecated alias that still
+  # resolves, but is not worth depending on during a recovery deploy.
+  - type: keyvalue
     name: cryptai-redis
     plan: free
     # allkeys-lru rather than noeviction: on a small free instance, noeviction makes
@@ -72,7 +86,7 @@ services:
     autoDeploy: true
     envVars:
       - key: REDIS_URL
-        fromService: { name: cryptai-redis, type: redis, property: connectionString }
+        fromService: { name: cryptai-redis, type: keyvalue, property: connectionString }
       - key: API_HOST
         value: "0.0.0.0"
       - key: ENVIRONMENT
