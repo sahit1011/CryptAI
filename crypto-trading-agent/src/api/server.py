@@ -1204,6 +1204,79 @@ async def _owned_session(user_id: str) -> Dict[str, Any]:
     return active
 
 
+#: `detail.code` on the start gate's 503. The client branches on this rather than
+#: pattern-matching prose, so copy edits cannot break the handling.
+CAPACITY_UNAVAILABLE = "capacity_unavailable"
+
+# Internal vocabulary for why analysis is down. Never rendered — the UI maps these to
+# its own copy, so renaming user-facing text does not touch the API.
+CAPACITY_PAUSED = "paused"
+CAPACITY_DEGRADED = "degraded"
+CAPACITY_MODEL_ERROR = "model_error"
+
+
+async def _analysis_capacity() -> Dict[str, Any]:
+    """Whether new scans can be produced at all: `{available, reason, eta_seconds}`.
+
+    Folded into the session poll so the client never reconciles two independent switches
+    against each other — that reconciliation was the bug this replaces.
+
+    **This fails CLOSED, and that is the whole point.** A session started while analysis
+    is down still starts its clock, so the user spends scarce metered minutes on cycles
+    that produce nothing. Refusing to start costs a blocked tap; allowing it costs quota
+    the user cannot get back until UTC midnight. Between those, refuse.
+
+    The one deliberate exception is a *missing* kill switch, which reads as available.
+    `SessionWorkerPool` treats an unconfigured switch as permission to work (no emergency
+    stop configured is not the same as one that is engaged), and these two must agree —
+    if they disagree, either the pool works while the gate blocks, or the gate admits
+    sessions the pool refuses to serve.
+    """
+    available: Dict[str, Any] = {"available": True, "reason": None, "eta_seconds": None}
+
+    def down(reason: str) -> Dict[str, Any]:
+        # No eta_seconds is ever invented: nobody knows when an owner flips the switch
+        # back on, and a fabricated countdown that expires with nothing changed is worse
+        # than admitting we do not know.
+        return {"available": False, "reason": reason, "eta_seconds": None}
+
+    # Checked first: with no provider key, flipping the switch on still produces nothing,
+    # so "paused" would send the owner to the wrong lever.
+    #
+    # Read from the environment rather than the parsed config, because that is what
+    # actually decides whether a provider is reachable — a cached Config built before a
+    # key was set would report a capability the engine does not have.
+    if not any(
+        (os.getenv(var) or "").strip()
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "GROQ_API_KEY",
+        )
+    ):
+        return down(CAPACITY_MODEL_ERROR)
+
+    switch = _engine_switch()
+    if switch is None:
+        # No Redis, therefore no emergency stop exists. Matches the pool's fail-open.
+        return available
+
+    try:
+        status_obj = await switch.status()
+    except Exception as e:
+        # The switch exists but cannot be read. The pool halts work in exactly this
+        # case, so a session started now would meter time against a stopped engine.
+        logger.warning(f"capacity: engine switch unreadable ({e})")
+        return down(CAPACITY_DEGRADED)
+
+    if not status_obj.get("enabled"):
+        return down(CAPACITY_PAUSED)
+    return available
+
+
 @app.get("/api/session")
 async def get_session(user_id: str = Depends(require_user)):
     """The caller's active session plus today's remaining quota.
@@ -1217,6 +1290,7 @@ async def get_session(user_id: str = Depends(require_user)):
     used = await asyncio.to_thread(mgr.used_today, user_id)
     return {
         "session": active,
+        "capacity": await _analysis_capacity(),
         "daily_quota_seconds": mgr.daily_quota_seconds,
         "used_today_seconds": used,
         "remaining_today_seconds": remaining,
@@ -1228,10 +1302,32 @@ async def start_session(
     body: SessionStartBody = SessionStartBody(),
     user_id: str = Depends(require_user),
 ):
-    """Begin a metered session. 429 when the daily quota is spent."""
+    """Begin a metered session. 429 when the daily quota is spent, 503 when analysis is down.
+
+    The capacity check runs BEFORE `mgr.start`, so a refused start creates no session
+    row, no clock, and no event — there is nothing to roll back and nothing that has to
+    be refunded. Starting first and compensating afterwards would leave a window in which
+    the clock is live against an engine that cannot serve it.
+    """
     from src.core.session_manager import QuotaExhausted, SessionError
 
     mgr = _require_sessions()
+
+    capacity = await _analysis_capacity()
+    if not capacity["available"]:
+        # 503 rather than 409: this is the service being unable to serve, not the
+        # caller's state being wrong. A structured body so the client branches on
+        # `code` instead of prose.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": CAPACITY_UNAVAILABLE,
+                "reason": capacity["reason"],
+                "eta_seconds": capacity["eta_seconds"],
+                "message": "Market analysis is unavailable; no session was started.",
+            },
+        )
+
     try:
         return await asyncio.to_thread(mgr.start, user_id, body.quota_seconds, body.channel)
     except QuotaExhausted as e:

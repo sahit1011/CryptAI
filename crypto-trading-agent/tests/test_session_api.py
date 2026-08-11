@@ -48,6 +48,12 @@ def wired(tmp_path, clock, monkeypatch):
     monkeypatch.setattr(server, "session_manager", mgr)
     monkeypatch.setattr(server, "preferences_store", prefs)
 
+    # Analysis capacity is available, so these tests exercise session LIFECYCLE rather
+    # than the capacity gate. Without this the start endpoint 503s: a test process has
+    # no provider key, which correctly reads as model_error. The gate itself is covered
+    # in test_session_capacity.py.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
     current = {"user": ALICE}
     server.app.dependency_overrides[server.require_user] = lambda: current["user"]
     client = TestClient(server.app)
