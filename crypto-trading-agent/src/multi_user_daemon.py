@@ -291,7 +291,15 @@ class MultiUserTradingDaemon:
                     setup_cache=self.setup_cache,
                 ),
                 pulse_client=self.pulse_client,
-                kill_switch=self.engine_switch,
+                # Deliberately NOT kill_switch=self.engine_switch. A started scan is
+                # already authorized: the capacity gate on POST /api/session/start
+                # refuses one outright (503, no row, no clock) when analysis is off, so
+                # a session that exists was allowed to exist. Gating the pool as well
+                # meant flipping the switch mid-scan silently stopped the workers while
+                # the user's metered clock kept running — charging them for a scan that
+                # could not produce anything. Capacity lost mid-scan is handled where it
+                # belongs, by the tick loop, which ends the session and refunds the dead
+                # time rather than starving it in place.
             )
             plog.info(
                 f"  └─ ✅ Session plane ready | pulse_gating="
@@ -747,28 +755,61 @@ class MultiUserTradingDaemon:
             except Exception as e:
                 plog.warning(f"[paper-tick] loop error: {e}", agent="daemon")
 
+    async def _has_scan_demand(self) -> bool:
+        """Is anybody actually scanning right now?
+
+        Analysis exists to answer a user's scan. With nobody scanning there is nothing to
+        answer, so spending an LLM call is pure waste — this is what makes the free tier
+        economically real. Fails CLOSED (no demand) when the session store is unavailable:
+        the safe error is not spending money.
+        """
+        if self.session_manager is None:
+            return False
+        try:
+            return bool(await asyncio.to_thread(self.session_manager.active_sessions))
+        except Exception as e:
+            plog.warning(f"[analysis] demand check failed ({e}); treating as no demand",
+                         agent="daemon")
+            return False
+
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.
 
         Analysis is per-symbol but user-independent, so it runs once per symbol per cycle
         (not per user); every resulting setup then fans out to all active tenants.
 
-        GATED by the owner's AI-engine switch: while OFF, we return immediately WITHOUT
-        calling the LLM — this is what protects the (free) API quota from unattended
-        burn. The cycle timer keeps ticking; each tick is a cheap Redis check until the
-        owner turns the engine on.
+        DEMAND-DRIVEN. A cycle runs when at least one user is actually scanning, or when
+        the owner has explicitly switched analysis on to keep setups warm. It used to run
+        on a blind timer gated only by that switch, which meant the switch left on with
+        nobody scanning called the LLM every cycle, forever, for nobody.
+
+        The switch is no longer a prerequisite for a user's scan to work — that coupling
+        is what let a paused switch silently burn a user's metered clock while producing
+        nothing. It is now an OVERRIDE (keep analysis warm) and, via the capacity gate on
+        POST /api/session/start, an emergency stop: switch off means new scans are
+        refused outright (503, no session row, no clock), so demand stops at the door
+        instead of being starved after the meter has started.
         """
+        override_on = False
         if self.engine_switch is not None:
-            on = await self.engine_switch.is_on()
-            if on != self._was_on:  # log only on transition, not every idle cycle
+            override_on = await self.engine_switch.is_on()
+
+        if not override_on and not await self._has_scan_demand():
+            if self._was_on is not False:  # log the transition, not every idle cycle
                 plog.info(
-                    f"🟢 AI engine ON — running analysis" if on
-                    else "⏸️  AI engine OFF — analysis paused (owner turns it on to run)",
+                    "⏸️  analysis idle — nobody is scanning and the owner override is off",
                     agent="daemon",
                 )
-                self._was_on = on
-            if not on:
-                return []
+                self._was_on = False
+            return []
+
+        if self._was_on is not True:
+            plog.info(
+                "🟢 analysis running — " + ("owner override on" if override_on
+                                            else "a user is scanning"),
+                agent="daemon",
+            )
+            self._was_on = True
 
         all_setups = []
         for sym in self.symbols:
