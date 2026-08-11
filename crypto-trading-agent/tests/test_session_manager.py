@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.core.session_manager import (
+    ADDITIVE_SESSION_COLUMNS,
     COST_CAP,
     ENDED,
     EXECUTING,
@@ -275,27 +276,38 @@ def test_ensure_schema_swallows_a_concurrent_duplicate_add(tmp_path, clock, monk
     mgr = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # channel really exists
 
     class _FakeInspector:
-        def __init__(self, has_channel):
-            self._has = has_channel
+        """Reports every additive column as absent on the first read, present after.
+
+        Generic over ADDITIVE_SESSION_COLUMNS rather than naming one column, so a new
+        additive column is covered automatically instead of silently falling out of
+        this test's reach.
+        """
+
+        def __init__(self, truthful):
+            self._truthful = truthful
 
         def get_table_names(self):
             return ["sessions"]
 
         def get_columns(self, _table):
             cols = [{"name": "id"}, {"name": "session_id"}]
-            return cols + ([{"name": "channel"}] if self._has else [])
+            if self._truthful:
+                cols += [{"name": n} for n in ADDITIVE_SESSION_COLUMNS]
+            return cols
 
     calls = {"n": 0}
 
     def fake_inspect(_engine):
         calls["n"] += 1
-        # 1st call: the `existing` check — lie that channel is absent, forcing the ALTER.
-        # 2nd call: the post-failure re-check — tell the truth (it exists), so it swallows.
-        return _FakeInspector(has_channel=calls["n"] >= 2)
+        # 1st call: the `existing` check — lie that they are all absent, forcing an
+        # ALTER per column. Every later call is the post-failure re-check, which tells
+        # the truth (they exist), so each failure is swallowed rather than raised.
+        return _FakeInspector(truthful=calls["n"] >= 2)
 
     monkeypatch.setattr(sqlalchemy, "inspect", fake_inspect)
     mgr._ensure_schema()  # ALTER duplicate -> caught -> re-inspect -> swallow. No raise.
-    assert calls["n"] == 2  # it did try the ALTER and did re-check
+    # One initial inspect, plus one re-check for each column that lost the race.
+    assert calls["n"] == 1 + len(ADDITIVE_SESSION_COLUMNS)
 
 
 def test_quota_resets_at_utc_midnight(mgr, clock):

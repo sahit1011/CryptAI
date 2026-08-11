@@ -66,8 +66,56 @@ USER_ENDED = "user_ended"
 TRADE_OPENED = "trade_opened"
 ERROR = "error"
 
+#: Seconds between cycles within one session, when SESSION_CYCLE_SECONDS is unset.
+DEFAULT_CYCLE_SECONDS = 180
+
+
+def configured_cycle_seconds() -> int:
+    """The pacing interval, from `SESSION_CYCLE_SECONDS`.
+
+    A single source both the worker and the API read, so the heartbeat the client judges
+    staleness against is the same number the server actually paces on. Two independent
+    constants would drift the moment either was tuned, and the UI would start calling a
+    healthy engine dead (or worse, stay quiet about a dead one).
+
+    A non-numeric or non-positive value falls back to the default rather than raising:
+    a typo'd env var should not take the daemon down, and a zero interval would spin the
+    worker loop at full speed against the LLM.
+    """
+    import os
+
+    raw = (os.getenv("SESSION_CYCLE_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_CYCLE_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            f"SESSION_CYCLE_SECONDS={raw!r} is not an integer; using {DEFAULT_CYCLE_SECONDS}s"
+        )
+        return DEFAULT_CYCLE_SECONDS
+    if value <= 0:
+        logger.warning(
+            f"SESSION_CYCLE_SECONDS={value} is not positive; using {DEFAULT_CYCLE_SECONDS}s"
+        )
+        return DEFAULT_CYCLE_SECONDS
+    return value
+
+
 DEFAULT_DAILY_QUOTA_SECONDS = 1800  # free tier: 30 minutes
 DEFAULT_COST_CAP_MICROS = 500_000  # $0.50 per session
+
+#: Columns the model has that an older `sessions` table may lack, with the DDL to add
+#: them. `_ensure_schema` self-heals against this; the alembic migrations remain the
+#: managed source of truth, and the two are idempotent against each other.
+#:
+#: Module-level rather than inline so the TOCTOU test drives the same set the code does.
+#: A test that hardcoded one column name would silently stop covering every column added
+#: after it — which is exactly how it broke when `last_cycle_at` arrived.
+ADDITIVE_SESSION_COLUMNS: Dict[str, str] = {
+    "channel": "VARCHAR(16)",
+    "last_cycle_at": "TIMESTAMP",
+}
 
 
 class SessionError(RuntimeError):
@@ -146,8 +194,7 @@ class SessionManager:
         if "sessions" not in inspector.get_table_names():
             return  # checkfirst will create it fresh with every column
         existing = {c["name"] for c in inspector.get_columns("sessions")}
-        additive = {"channel": "VARCHAR(16)"}
-        for name, ddl_type in additive.items():
+        for name, ddl_type in ADDITIVE_SESSION_COLUMNS.items():
             if name in existing:
                 continue
             try:
@@ -441,11 +488,19 @@ class SessionManager:
         return self.tick(session_id)
 
     def record_cycle(self, session_id: str) -> None:
+        """Mark that a scan cycle just reported.
+
+        `last_cycle_at` is the heartbeat the UI judges staleness against, so it is
+        stamped here — at the moment a cycle actually COMPLETED — rather than when one
+        was dispatched. Stamping on dispatch would keep the heartbeat fresh while every
+        cycle failed, which is precisely the state the staleness check exists to expose.
+        """
         db = self.Session()
         try:
             row = db.query(SessionRow).filter_by(session_id=session_id).first()
             if row is not None:
                 row.cycles_completed += 1
+                row.last_cycle_at = self._now()
                 db.commit()
         finally:
             db.close()
@@ -536,6 +591,16 @@ class SessionManager:
             "llm_cost_micros": row.llm_cost_micros,
             "llm_cost_cap_micros": row.llm_cost_cap_micros,
             "cycles_completed": row.cycles_completed,
+            # The heartbeat. null until a cycle has actually reported — the client uses
+            # that distinction to judge a fresh session leniently instead of accusing it
+            # of being dead before its first sweep has had time to land.
+            "last_cycle_at": row.last_cycle_at.isoformat() if row.last_cycle_at else None,
+            # Published so the client measures staleness against the interval the server
+            # genuinely paces on, rather than a hardcoded guess that drifts when tuned.
+            "expected_cycle_seconds": configured_cycle_seconds(),
+            # Mid-scan capacity refunds are not implemented yet; always 0 so the receipt
+            # renders an honest zero rather than an absent field the UI has to guess at.
+            "seconds_refunded": 0,
             "trading_day": row.trading_day.date().isoformat() if row.trading_day else None,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "ended_at": row.ended_at.isoformat() if row.ended_at else None,

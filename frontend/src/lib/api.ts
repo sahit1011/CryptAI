@@ -308,9 +308,50 @@ export async function cancelOrder(orderId: string, symbol: string): Promise<Reco
  * backend's reason, refetch state) from a 504 (engine busy — safe to retry). */
 export class ApiError extends Error {
     status: number;
-    constructor(status: number, message: string) {
+    /** Machine-readable `detail.code` when the backend sent a structured body
+     * (e.g. "capacity_unavailable" on the start gate's 503). Callers branch on this
+     * instead of pattern-matching prose that copy edits will break. */
+    code: string | null;
+    constructor(status: number, message: string, code: string | null = null) {
         super(message);
         this.status = status;
+        this.code = code;
+    }
+}
+
+/** `detail.code` of the 503 from POST /api/session/start when analysis capacity is
+ * down. That response creates no session row, no clock and no event. */
+export const CAPACITY_UNAVAILABLE = "capacity_unavailable";
+
+/** True for the capacity 503 above — the one start failure that is not the user's fault
+ * and must not read as an error. */
+export function isCapacityUnavailable(err: unknown): boolean {
+    return err instanceof ApiError && err.code === CAPACITY_UNAVAILABLE;
+}
+
+/** Like `backendError`, but also lifts a structured `{detail: {code, ...}}` body.
+ * FastAPI raises both shapes: a plain string detail for prose refusals, an object for
+ * the gates the client has to handle by cause. */
+async function backendFailure(res: Response): Promise<{ message: string; code: string | null }> {
+    try {
+        const body: unknown = await res.json();
+        const detail = (body as { detail?: unknown } | null)?.detail;
+        if (detail && typeof detail === "object") {
+            const d = detail as Record<string, unknown>;
+            const code = typeof d.code === "string" ? d.code : null;
+            const message =
+                typeof d.message === "string" ? d.message : code ?? JSON.stringify(detail);
+            return { message, code };
+        }
+        if (typeof detail === "string") return { message: detail, code: null };
+        const err = (body as { error?: unknown } | null)?.error;
+        if (typeof err === "string") return { message: err, code: null };
+        return { message: JSON.stringify(body), code: null };
+    } catch {
+        return {
+            message: (await res.text().catch(() => "")) || `HTTP ${res.status}`,
+            code: null,
+        };
     }
 }
 
@@ -328,16 +369,45 @@ export interface TradingSession {
     llm_cost_micros: number;
     llm_cost_cap_micros: number;
     cycles_completed: number;
+    /** When a scan cycle last reported. null = nothing has reported yet this session.
+     * The UI may not claim the agents are working without a fresh one. */
+    last_cycle_at: string | null;
+    /** How long a cycle is expected to take, so the client can judge staleness against
+     * the same number the server paces on instead of a hardcoded guess. */
+    expected_cycle_seconds: number;
+    /** Metered seconds handed back (mid-scan capacity loss). 0 unless time was returned;
+     * the refund is already deducted from `elapsed_seconds`. */
+    seconds_refunded: number;
     started_at: string | null;
     ended_at: string | null;
     end_reason: string | null;
 }
 
+/** Why analysis capacity is unavailable. Internal vocabulary — never rendered; the UI
+ * maps it to the "Market analysis is offline" copy. */
+export type CapacityReason = "paused" | "degraded" | "model_error";
+
+/** Whether new scans can be produced at all, folded into the session poll so the UI
+ * never reconciles two independent switches (that reconciliation WAS the bug). */
+export interface SessionCapacity {
+    available: boolean;
+    reason: CapacityReason | null;
+    eta_seconds: number | null;
+}
+
 export interface SessionOverview {
     session: TradingSession | null;
+    capacity: SessionCapacity;
     daily_quota_seconds: number;
     used_today_seconds: number;
     remaining_today_seconds: number;
+}
+
+/** True only when the payload positively says capacity is down. A backend that predates
+ * the `capacity` key reads as available: the client gate is UX, the 503 on start is the
+ * correctness gate, so failing open here can cost a wasted tap but never a wrong scan. */
+export function isCapacityDown(overview: SessionOverview | null | undefined): boolean {
+    return overview?.capacity?.available === false;
 }
 
 export interface Proposal {
@@ -374,7 +444,10 @@ async function sessionFetch<T>(path: string, init?: RequestInit): Promise<T> {
         ...init,
         headers: await authHeaders(init?.method === "POST"),
     });
-    if (!res.ok) throw new ApiError(res.status, await backendError(res));
+    if (!res.ok) {
+        const { message, code } = await backendFailure(res);
+        throw new ApiError(res.status, message, code);
+    }
     return res.json();
 }
 
@@ -384,6 +457,8 @@ export async function getSession(): Promise<SessionOverview> {
 }
 
 /** Begin a metered session. 429 = daily quota spent (resets at UTC midnight).
+ * 503 with `code: "capacity_unavailable"` (see `isCapacityUnavailable`) = analysis is
+ * down; the backend creates no row, no clock and no event, so nothing was charged.
  * `channel` (scalp|intraday|swing|position) overrides the persona for this session. */
 export async function startSession(
     opts: { channel?: GoalHorizon; quotaSeconds?: number } = {},

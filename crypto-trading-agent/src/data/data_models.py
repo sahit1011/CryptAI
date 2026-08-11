@@ -369,6 +369,10 @@ class Session(Base):
     trading_day = Column(DateTime, nullable=False, index=True)
 
     cycles_completed = Column(Integer, nullable=False, default=0)
+    # When a scan cycle last reported. NULL means nothing has reported yet this session,
+    # which is different from "reported a while ago" — the UI must not claim the agents
+    # are working on the strength of a session merely existing.
+    last_cycle_at = Column(DateTime)
     started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     ended_at = Column(DateTime)
     end_reason = Column(String(40))   # quota_exhausted | user_ended | cost_cap | error | trade_opened
