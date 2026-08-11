@@ -22,9 +22,20 @@ interface ProposalCardProps {
     busy: boolean;
     onApprove: () => void;
     onReject: () => void;
+    /** Where an approval sends the order. Defaults to the practice desk, which is the
+     * platform default and the only destination live trading is not gated off. */
+    destination?: "practice" | "delta_test";
 }
 
-export function ProposalCard({ proposal, busy, onApprove, onReject }: ProposalCardProps) {
+export function ProposalCard({
+    proposal,
+    busy,
+    onApprove,
+    onReject,
+    destination = "practice",
+}: ProposalCardProps) {
+    const destinationLabel =
+        destination === "delta_test" ? "Place on Delta (test)" : "Place on practice account";
     const isLong = proposal.direction === "LONG";
     const DirIcon = isLong ? ArrowUpRight : ArrowDownRight;
 
@@ -40,14 +51,18 @@ export function ProposalCard({ proposal, busy, onApprove, onReject }: ProposalCa
     const targets = (proposal.take_profit_levels || []).map((t) => t.price);
 
     return (
-        <div className="overflow-hidden rounded-xl border border-profit/30 bg-profit/[0.025]">
+        <div className="overflow-hidden rounded-xl border border-border bg-elevated/20">
             {/* header: instrument + direction + shelf life */}
             <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
                 <div className="flex items-center gap-2.5">
                     <span
                         className={cn(
                             "flex size-7 items-center justify-center rounded-md",
-                            isLong ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss",
+                            // Neutral, deliberately. Emerald and red mean realized and
+                            // unrealized P&L in this product; painting a LONG green
+                            // colours it "winning" before a single tick has happened.
+                            // The arrow carries the direction.
+                            "bg-muted/50 text-foreground",
                         )}
                     >
                         <DirIcon className="size-4" />
@@ -57,7 +72,7 @@ export function ProposalCard({ proposal, busy, onApprove, onReject }: ProposalCa
                         <div
                             className={cn(
                                 "text-[11px] font-medium uppercase tracking-wide",
-                                isLong ? "text-profit" : "text-loss",
+                                "text-muted-foreground",
                             )}
                         >
                             {proposal.direction}
@@ -85,7 +100,10 @@ export function ProposalCard({ proposal, busy, onApprove, onReject }: ProposalCa
                     node={<Value className="text-loss" money value={safeNum(proposal.stop_loss)} />}
                 />
                 <Metric
-                    label="Target"
+                    // Name the ladder. Labelling the first rung "Target" makes it read as
+                    // the whole exit, so a user expects the full position to close there
+                    // and is surprised when most of it is still open.
+                    label={targets.length > 1 ? `Target 1 of ${targets.length}` : "Target"}
                     node={
                         targets.length ? (
                             <Value className="text-profit" money value={safeNum(targets[0])} />
@@ -129,14 +147,16 @@ export function ProposalCard({ proposal, busy, onApprove, onReject }: ProposalCa
                     onClick={onReject}
                     disabled={busy}
                 >
-                    Reject
+                    Skip this one
                 </Button>
                 <Button
                     className="flex-1 bg-profit text-background hover:bg-profit/90"
                     onClick={onApprove}
                     disabled={busy || lapsed}
                 >
-                    {busy ? "Working…" : lapsed ? "Expired" : "Approve & execute"}
+                    {/* Name the destination. "Approve & execute" never says where the
+                        money goes, which is the one thing the user is consenting to. */}
+                    {busy ? "Placing…" : lapsed ? "Expired" : destinationLabel}
                 </Button>
             </div>
 

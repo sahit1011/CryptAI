@@ -11,6 +11,7 @@ import { useState, useEffect } from "react"
 import { createClient } from "@/utils/supabase/client"
 import { useStore } from "@/store/useStore"
 import { useMarketStore } from "@/hooks/useMarketData"
+import { AccountChip } from "./ui/AccountChip"
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -95,6 +96,9 @@ export function Header({ onMenuClick }: { onMenuClick?: () => void }) {
             </div>
 
             <div className="flex items-center gap-3">
+                {/* Which account am I looking at — chrome, never a menu. */}
+                <AccountChip />
+
                 {/* Currency toggle — values are USD internally; user picks display ($/₹) */}
                 <div className="flex items-center rounded-md border border-border bg-elevated/40 p-0.5" role="group" aria-label="Display currency">
                     {(["USD", "INR"] as const).map((c) => (
