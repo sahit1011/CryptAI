@@ -135,7 +135,7 @@ export function TradeTicket() {
                 title="Trading is off"
                 description="Turn on a mode in Settings to arm the ticket — paper for virtual funds, manual to route your own brackets."
             >
-                <Link href="/dashboard?section=settings" className="text-xs text-accent-300 underline-offset-4 hover:underline">
+                <Link href="/settings" className="text-xs text-accent-300 underline-offset-4 hover:underline">
                     Open Settings
                 </Link>
             </EmptyState>

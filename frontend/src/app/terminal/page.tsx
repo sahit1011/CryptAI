@@ -1,18 +1,6 @@
-"use client"
+import { redirect } from "next/navigation";
 
-import { useMarketData } from "@/hooks/useMarketData"
-import { TerminalShell } from "@/components/terminal/TerminalShell"
-
-/**
- * /terminal — the DESK. Full-viewport professional trading workspace:
- * pro chart + drawing tools, live order book, mode-aware trade ticket,
- * positions/history dock, and the AI layer (setups on the canvas, the Wire).
- *
- * `useMarketData()` owns the app WebSocket + portfolio hydration exactly like
- * the dashboard does — routes never render simultaneously, so there is always
- * one socket.
- */
+/** /terminal — renamed to /chart. Kept so existing links and bookmarks still land. */
 export default function TerminalPage() {
-    useMarketData()
-    return <TerminalShell />
+    redirect("/chart");
 }

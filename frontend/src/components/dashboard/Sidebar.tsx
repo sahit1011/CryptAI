@@ -13,23 +13,26 @@ import { useMarketStore } from "@/hooks/useMarketData";
 import { useClosedTrades } from "@/hooks/useClosedTrades";
 import { computeTradeStats } from "@/lib/tradeStats"
 
-// Nav maps to the real dashboard sections (URL-driven via ?section=), so nothing
-// points at a route that doesn't exist. `section` is matched against ?section=;
-// section: null entries are standalone routes matched on pathname.
+// Four destinations, each answering one question a trader actually has:
+// what do I do now (Desk) · what's the price doing (Chart) · how am I doing (Portfolio)
+// · what are my rules (Settings). Real routes, so `pathname` alone decides what is
+// active — no ?section= to reconcile.
+//
+// Removed deliberately: Home (the logo already leaves the app, so a nav slot spent on
+// "exit" was waste); Overview (renamed Desk — "overview" is what licensed it to become
+// a wall of statistics instead of a place to act); Markets (a strictly worse subset of
+// the Chart, down to a second chart implementation); AI Agents (a destination named
+// after an implementation detail, and the direct cause of "once I started the session I
+// can't see my agents" — the feed now lives inside the console that spawns it).
 const routes = [
-    { label: "Home", icon: Home, href: "/", section: null },
-    { label: "Overview", icon: LayoutDashboard, href: "/dashboard", section: "overview" },
-    { label: "Terminal", icon: CandlestickChart, href: "/terminal", section: null },
-    { label: "Portfolio", icon: Wallet, href: "/dashboard?section=portfolio", section: "portfolio" },
-    { label: "Markets", icon: LineChart, href: "/dashboard?section=markets", section: "markets" },
-    { label: "AI Agents", icon: Bot, href: "/dashboard?section=agents", section: "agents" },
-    { label: "Settings", icon: Settings2, href: "/dashboard?section=settings", section: "settings" },
+    { label: "Desk", icon: LayoutDashboard, href: "/desk" },
+    { label: "Chart", icon: CandlestickChart, href: "/chart" },
+    { label: "Portfolio", icon: Wallet, href: "/portfolio" },
+    { label: "Settings", icon: Settings2, href: "/settings" },
 ]
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     const pathname = usePathname()
-    const searchParams = useSearchParams()
-    const currentSection = searchParams.get("section") || "overview"
     const supabase = createClient()
     const [isLoggingOut, setIsLoggingOut] = useState(false)
     const { portfolio } = useStore()
@@ -66,10 +69,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             {/* Navigation */}
             <nav className="flex-1 space-y-1 px-4">
                 {routes.map((route) => {
-                    const isActive =
-                        route.section === null
-                            ? pathname === route.href
-                            : pathname === "/dashboard" && currentSection === route.section
+                    const isActive = pathname === route.href
                     return (
                         <Link
                             key={route.href}

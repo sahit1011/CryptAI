@@ -97,7 +97,7 @@ export function HeaderBar() {
                 {/* Brand cluster — the one accent moment. */}
                 <div className="flex items-center gap-3">
                     <Link
-                        href="/dashboard"
+                        href="/desk"
                         className="font-serif text-lg italic tracking-[-0.01em] text-accent-300 transition-colors duration-150 hover:text-accent-200"
                     >
                         CryptAI

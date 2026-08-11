@@ -6,7 +6,6 @@ import { SectionHeader } from "../ui/SectionHeader";
 import { Card } from "@/components/ui/card";
 import { TradingModeSelector } from "../ui/TradingModeSelector";
 import { TradingPersona } from "../ui/TradingPersona";
-import { EngineControl } from "../ui/EngineControl";
 import { ConnectExchangeSection } from "./ConnectExchangeSection";
 import { getSettings, type TradingMode } from "@/lib/api";
 
@@ -31,8 +30,11 @@ export function SettingsSection() {
                 icon={Settings2}
             />
 
-            {/* AI engine control (owner only; renders null for other users) */}
-            <EngineControl />
+            {/* The analysis-capacity switch used to sit here. It is an operator cost
+                throttle, not a user preference, and in Settings it read as something the
+                user was meant to operate — while quietly deciding whether their scans
+                could produce anything at all. It now lives at /admin/ops; users see the
+                consequence in the scan console, never the control. */}
 
             {/* Trading persona — the preferences the session pipeline synthesises against */}
             <TradingPersona />
