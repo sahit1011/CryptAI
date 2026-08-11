@@ -194,27 +194,34 @@ sequenceDiagram
 | Separate `cryptai-daemon` worker | Embedded via `RUN_DAEMON_IN_API=true` | One crash domain — accepted for now |
 | Session workers, monitors, sweeper exist | ✅ All built, wired, running | — |
 | Pulse gates every session, fail-closed at 15s | ✅ Wired (`SIGNAL_PLANE_ENABLED=true`) | — |
-| Setup **synthesis** is per-user (the LLM thesis) | ❌ **Only sizing/filtering is per-user.** The LLM analysis is still shared per symbol | **Yes — the biggest gap** |
-| Analysis runs on demand | ❌ **Blind 600s timer**, gated only by the owner's engine switch | **Yes — burns LLM spend with zero users** |
-| Engine switch is an emergency stop, not a gate | ❌ Still gates *both* shared analysis **and** `SessionWorkerPool` | **Yes — the two-switch bug** |
+| Setup **synthesis** is per-user (the LLM thesis) | ⚠️ **Selection + thesis are per-user** (`src/core/synthesis.py`); candidate *generation* is still shared per symbol | Partly closed — see below |
+| Analysis runs on demand | ✅ Demand-gated: ≥1 active scan, or the owner's override | Closed |
+| Engine switch is an emergency stop, not a gate | ✅ No longer gates the worker pool; refuses new scans at the door instead | Closed |
+| Per-user LLM cost cap enforced | ✅ `analyze_fn` returns real usage, so the cap guards a moving number | Closed |
 | Money in integer minor units | ❌ `Float` everywhere except `llm_cost_micros` | Yes, before real money |
 | Per-user LLM cost cap enforced | Partially: cap exists; shared analysis spend isn't attributed to a session | Yes, before paid tiers |
 
-### The three architectural gaps, in priority order
+### Where the three gaps landed
 
-1. **Analysis is not demand-driven.** `coordinator.run_forever(_analysis_with_signals, 600)`
-   is a blind timer whose only gate is `engine_switch.is_on()`. With the switch on and
-   nobody scanning, it still calls the LLM every 10 minutes, forever. Your instinct on this
-   was right and it is still unfixed.
-2. **The engine switch is load-bearing in two places.** `SessionWorkerPool` takes
-   `kill_switch=self.engine_switch`, so switch-off means workers never spawn *and* shared
-   analysis returns nothing — while the user's clock still runs. That is the exact confusion
-   you hit, and it is still in the code.
-3. **Per-user synthesis doesn't exist yet.** Today every user is offered the same
-   shared-analysis setup, filtered and sized differently. `MULTI_TENANCY.md`'s "same chart,
-   different trade" — the conservative user gets the 1h pullback, the aggressive user gets
-   the 5m sweep — needs the LLM call to move inside the session worker. That is the
-   difference between a personal agent team and a filter.
+1. **Analysis is demand-driven** (`a18059f`). A cycle runs when someone is actually
+   scanning, or when the owner switches it on to keep setups warm. Zero scans and no
+   override means zero LLM spend, which is what makes the free tier's cost model real. The
+   demand check fails closed when the session store is unreachable.
+2. **The switch is an emergency stop, not a gate** (`a18059f`). It no longer starves the
+   worker pool. A scan that exists was authorized to exist, because the capacity gate on
+   `POST /api/session/start` refuses one outright (503, no row, no clock) when analysis is
+   off. Capacity lost *mid*-scan ends the session and refunds the dead time instead of
+   silently charging for it.
+3. **Per-user synthesis exists** (`9e4e94f`, `src/core/synthesis.py`) — partly. Each
+   session now asks the model which candidate suits *this* trader given their capital, risk
+   appetite, style, goal, notes and current book, and gets a thesis in their terms. The
+   model **selects and explains; it never invents a price** — hallucinated levels are
+   indistinguishable from real ones until they fill.
 
-**Fixing 1 and 2 together is one change:** make a scan the thing that authorizes analysis,
-and demote the switch to an emergency stop. That removes the burn *and* the confusion.
+**What is still shared in step 3:** candidate *generation*. The analysis agents produce the
+same pool of setups for everyone, and synthesis picks from that pool. Genuinely per-user
+generation — running the strategy agent itself inside the session with the user's context —
+is the remaining work, and it is a real cost decision: generation is O(N sessions) where
+selection is one small call per cycle. Selection was chosen first because it delivers the
+doc's own example (*conservative user gets the 1h pullback, aggressive gets the 5m sweep*)
+without multiplying spend or letting a model author stop-losses.
