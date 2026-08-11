@@ -525,6 +525,84 @@ async def handle_agent_message(data: Dict[str, Any]):
     await manager.broadcast(payload)
 
 
+# --- the base market feed, held only while somebody is watching -----------------------
+#
+# These are the streams the dashboard renders (the untargeted BTCUSDT broadcast that
+# predates the channel protocol). `depth5@100ms` is TEN messages a second, and this used
+# to be subscribed in startup_event — so it ran 24/7 whether or not a single browser was
+# open, with the keepalive cron guaranteeing the process never slept to stop it. At
+# ~250 bytes a message that is ~216MB/day inbound, and the same again fanned back out to
+# every connected socket. It exhausted a 5GB free-tier bandwidth allowance in ten days
+# and suspended the whole Render workspace on 2026-08-10.
+#
+# Resolution is unchanged — 100ms depth is still there for anyone actually looking at a
+# trading terminal. What changed is that an idle backend now costs nothing.
+BASE_MARKET_STREAMS = ("btcusdt@ticker", "btcusdt@depth5@100ms", "btcusdt@kline_1m")
+
+#: Grace period before dropping the streams after the last socket leaves. A reload would
+#: otherwise unsubscribe and resubscribe within a second, and Binance rate-limits inbound
+#: control frames — a refresh loop could get the connection dropped.
+MARKET_FEED_LINGER_S = 30
+
+_market_feed_lock = asyncio.Lock()
+_market_feed_on = False
+_market_feed_release_task: Optional[asyncio.Task] = None
+
+
+async def acquire_market_feed() -> None:
+    """Subscribe the base streams, if they are not already up. Never raises."""
+    global _market_feed_on, _market_feed_release_task
+    async with _market_feed_lock:
+        # A viewer arrived during the grace period: cancel the pending teardown rather
+        # than let it fire and strand this connection with a dead feed.
+        if _market_feed_release_task is not None:
+            _market_feed_release_task.cancel()
+            _market_feed_release_task = None
+        if _market_feed_on:
+            return
+        try:
+            await binance_client.subscribe_ticker("btcusdt", handle_binance_update)
+            await binance_client.subscribe_depth(
+                "btcusdt", levels=5, update_speed="100ms", callback=handle_binance_update
+            )
+            await binance_client.subscribe_kline("btcusdt", ["1m"], handle_binance_update)
+            _market_feed_on = True
+            logger.info("market feed ON — a dashboard is connected")
+        except Exception as e:
+            # Same policy as at startup: a missing market feed degrades the dashboard,
+            # it must never fail the socket handshake.
+            logger.error(f"could not start the base market feed: {e}")
+
+
+async def _release_market_feed_after_linger() -> None:
+    global _market_feed_on, _market_feed_release_task
+    try:
+        await asyncio.sleep(MARKET_FEED_LINGER_S)
+    except asyncio.CancelledError:
+        return
+    async with _market_feed_lock:
+        _market_feed_release_task = None
+        # Re-check under the lock: someone may have connected while we slept.
+        if manager.active_connections or not _market_feed_on:
+            return
+        try:
+            await binance_client.unsubscribe(list(BASE_MARKET_STREAMS))
+            _market_feed_on = False
+            logger.info("market feed OFF — no dashboard connected")
+        except Exception as e:
+            logger.error(f"could not stop the base market feed: {e}")
+
+
+def release_market_feed_when_idle() -> None:
+    """Schedule teardown if that was the last viewer. Cheap and idempotent."""
+    global _market_feed_release_task
+    if not _market_feed_on or _market_feed_release_task is not None:
+        return
+    if manager.active_connections:
+        return
+    _market_feed_release_task = asyncio.create_task(_release_market_feed_after_linger())
+
+
 @app.on_event("startup")
 async def startup_event():
     # Structured logging (LOG_JSON=true → JSON lines) + request-ID on every line.
@@ -541,10 +619,10 @@ async def startup_event():
     # Redis WS bridge, REST endpoints, and agent feed keep working — the market feed
     # simply stays offline until connectivity returns.
     try:
+        # Connect the socket, but subscribe NOTHING yet. The base streams are acquired
+        # by the first dashboard that connects (see acquire_market_feed) so an idle
+        # backend does not stream 10 messages a second to nobody.
         await asyncio.wait_for(binance_client.connect(), timeout=10)
-        await binance_client.subscribe_ticker("btcusdt", handle_binance_update)
-        await binance_client.subscribe_depth("btcusdt", levels=5, update_speed="100ms", callback=handle_binance_update)
-        await binance_client.subscribe_kline("btcusdt", ["1m"], handle_binance_update)
     except Exception as e:
         logger.error(f"Binance market feed unavailable at startup (continuing without it): {e}")
 
@@ -780,6 +858,8 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     await manager.connect(websocket, user_id)
+    # Somebody is watching now — bring the base streams up if they are down.
+    await acquire_market_feed()
     try:
         while True:
             raw = await websocket.receive_text()
@@ -812,9 +892,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+        release_market_feed_when_idle()
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
+        release_market_feed_when_idle()
 
 @app.get("/api/trades")
 async def get_trades(

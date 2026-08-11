@@ -258,6 +258,33 @@ class BinanceWebSocketClient:
         await self.ws.send(json.dumps(subscribe_message))
         logger.info(f"Sent subscription request for {len(streams)} streams")
 
+    async def unsubscribe(self, streams: List[str]):
+        """Stop streams at the exchange and drop them from the resubscribe set.
+
+        Removing them from `self.subscriptions` is the half that actually matters: a
+        reconnect replays that list, so a stream left in it comes straight back after
+        the next socket drop even though nothing asked for it.
+
+        Callbacks are deliberately kept. The map is keyed by stream name, so a stream
+        that is re-subscribed later (a dashboard reopening) resumes delivering to the
+        same handlers rather than going silently nowhere.
+        """
+        doomed = {s for s in streams if s in self.subscriptions}
+        if not doomed:
+            return
+
+        self.subscriptions = [s for s in self.subscriptions if s not in doomed]
+
+        if self.ws:
+            unsubscribe_message = {
+                "method": "UNSUBSCRIBE",
+                "params": sorted(doomed),
+                "id": int(datetime.now(timezone.utc).timestamp())
+            }
+            await self.ws.send(json.dumps(unsubscribe_message))
+
+        logger.info(f"Unsubscribed from {len(doomed)} streams: {', '.join(sorted(doomed))}")
+
     async def _resubscribe(self):
         """Resubscribe to all streams after reconnection"""
         if self.subscriptions:
