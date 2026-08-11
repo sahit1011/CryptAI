@@ -84,6 +84,17 @@ async fn main() {
         shutdown_rx.clone(),
     ));
 
+    // Top-of-book by REST on the scoring cadence rather than the @bookTicker stream.
+    // It also carries the feed heartbeat, so the interval must stay inside the 15s
+    // staleness budget both planes enforce — tying it to tick_ms does that by
+    // construction, and capping it keeps a large TICK_MS from silently starving it.
+    let book = tokio::spawn(signal_engine::ingest::poll_book_tops(
+        Arc::clone(&store),
+        symbols.clone(),
+        Duration::from_millis(tick_ms.clamp(1_000, 10_000)),
+        shutdown_rx.clone(),
+    ));
+
     let scorer = tokio::spawn(score_loop(
         Arc::clone(&store),
         symbols.clone(),
@@ -112,6 +123,7 @@ async fn main() {
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         let _ = feed.await;
         let _ = perp.await;
+        let _ = book.await;
         let _ = scorer.await;
     })
     .await;

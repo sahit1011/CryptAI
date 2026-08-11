@@ -134,6 +134,13 @@ pub fn parse_frame(raw: &str, now_ms: i64) -> Option<Event> {
 }
 
 /// Combined-stream URL for the configured symbols and timeframes.
+///
+/// Klines only. `@bookTicker` is deliberately NOT streamed: it pushes on every best
+/// bid/ask change, which at a handful of symbols is a continuous firehose whose bytes
+/// dwarf everything else this process does — it was half of the egress that exhausted a
+/// 5GB/month allowance and suspended the host. The scorer only reads the book once per
+/// tick, so a REST snapshot at that cadence carries the same information (see
+/// `poll_book_tops`) for a fraction of a percent of the bandwidth.
 pub fn stream_url(symbols: &[String]) -> String {
     let mut streams: Vec<String> = Vec::new();
     for symbol in symbols {
@@ -141,7 +148,6 @@ pub fn stream_url(symbols: &[String]) -> String {
         for (tf, _) in TIMEFRAMES {
             streams.push(format!("{lower}@kline_{tf}"));
         }
-        streams.push(format!("{lower}@bookTicker"));
     }
     format!("{WS_BASE}{}", streams.join("/"))
 }
@@ -284,6 +290,136 @@ pub async fn poll_perp_state(
             }
         }
     }
+}
+
+/// Poll top-of-book for every symbol in ONE request, on the scoring cadence.
+///
+/// Replaces the `@bookTicker` stream. Two things make the swap safe:
+///
+/// 1. **The scorer only reads the book once per tick**, so a snapshot taken at that same
+///    cadence carries the same information a tick-by-tick stream would have left behind.
+///    Spread and touch size are the only fields consumed (`book_quality`, `SpreadTooWide`,
+///    `InsufficientDepth`), and none of them turn over meaningfully inside one tick.
+/// 2. **It carries the feed heartbeat.** `last_event_ts` feeds `feed_ts`, and BOTH planes
+///    fail closed past 15s — the Rust scorer raises `Veto::StaleFeed`
+///    (`max_feed_age_ms`) and the Python `PulseClient` rejects the pulse outright. Closed
+///    candles arrive every 5 minutes and the perp poller every 60s, so without this the
+///    feed would read as permanently stale and every session's pulse gate would refuse to
+///    run. `interval` MUST stay well inside that 15s budget.
+///
+/// Bandwidth is the whole point: one ~700B request per tick instead of an unbounded
+/// push on every best bid/ask change.
+pub async fn poll_book_tops(
+    store: Arc<RwLock<FeatureStore>>,
+    symbols: Vec<String>,
+    interval: Duration,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!("cannot build book HTTP client: {e}");
+            return;
+        }
+    };
+
+    // Binance accepts a JSON array of symbols and answers with one array — so the cost
+    // is a single round trip regardless of how many symbols are configured.
+    let symbols_param = format!(
+        "[{}]",
+        symbols
+            .iter()
+            .map(|s| format!("\"{}\"", s.to_uppercase()))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let url = format!("{REST_BASE}/ticker/bookTicker");
+
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown.changed() => {
+                info!("book poller shutting down");
+                return;
+            }
+        }
+
+        let tops = fetch_book_tops(&client, &url, &symbols_param).await;
+        if tops.is_empty() {
+            // A failed poll is survivable: the previous book stands and the staleness
+            // gate takes over if the outage outlives the budget. That is the honest
+            // outcome — better than scoring on a book we could not refresh.
+            continue;
+        }
+
+        let mut guard = store.write().await;
+        for (symbol, top) in tops {
+            let state = guard.entry(&symbol);
+            state.last_event_ts = state.last_event_ts.max(top.ts);
+            state.book = top;
+        }
+    }
+}
+
+async fn fetch_book_tops(
+    client: &reqwest::Client,
+    url: &str,
+    symbols_param: &str,
+) -> Vec<(String, BookTop)> {
+    let body: serde_json::Value = match client
+        .get(url)
+        .query(&[("symbols", symbols_param)])
+        .send()
+        .await
+    {
+        Ok(r) => match r.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("book poll: bad JSON: {e}");
+                return Vec::new();
+            }
+        },
+        Err(e) => {
+            warn!("book poll failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let now = now_ms();
+    let Some(rows) = body.as_array() else {
+        warn!("book poll: expected an array, got something else");
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for row in rows {
+        let Some(symbol) = row.get("symbol").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let num = |k: &str| row.get(k).and_then(|v| v.as_str()).and_then(f);
+        // A book without both sides priced is not a book — skip it rather than let a
+        // zero masquerade as a real quote and produce a nonsense spread.
+        let (Some(bid), Some(ask)) = (num("bidPrice"), num("askPrice")) else {
+            continue;
+        };
+        out.push((
+            symbol.to_uppercase(),
+            BookTop {
+                bid,
+                ask,
+                bid_qty: num("bidQty").unwrap_or(0.0),
+                ask_qty: num("askQty").unwrap_or(0.0),
+                ts: now,
+            },
+        ));
+    }
+    out
 }
 
 async fn fetch_funding(client: &reqwest::Client, symbol: &str) -> Option<f64> {
@@ -497,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_url_covers_every_timeframe_and_the_book() {
+    fn stream_url_covers_every_timeframe() {
         let url = stream_url(&["BTCUSDT".to_string(), "ETHUSDT".to_string()]);
         for tf in ["5m", "15m", "1h", "4h"] {
             assert!(url.contains(&format!("btcusdt@kline_{tf}")), "missing {tf}");
@@ -506,8 +642,20 @@ mod tests {
                 "missing eth {tf}"
             );
         }
-        assert!(url.contains("btcusdt@bookTicker"));
         assert!(url.starts_with("wss://"));
+    }
+
+    #[test]
+    fn stream_url_never_subscribes_the_book() {
+        // @bookTicker pushes on every best bid/ask change and was half the egress that
+        // exhausted the host's monthly bandwidth. Top-of-book now arrives by REST on the
+        // scoring cadence (poll_book_tops). Re-adding it here would silently restore the
+        // firehose, so this asserts the absence rather than trusting a comment.
+        let url = stream_url(&["BTCUSDT".to_string(), "ETHUSDT".to_string()]);
+        assert!(
+            !url.contains("bookTicker"),
+            "the book must not be streamed: {url}"
+        );
     }
 
     #[test]
