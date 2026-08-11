@@ -39,17 +39,23 @@ export function OverviewSection() {
     return (
         <div className="space-y-8">
             <SectionHeader
-                title="Overview"
+                title="Desk"
                 description={
-                    mode === "empty"
-                        ? "Monitor live trading performance and multi-agent system health"
-                        : isPaper
-                            ? "Your paper desk — virtual funds, real prices. Connect an exchange to trade live."
-                            : "Live trading performance and multi-agent system health"
+                    isPaper
+                        ? "Your practice account — virtual money, real prices. Connect an exchange to trade for real."
+                        : "Find a trade that fits your rules, decide on it, and we watch it for you."
                 }
             />
 
-            {/* KPI band — the account (seeded paper or live), else realized history. */}
+            {/* The scan console FIRST — this page exists to be acted on. It used to sit
+                below the KPI band, so a new user's first screen was four cards reading
+                ₹10,000 / 0.00 / 0 / 0% with the only real control beneath them. */}
+            <SessionPanel />
+
+            {/* KPI band — only once the numbers mean something. A 0% win rate is not a
+                measurement, it is an absence, and rendering it as a headline statistic
+                teaches a new user that this product is mostly zeros. */}
+            {hasRealized ? (
             <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-2 lg:grid-cols-4">
                 {mode === "live" ? (
                     <>
@@ -122,9 +128,7 @@ export function OverviewSection() {
                     ))
                 )}
             </div>
-
-            {/* The metered trading session — start the swarm, decide on its proposal. */}
-            <SessionPanel />
+            ) : null}
 
             {/* Realized equity curve — the settled-P&L run, whenever there's history. */}
             {stats.equityCurve.length > 1 && (

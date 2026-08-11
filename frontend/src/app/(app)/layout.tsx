@@ -9,6 +9,8 @@ import { useRouter } from "next/navigation"
 import { createClient } from "@/utils/supabase/client"
 import { cn } from "@/lib/utils"
 import { useMarketData } from "@/hooks/useMarketData"
+import { SessionBar } from "@/components/dashboard/SessionBar"
+import { AdminCapacityBanner } from "@/components/dashboard/ui/AdminCapacityBanner"
 
 /**
  * Shell for the signed-in app: Desk, Portfolio, Settings, and the admin ops page.
@@ -120,6 +122,11 @@ export default function AppLayout({
 
             <main className="h-full md:pl-72">
                 <Header onMenuClick={() => setMobileNavOpen(true)} />
+                {/* Both sit above the page content and below the header: a live scan or a
+                    3-minute plan must be visible on every route, and a paused engine must
+                    be loud to the operator wherever they are. */}
+                <AdminCapacityBanner />
+                <SessionBar />
                 <div className="h-full p-4 sm:p-6 lg:p-8">
                     <ErrorBoundary>
                         {children}

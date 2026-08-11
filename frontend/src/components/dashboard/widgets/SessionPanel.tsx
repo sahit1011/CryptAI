@@ -11,6 +11,7 @@ import { formatClock, isHeartbeatStale, type SessionPhase } from "@/lib/session"
 import { TRADING_STYLES } from "@/lib/preferences";
 import { getPreferences, type GoalHorizon } from "@/lib/api";
 import { ProposalCard } from "./ProposalCard";
+import { AgentFeed } from "./AgentFeed";
 
 /*
  * SessionPanel — the scan console.
@@ -250,6 +251,18 @@ export function SessionPanel() {
                                     : "First sweep is running. A plan appears here the moment one clears your bar."}
                             </p>
                         )}
+                        {/* The agents live INSIDE the thing that spawned them. They used
+                            to be a separate nav destination, so starting a scan made them
+                            disappear from view — "once I started the session I can't see
+                            my ai agent window". */}
+                        <details className="rounded-lg border border-border/60" open>
+                            <summary className="cursor-pointer select-none px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                                What your agents are doing
+                            </summary>
+                            <div className="max-h-56 overflow-hidden border-t border-border/60">
+                                <AgentFeed />
+                            </div>
+                        </details>
                         <MeterLegend />
                     </div>
                 ) : null}
