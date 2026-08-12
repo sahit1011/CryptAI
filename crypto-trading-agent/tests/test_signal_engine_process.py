@@ -12,6 +12,30 @@ import pytest
 from src.core import signal_engine_process as sep
 
 
+async def wait_for(predicate, timeout: float = 15.0, interval: float = 0.02) -> bool:
+    """Wait until `predicate()` holds, rather than guessing how long it takes.
+
+    These tests spawn a REAL child process, and every step before the assertion —
+    fork, exec, /bin/sh startup, echo, the pipe write, the pump's readline — is at the
+    mercy of the machine. A fixed sleep encodes a guess about all of that, and the guess
+    holds right up until the suite runs under load: the verify gate runs a frontend
+    typecheck beside this suite, and 0.6s stopped being enough. The test then failed on
+    scheduling rather than on behaviour, and did so intermittently, which is the most
+    expensive kind of red.
+
+    The assertions are unchanged. Only the waiting is: poll for the condition with a
+    ceiling far above any plausible spawn, so a pass means the behaviour happened and a
+    failure means it genuinely did not.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
+
+
 @pytest.mark.asyncio
 async def test_missing_binary_returns_quietly():
     """No binary (every local/dev environment, and any image built without the Rust
@@ -42,7 +66,7 @@ async def test_runs_a_real_child_and_forwards_its_output(monkeypatch, tmp_path):
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sep.run_signal_engine(shutdown))
-    await asyncio.sleep(0.6)          # let it spawn and emit a line
+    await wait_for(lambda: any("pulse published" in m for m in seen))
     shutdown.set()
     task.cancel()
     try:
@@ -81,7 +105,10 @@ async def test_a_crashing_engine_is_retried_with_backoff_not_a_tight_loop(monkey
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sep.run_signal_engine(shutdown))
-    await asyncio.sleep(0.8)
+    # Wait for the crash to be observed, then give the loop room to (wrongly) respawn.
+    # The assertion is that it does NOT, so this must not race the first spawn either.
+    await wait_for(lambda: len(starts) >= 1)
+    await asyncio.sleep(0.3)
     shutdown.set()
     task.cancel()
     try:
@@ -120,7 +147,7 @@ async def test_a_dying_engine_still_gets_its_last_words_logged(monkeypatch, tmp_
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(sep.run_signal_engine(shutdown))
-    await asyncio.sleep(0.8)
+    await wait_for(lambda: any("redis connection refused" in m for m in seen))
     shutdown.set()
     task.cancel()
     try:
