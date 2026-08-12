@@ -27,6 +27,14 @@ use signal_engine::scoring::{score, MarketSnapshot, ScoringConfig, TimeframeData
 
 const DEFAULT_SYMBOLS: &str = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT";
 
+/// The staleness budget both planes enforce: `scoring::Weights::max_feed_age_ms` raises
+/// `Veto::StaleFeed` past this, and the Python `PulseClient` rejects the pulse outright.
+const BOOK_STALENESS_BUDGET_MS: u64 = 15_000;
+/// Worst-case time for one book request, so the schedule leaves room for it. Matches the
+/// HTTP client timeout in `ingest::poll_book_tops`; a stamp is taken only after a
+/// response is parsed, so interval + request is the real stamp-to-stamp gap.
+const BOOK_REQUEST_BUDGET_MS: u64 = 10_000;
+
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
@@ -85,13 +93,20 @@ async fn main() {
     ));
 
     // Top-of-book by REST on the scoring cadence rather than the @bookTicker stream.
-    // It also carries the feed heartbeat, so the interval must stay inside the 15s
-    // staleness budget both planes enforce — tying it to tick_ms does that by
-    // construction, and capping it keeps a large TICK_MS from silently starving it.
+    // It also carries the feed heartbeat, so the gap between two STAMPS must stay inside
+    // the 15s staleness budget both planes enforce.
+    //
+    // The schedule alone does not bound that gap: a stamp is taken after the response is
+    // parsed, so the worst case is one interval plus one request. With a 10s interval and
+    // the 10s client timeout, a fast poll followed by a slow-but-successful one is ~19.5s
+    // apart — a StaleFeed veto on healthy data. Budget for the request explicitly instead
+    // of assuming the cadence covers it.
+    let book_interval_ms = tick_ms
+        .clamp(1_000, BOOK_STALENESS_BUDGET_MS.saturating_sub(BOOK_REQUEST_BUDGET_MS));
     let book = tokio::spawn(signal_engine::ingest::poll_book_tops(
         Arc::clone(&store),
         symbols.clone(),
-        Duration::from_millis(tick_ms.clamp(1_000, 10_000)),
+        Duration::from_millis(book_interval_ms),
         shutdown_rx.clone(),
     ));
 

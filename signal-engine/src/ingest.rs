@@ -372,21 +372,34 @@ async fn fetch_book_tops(
     url: &str,
     symbols_param: &str,
 ) -> Vec<(String, BookTop)> {
-    let body: serde_json::Value = match client
-        .get(url)
-        .query(&[("symbols", symbols_param)])
-        .send()
-        .await
-    {
-        Ok(r) => match r.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("book poll: bad JSON: {e}");
-                return Vec::new();
-            }
-        },
+    let response = match client.get(url).query(&[("symbols", symbols_param)]).send().await {
+        Ok(r) => r,
         Err(e) => {
             warn!("book poll failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    // Check the status BEFORE parsing. An error body (`{"code":-1121,"msg":"Invalid
+    // symbol."}`) is valid JSON, so without this it parsed cleanly, failed `as_array`,
+    // and returned empty with only a debug-level clue. Since this poller is now the only
+    // thing advancing `last_event_ts` between 5-minute candle closes, one bad symbol or a
+    // rate-limit ban silently stalls the heartbeat for EVERY symbol — after 15s every
+    // pulse carries StaleFeed and every session fails closed. Loud is the right volume.
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        error!(
+            "book poll rejected ({status}): {} — the feed heartbeat depends on this call",
+            body.chars().take(200).collect::<String>()
+        );
+        return Vec::new();
+    }
+
+    let body: serde_json::Value = match response.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("book poll: bad JSON: {e}");
             return Vec::new();
         }
     };
