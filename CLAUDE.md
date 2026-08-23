@@ -5,24 +5,31 @@ Multi-agent crypto futures trading engine. Going 0→1 to public paying users.
 See `AGENTS.md` for the backend architecture map (agents, message bus, DB layout) —
 it is accurate and worth reading before touching `crypto-trading-agent/src`.
 
-**Start here (2026-08-02):** `docs/PRD_CURRENT_STATE.md` — audited ground truth of what
-is built/deployed/broken — and `docs/HLD.md` — the target design, functional
-requirements, and M1–M6 roadmap. They supersede the entire Jan-2026 doc generation
-(`docs/prd.md`, `docs/COMPLETE_SPECIFICATION_SUMMARY.md`, `SETUP.md`, etc.).
+**Start here (2026-08-24):** the doc hierarchy, newest first —
+1. **`docs/plan-2026-08/`** — the current rescue plan: 6 PDFs (audit → product → system
+   design → UX → infra → roadmap) + editable HTML sources in `src/`. **The roadmap
+   (doc 06, task IDs R0.x–R4.x) is the work queue — pick ONE task ID per session.**
+2. `docs/ARCHITECTURE.md` — what the code actually does today (verified 2026-08-11).
+3. `docs/PRD_CURRENT_STATE.md` + `docs/HLD.md` — the 2026-08-02 baseline + FR-* target
+   design. Still authoritative for anything the plan docs don't cover.
+Superseded docs live in **`_attic/`** (see its README) — never cite them as current.
 
-## ⚠️ Branches: work on `feat/m0-foundation`
+## ⚠️ Branches: work on `fix/m1-foundation-bugs`
 
-Three-branch reality (verified 2026-08-02):
-- **`feat/m0-foundation`** — the active branch: `v2` + 21 commits (sessions, proposals,
-  preferences, Rust signal engine). All new work lands here.
-- **`v2`** — what production Render actually deploys (probed: the live host 404s the
-  m0 session/preferences endpoints). The signal engine does not exist on it.
-- **`main`** — stale 8-commit snapshot, still the GitHub default. Its only exclusive
-  files are cruft plus the keepalive workflow copy.
+Reality (verified 2026-08-24):
+- **`fix/m1-foundation-bugs`** — the active branch (`v2` + 44 commits: wired session
+  pipeline, per-user synthesis, proposals, monitors, session billing, bandwidth fixes).
+  All new work lands here. Production Render **tracks this branch with autoDeploy** —
+  a push deploys the moment the service is resumed.
+- **`v2`** — 44 commits behind, but **still the GitHub default branch**, which means
+  scheduled workflows (the load-bearing keepalive) run ITS stale copies. Flipping the
+  default to the m1 line is task R1.2.
+- `feat/m0-foundation`, `main` — historical; do not build on them.
 
-**Open task (M1):** make the m0 line the default branch and repoint Render — until then
-every fix on this branch is silently absent from production, and the deployed `/health`
-still has the lying-probe bug that is already fixed here.
+**Production is SUSPENDED** (Render bandwidth overage, 2026-08-10). Do NOT resume it
+before task R0.2 (DataAgent stream gate) merges — resume auto-deploys HEAD and the
+still-unfixed always-on streams (~2.2 GB/day vs a 167 MB/day budget) re-suspend the
+workspace within days. Full runbook: plan doc 05, slide 4.
 
 ## Layout
 ```
@@ -44,7 +51,7 @@ Zustand · lightweight-charts · Tailwind + shadcn/ui · Vitest + Playwright.
 cd frontend && npm install
 npm run dev              # next dev
 npm run build
-npm test                 # vitest run — 52 tests, <1s
+npm test                 # vitest run — 99 tests, ~1s
 npm run test:e2e         # playwright
 npx tsc --noEmit
 
@@ -75,8 +82,12 @@ the C library broke installs. The ta-lib build step still in `ci.yml` is stale
 relative to v2 and wastes CI minutes; deleting it is a safe cleanup.
 
 ## Verification
-`.claude/verify.sh` gates every turn in **~6s**. Four checks:
-frontend typecheck · 52 frontend unit tests · backend import smoke · 309 backend tests.
+`.claude/verify.sh` gates every turn in **~38s**. Four checks:
+frontend typecheck · 99 frontend unit tests · backend import smoke · 687 backend tests.
+Signal-engine changes additionally need `cargo test` (126 tests) — cargo is NOT on the
+default PATH; use the rustup shims at `/opt/homebrew/opt/rustup/bin` (pinned 1.97.1).
+Known standing failure: `cargo clippy -D warnings` fails on one `.last()`→`.next_back()`
+lint at `signal-engine/src/feature_store.rs:158` — a one-line fix when touched.
 
 Not covered, and why:
 - `npm run build` — ~60s. Run before pushing.
@@ -96,10 +107,10 @@ tests pass; nothing was weakened.
 Keep this pattern: never `sleep()` to wait out a cooldown, expiry, or retry window.
 Rewind the stored timestamp or inject the clock.
 
-**Remaining:** 189 tests are quarantined as "stale, drifted from the current
-API" (see `tests/conftest.py`) out of 500 collected. That's ~38% providing no protection —
-the largest correctness gap in the repo. Un-quarantine them incrementally. Never
-un-quarantine by loosening an assertion.
+**Remaining (re-counted 2026-08-24):** 188 tests are quarantined as "stale, drifted from
+the current API" (see `tests/conftest.py`) out of 878 collected — 687 pass. ~21% of the
+suite provides no protection — a standing correctness gap. Un-quarantine incrementally.
+Never un-quarantine by loosening an assertion.
 
 Run the quarantined tests to see their real failures without editing the list:
 ```bash
@@ -179,6 +190,20 @@ bugs at the boundary — the fix is one wholesale migration across all money col
 - Docker is **not installed locally**. Only needed for the integration suite
   (`docker-compose.yml` provides redis + postgres + pgadmin).
 
+## The four laws (2026-08-24 — this repo's scar tissue, enforce in every session)
+1. **The wiring law:** "tested" ≠ "wired". Never claim a feature done without tracing a
+   constructor from an entrypoint (`src/api/server.py` or `src/multi_user_daemon.py`).
+   Tested-but-unwired libraries are this repo's signature failure, three audits running.
+2. **The cost law:** every stream, loop, and LLM call must name its live consumer
+   (a session, a viewer, an open position) or it doesn't ship. Never subscribe at process
+   startup. Bandwidth budget: 5 GB/mo ≈ 167 MB/day for the whole Render workspace —
+   state bytes/day×30 for any new network loop. The Aug-10 suspension was this law broken.
+3. **The money law:** never widen a risk gate, cap, or stop to get green; the two
+   execution gates stay fail-closed; every query filters `user_id`.
+4. **The honesty law:** no fabricated numbers in the UI; regime is never mapped to a
+   trade direction (empirically refuted); no forward "hottest hour" claims until logged
+   calibration data earns them.
+
 ## Money safety — read before touching execution
 This system can place real futures orders. Two independent gates, both fail-closed:
 - `ENABLE_EXECUTION=false` → paper trading. **This is the default. Keep it.**
@@ -197,9 +222,10 @@ app-layer scoping bug is NOT caught by RLS on the backend path — every new que
 filter by `user_id` explicitly. Treat a missing filter as a launch blocker.
 
 ## Gotchas
-- 34 loose one-off scripts sit at `crypto-trading-agent/` root — `nuclear_clear_positions.py`,
-  `force_close_positions.py`, `delete_all_trades.py`. These are **destructive and
-  operate on real trade state**. Never run one to "clean up" during development.
+- The 44 loose one-off scripts (incl. `nuclear_clear_positions.py`, `delete_all_trades.py`)
+  were retired to `_attic/cta-scripts/` on 2026-08-24 and no longer ship in the image.
+  **Never run anything from `_attic/`** — the sanctioned path for those operations is
+  `python3.12 scripts/admin.py <cmd> --confirm`.
 - `httpx` is pinned `<0.28` deliberately — unpinning broke the Analysis + Strategy agents.
 - OpenRouter free-tier models are **rotated**, not pinned; a dead model previously
   made the engine silently produce nothing.

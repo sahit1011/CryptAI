@@ -1,0 +1,173 @@
+/* CryptAI rescue-plan deck system — matches the product design system of record
+   (frontend/DESIGN.md): near-black canvas, crimson as the single brand hue,
+   emerald/red reserved for P&L/status semantics, Geist + Geist Mono + Instrument Serif.
+   Rendered to PDF via Chrome headless (see build.sh). 16:9 slide pages. */
+
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap');
+
+@page { size: 13.33in 7.5in; margin: 0; }
+
+:root {
+  /* surfaces & ink */
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #232322;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --baseline: #383835;
+  --ring: rgba(255,255,255,0.10);
+
+  /* brand — crimson, per frontend/DESIGN.md */
+  --brand: #e8655f;
+  --brand-300: #f0928d;
+  --brand-deep: #7a2e2a;
+  --brand-dim: rgba(232,101,95,0.13);
+
+  /* P&L / status semantics — never used for branding */
+  --emerald: #34d399;
+  --emerald-dim: rgba(52,211,153,0.14);
+
+  /* categorical series, dark-stepped (validated order) */
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+
+  /* status (fixed) */
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b;
+
+  --sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --serif: "Instrument Serif", Georgia, serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { background: var(--page); }
+body { font-family: var(--sans); color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+.slide {
+  width: 13.33in; height: 7.5in;
+  page-break-after: always; break-after: page;
+  overflow: hidden; position: relative;
+  background: var(--page);
+  padding: 0.52in 0.62in 0.58in;
+  display: flex; flex-direction: column;
+}
+.slide:last-child { page-break-after: auto; }
+
+/* ---- header / footer chrome ---- */
+.kicker {
+  font: 600 10.5px/1 var(--mono); letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--brand); margin-bottom: 10px;
+}
+.kicker .sep { color: var(--muted); margin: 0 6px; }
+.kicker .team { color: var(--muted); }
+h1 { font-size: 44px; line-height: 1.06; letter-spacing: -0.025em; font-weight: 600; }
+h2 { font-size: 27px; line-height: 1.12; letter-spacing: -0.02em; font-weight: 600; margin-bottom: 6px; }
+h1 em, h2 em, .accent-word { font-family: var(--serif); font-style: italic; font-weight: 400; color: var(--brand-300); letter-spacing: 0; }
+.sub { color: var(--ink-2); font-size: 14.5px; line-height: 1.45; max-width: 9.4in; margin-top: 8px; }
+.footer {
+  position: absolute; left: 0.62in; right: 0.62in; bottom: 0.30in;
+  display: flex; justify-content: space-between; align-items: baseline;
+  font: 500 9.5px/1 var(--mono); color: var(--muted); letter-spacing: 0.08em;
+  border-top: 1px solid var(--grid); padding-top: 8px;
+}
+.footer .brand b { color: var(--brand); font-weight: 600; }
+
+/* ---- layout helpers ---- */
+.body { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-top: 14px; }
+.cols { display: grid; gap: 14px; flex: 1; min-height: 0; }
+.cols-2 { grid-template-columns: 1fr 1fr; }
+.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+.cols-21 { grid-template-columns: 2fr 1fr; }
+.cols-12 { grid-template-columns: 1fr 2fr; }
+.stack { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+
+/* ---- cards ---- */
+.card {
+  background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+  padding: 14px 16px;
+}
+.card h3 {
+  font: 600 10.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 10px;
+}
+.card h3 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+.card p, .card li { font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.card b, .card strong { color: var(--ink); font-weight: 600; }
+.card ul { list-style: none; }
+.card li { padding-left: 14px; position: relative; margin-bottom: 7px; }
+.card li::before { content: ""; position: absolute; left: 0; top: 8px; width: 5px; height: 5px; border-radius: 50%; background: var(--brand); }
+.card.flat { background: transparent; border: none; padding: 0; }
+
+/* ---- stat tiles ---- */
+.tiles { display: grid; gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 13px 15px; }
+.tile .label { font: 600 9.5px/1.3 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.tile .value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin: 6px 0 2px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tile .value.mono { font-family: var(--mono); font-size: 26px; }
+.tile .value .unit { font-size: 15px; color: var(--muted); font-weight: 500; }
+.tile .note { font-size: 11px; line-height: 1.4; color: var(--ink-2); }
+.tile.good .value { color: var(--emerald); }
+.tile.bad .value { color: var(--s8); }
+.tile.warn .value { color: var(--warn); }
+
+/* ---- status pills ---- */
+.pill {
+  display: inline-block; font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em;
+  padding: 4px 8px; border-radius: 999px; text-transform: uppercase; white-space: nowrap;
+}
+.pill.ok { color: var(--emerald); background: var(--emerald-dim); }
+.pill.bad { color: #ff9a9a; background: rgba(211,59,59,0.18); }
+.pill.warn { color: var(--warn); background: rgba(250,178,25,0.14); }
+.pill.info { color: #8fb8ee; background: rgba(57,135,229,0.16); }
+.pill.dim { color: var(--muted); background: rgba(255,255,255,0.06); }
+.pill.brand { color: var(--brand-300); background: var(--brand-dim); }
+
+/* ---- tables ---- */
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th {
+  font: 600 9.5px/1.3 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted); text-align: left; padding: 0 10px 7px 0; border-bottom: 1px solid var(--baseline);
+}
+td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--grid); color: var(--ink-2); line-height: 1.4; vertical-align: top; }
+td b { color: var(--ink); font-weight: 600; }
+td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+.mono { font-family: var(--mono); }
+code {
+  font: 500 11px/1.4 var(--mono); color: var(--ink);
+  background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 4px;
+}
+
+/* ---- diagram (inline SVG) defaults ---- */
+svg { display: block; }
+svg text { font-family: var(--sans); }
+svg .mono { font-family: var(--mono); }
+
+/* ---- cover ---- */
+.cover { justify-content: center; }
+.cover .kicker { font-size: 12px; margin-bottom: 22px; }
+.cover h1 { font-size: 62px; max-width: 10.8in; }
+.cover .sub { font-size: 17px; max-width: 8.8in; margin-top: 18px; }
+.meta { margin-top: 40px; display: flex; gap: 34px; font: 500 11px/1.6 var(--mono); color: var(--muted); }
+.meta b { color: var(--ink-2); display: block; font-weight: 600; }
+
+/* ---- flow steps ---- */
+.flow { display: flex; gap: 0; align-items: stretch; }
+.flow .step { flex: 1; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 12px 13px; position: relative; }
+.flow .arrow { align-self: center; color: var(--brand); font-size: 16px; padding: 0 7px; flex: 0 0 auto; }
+.flow .step .n {
+  font: 700 10px/1 var(--mono); color: #fff; background: var(--brand-deep); border: 1px solid var(--brand);
+  width: 19px; height: 19px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 8px;
+}
+.flow .step h4 { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.flow .step p { font-size: 11px; line-height: 1.45; color: var(--ink-2); }
+.flow .step.done { border-color: rgba(52,211,153,0.45); background: var(--emerald-dim); }
+
+/* ---- bar charts (HTML/CSS) ---- */
+.hbar { display: grid; grid-template-columns: max-content 1fr max-content; gap: 6px 10px; align-items: center; font-size: 12px; }
+.hbar .name { color: var(--ink-2); }
+.hbar .track { height: 14px; border-radius: 4px; background: var(--surface-2); position: relative; overflow: hidden; }
+.hbar .fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
+.hbar .val { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); font-size: 11.5px; }
