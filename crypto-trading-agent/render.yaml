@@ -112,6 +112,16 @@ services:
                                       # failure is silent — sessions just never scan.
       - key: PLATFORM_SYMBOLS         # session universe default; keep ⊆ the engine's SYMBOLS
         value: "BTCUSDT,ETHUSDT,SOLUSDT"
+      - key: TRADING_SYMBOLS          # analysis/data universe — MUST equal PLATFORM_SYMBOLS,
+        value: "BTCUSDT,ETHUSDT,SOLUSDT"  # or ~1/3 of LLM spend analyzes symbols no session
+                                          # can trade (the config default still has XAUTUSDT).
+      - key: ANALYSIS_POLL_SECONDS    # how often the daemon CHECKS for scan demand (cheap);
+        value: "30"                   # the expensive LLM cycle still paces at CYCLE_INTERVAL.
+      - key: ANALYSIS_KEEP_WARM       # "true" runs analysis with ZERO scans (owner opt-in,
+        value: "false"                # costs LLM requests for nobody). NOT the engine switch:
+                                      # the switch only admits/refuses new scans at the door.
+      - key: STREAM_LINGER_SECONDS    # grace before market-data streams unsubscribe after
+        value: "120"                  # demand (scans / open positions) disappears.
 
       # ---- secrets: set in the Render dashboard (sync:false = not in git) -----------
       - key: POSTGRES_URL             # Supabase session pooler URI

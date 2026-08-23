@@ -21,6 +21,7 @@ Run:  python -m src.multi_user_daemon
 """
 import asyncio
 import os
+import time
 import signal
 import sys
 from typing import Optional
@@ -71,6 +72,11 @@ class MultiUserTradingDaemon:
         self._tick_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
         self._was_on = None  # tracks on/off transitions for one-time log lines
+        self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
+        # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
+        # the UI's staleness check measures against the published cadence, so a divergent
+        # default here makes local/dev sessions look stale against a cadence nobody uses.
+        self.cycle_interval = int(os.getenv("CYCLE_INTERVAL", "180"))
 
     # ------------------------------------------------------------------ setup
     async def initialize_infrastructure(self):
@@ -182,7 +188,9 @@ class MultiUserTradingDaemon:
             message_bus=self.message_bus,
             state_manager=self.state_manager,
             symbol=symbol,
-            cycle_interval=int(os.getenv("CYCLE_INTERVAL", "180")),
+            # One source of truth: two readings of CYCLE_INTERVAL with different
+            # defaults would disagree the moment the env var is unset.
+            cycle_interval=self.cycle_interval,
         )
 
         # Vault -> discovers connected-key tenants. Optional (paper-only demo without it).
@@ -414,10 +422,13 @@ class MultiUserTradingDaemon:
         await self.message_bus.subscribe("user_commands", self._handle_user_command)
         await self.initialize_agents()
 
-        interval = int(os.getenv("CYCLE_INTERVAL", "180"))
+        # Poll fast so a new scan is noticed within seconds; _analysis_with_signals
+        # enforces the real cadence and skips entirely when nobody is scanning, so a
+        # short tick costs nothing when idle (run_cycle returns on empty setups).
+        interval = int(os.getenv("ANALYSIS_POLL_SECONDS", "30"))
         active = self.registry.active_user_ids()
         plog.info(
-            f"✅ Daemon started | cycle={interval}s | active_tenants={len(active)} "
+            f"✅ Daemon started | poll={interval}s cadence={self.cycle_interval}s | active_tenants={len(active)} "
             f"| symbols={','.join(self.symbols)}",
             agent="daemon",
             phase="startup_complete",
@@ -842,27 +853,41 @@ class MultiUserTradingDaemon:
 
         The switch is no longer a prerequisite for a user's scan to work — that coupling
         is what let a paused switch silently burn a user's metered clock while producing
-        nothing. It is now an OVERRIDE (keep analysis warm) and, via the capacity gate on
-        POST /api/session/start, an emergency stop: switch off means new scans are
-        refused outright (503, no session row, no clock), so demand stops at the door
-        instead of being starved after the meter has started.
+        nothing. The switch is now ONLY admission control and an emergency stop, via the
+        capacity gate on POST /api/session/start: switch off means new scans are refused
+        outright (503, no session row, no clock), so demand stops at the door instead of
+        being starved after the meter has started. Keeping analysis warm with zero scans
+        is a separate, explicit opt-in — ANALYSIS_KEEP_WARM=true — never the switch.
         """
-        override_on = False
-        if self.engine_switch is not None:
-            override_on = await self.engine_switch.is_on()
+        # KEEP-WARM IS NOT THE CAPACITY SWITCH. Tying them together made this gate
+        # useless: `engine:on` must be ON for a session to be admitted at all (the 503
+        # capacity gate), so reading it as "override" meant the override was true in every
+        # configuration where anyone could scan — and analysis ran every cycle regardless
+        # of demand. Keep-warm is its own opt-in, off by default.
+        keep_warm = os.getenv("ANALYSIS_KEEP_WARM", "").strip().lower() == "true"
+        demand = await self._has_scan_demand()
 
-        if not override_on and not await self._has_scan_demand():
+        if not demand and not keep_warm:
             if self._was_on is not False:  # log the transition, not every idle cycle
                 plog.info(
-                    "⏸️  analysis idle — nobody is scanning and the owner override is off",
-                    agent="daemon",
+                    "⏸️  analysis idle — nobody is scanning", agent="daemon"
                 )
                 self._was_on = False
+            # Deliberately does NOT stamp _last_analysis_at: idle time should not count
+            # against the cadence, so the first scan after a quiet spell gets a cycle
+            # immediately instead of waiting out a window it spent asleep.
             return []
+
+        # Pace the real work. The loop ticks fast so demand is noticed quickly; the
+        # expensive part still runs no more often than the configured cadence.
+        now = time.time()
+        if self._last_analysis_at is not None and (now - self._last_analysis_at) < self.cycle_interval:
+            return []
+        self._last_analysis_at = now
 
         if self._was_on is not True:
             plog.info(
-                "🟢 analysis running — " + ("owner override on" if override_on
+                "🟢 analysis running — " + ("keep-warm is on" if not demand
                                             else "a user is scanning"),
                 agent="daemon",
             )

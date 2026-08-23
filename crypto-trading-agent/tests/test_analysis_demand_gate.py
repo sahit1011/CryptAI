@@ -59,6 +59,8 @@ def _host(*, switch_on=False, sessions=0, sessions_raise=False):
         symbols=["BTCUSDT"],
         setup_cache=None,
         _was_on=None,
+        _last_analysis_at=None,
+        cycle_interval=600,
     )
     # _publish_setups touches the bus; the gate is what we're testing.
     async def _publish(setups):
@@ -88,9 +90,23 @@ async def test_an_active_scan_is_demand_enough():
 
 
 @pytest.mark.asyncio
-async def test_owner_override_runs_analysis_with_nobody_scanning():
-    """The switch survives as an override for keeping setups warm."""
+async def test_the_capacity_switch_alone_does_not_keep_analysis_running(monkeypatch):
+    """The gap this pins: keep-warm used to BE the capacity switch, and that switch must
+    be ON for anyone to start a scan at all — so the 'override' was true in every usable
+    configuration and analysis ran every cycle regardless of demand. The gate only did
+    something in states where the product was unusable."""
+    monkeypatch.delenv("ANALYSIS_KEEP_WARM", raising=False)
     host, orch = _host(switch_on=True, sessions=0)
+    await MultiUserTradingDaemon._analysis_with_signals(host)
+    assert orch.cycles == 0, "capacity being available is not a reason to burn LLM calls"
+
+
+@pytest.mark.asyncio
+async def test_keep_warm_is_its_own_opt_in(monkeypatch):
+    """Keeping setups warm with nobody scanning is still possible — deliberately, and
+    separately from whether users are allowed to scan."""
+    monkeypatch.setenv("ANALYSIS_KEEP_WARM", "true")
+    host, orch = _host(switch_on=False, sessions=0)
     await MultiUserTradingDaemon._analysis_with_signals(host)
     assert orch.cycles == 1
 
@@ -115,11 +131,38 @@ async def test_demand_check_fails_closed_when_the_session_store_is_down():
 
 
 @pytest.mark.asyncio
-async def test_override_short_circuits_the_demand_query():
-    """With the override on the answer cannot change, so don't pay for the lookup."""
+async def test_demand_is_always_consulted(monkeypatch):
+    """Demand must be checked FIRST. Short-circuiting it behind the switch is exactly how
+    the gate became decorative."""
+    monkeypatch.delenv("ANALYSIS_KEEP_WARM", raising=False)
     host, orch = _host(switch_on=True, sessions=0)
     await MultiUserTradingDaemon._analysis_with_signals(host)
-    assert host.session_manager.calls == 0
+    assert host.session_manager.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_idle_time_does_not_count_against_the_cadence(monkeypatch):
+    """A quiet spell must not make the first scanner wait out a window the system spent
+    asleep — idle skips deliberately leave the cadence clock untouched."""
+    monkeypatch.delenv("ANALYSIS_KEEP_WARM", raising=False)
+    host, orch = _host(switch_on=True, sessions=0)
+    await MultiUserTradingDaemon._analysis_with_signals(host)   # idle
+    assert host._last_analysis_at is None
+    host.session_manager = _Sessions(1)                          # a user starts scanning
+    await MultiUserTradingDaemon._analysis_with_signals(host)
+    assert orch.cycles == 1, "the first scan after idle had to wait for the cadence"
+
+
+@pytest.mark.asyncio
+async def test_the_expensive_cycle_is_paced_even_under_constant_demand(monkeypatch):
+    """The loop polls fast so demand is noticed quickly; the LLM work still runs no more
+    often than the cadence."""
+    monkeypatch.delenv("ANALYSIS_KEEP_WARM", raising=False)
+    host, orch = _host(switch_on=True, sessions=1)
+    await MultiUserTradingDaemon._analysis_with_signals(host)
+    await MultiUserTradingDaemon._analysis_with_signals(host)
+    await MultiUserTradingDaemon._analysis_with_signals(host)
+    assert orch.cycles == 1, "a fast poll turned into fast LLM spend"
 
 
 @pytest.mark.asyncio
