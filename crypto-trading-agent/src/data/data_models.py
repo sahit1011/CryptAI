@@ -32,7 +32,7 @@ class Trade(Base):
     # Multi-tenancy: the Supabase auth user (auth.users.id UUID) that owns this trade.
     # Nullable for backward compatibility with single-tenant/legacy rows; queries scope
     # by this when a user context is supplied. Enforcement (RLS / per-user isolation) is
-    # layered on top — see docs/MULTI_TENANCY.md.
+    # layered on top — see the repo-root docs/MULTI_TENANCY.md (the live contract).
     user_id = Column(String(64), index=True, nullable=True)
 
     # Trade details

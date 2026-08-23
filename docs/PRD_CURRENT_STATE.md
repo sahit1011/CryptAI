@@ -1,5 +1,12 @@
 # CryptAI — Current-State PRD
 
+> **⚠️ UPDATE 2026-08-24:** a 9-agent re-audit found much of §4–§5 has moved. The session
+> pipeline, per-user synthesis, proposals, and monitors are now WIRED in production code
+> (see `docs/ARCHITECTURE.md`, verified 2026-08-11); §5 items 1–4 are fixed on the m1
+> branch; production is SUSPENDED (Render bandwidth overage 2026-08-10). Current ground
+> truth, plans, and the new product direction live in **`docs/plan-2026-08/`** (PDFs).
+> This file remains the 2026-08-02 baseline record.
+
 > **What this is:** the audited ground truth of what is built, deployed, and running as of
 > 2026-08-02. Basis: a 9-agent subsystem audit of the `feat/m0-foundation` working tree
 > (539 tool calls, every claim file:line-verified), live probes of the production host, and
@@ -248,7 +255,7 @@ from `/api/trades` instead).
 | Per-session LLM token budget as safety net ($0.50 default) | `src/core/session_budget.py` |
 | Exchange lineup: BingX + Delta India + CoinDCX execution; Binance data-only | `src/execution/exchange_client.py` |
 | Delta India = reference live adapter (only venue with a testnet); CoinDCX unvalidatable without real money | root `CLAUDE.md` M0 findings |
-| Frontend design: "trading terminal" — near-black, emerald accent, red = loss only, Geist Mono numerals, dark-only | `REBUILD_PLAN.md:36-46`, shipped |
+| Frontend design: "terminal-grade restraint" — near-black, **crimson** single brand hue, emerald/red reserved for P&L, Geist Mono numerals, dark-only | `frontend/DESIGN.md` (system of record; the older `REBUILD_PLAN.md` citation said "emerald accent" and was wrong) |
 | Pulse contract v1 (shared plane ↔ per-user plane interface) | `docs/MULTI_TENANCY.md` + `signal-engine/src/pulse.rs` |
 | Regime must never be mapped to trade direction (empirically refuted) | `signal-engine/FINDINGS.md` §2, `pulse.rs:23-34` |
 | Starter/Pro session quotas | **NOWHERE — undefined in code and docs; must be decided in the PRD/HLD** |

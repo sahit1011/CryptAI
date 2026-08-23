@@ -79,9 +79,9 @@ tenacity==8.3.0
 prometheus-client==0.20.0
 python-telegram-bot>=21.0
 
-# Legacy standalone dashboard (dashboard.py) only — NOT used by the production
-# API/worker (the Next.js frontend is the real dashboard). streamlit 1.28.1 pinned
-# numpy<2 and made the whole file unresolvable against chromadb/scipy. Install these
-# separately (pip install streamlit plotly) if you want the legacy Python dashboard.
+# Legacy standalone dashboard (retired to _attic/cta-scripts/dashboard.py) only —
+# NOT used by the production API/worker (the Next.js frontend is the real dashboard).
+# streamlit 1.28.1 pinned numpy<2 and made the whole file unresolvable against
+# chromadb/scipy. Install separately (pip install streamlit plotly) if ever revived.
 # streamlit==1.28.1
 # plotly==5.17.0

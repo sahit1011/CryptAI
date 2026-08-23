@@ -14,6 +14,7 @@
 **/.ruff_cache
 frontend
 docs
+_attic
 *.md
 **/.env
 **/.env.*

@@ -24,16 +24,10 @@ Usage examples:
   python3.12 scripts/admin.py force-close --confirm
   python3.12 scripts/admin.py close-all --confirm
 
-Superseded loose scripts (kept on disk for now; this CLI is the safe path):
-  clear-redis    -> clear_redis.py, clear_redis_positions.py, clear_ghost_positions.py,
-                    nuclear_clear_positions.py, scripts/close_redis_positions.py,
-                    scripts/force_clear_positions.py
-  delete-trades  -> delete_all_trades.py, delete_trade.py, delete_trade_latest.py,
-                    scripts/delete_active_trades.py
-  force-close    -> db_force_close.py, force_close_positions.py,
-                    scripts/force_close_trades.py, scripts/close_active_position.py,
-                    scripts/close_all_trades.py
-  close-all      -> call_api_close.py, close_via_api.py (HTTP close-positions endpoint)
+This CLI is the ONLY sanctioned path for these operations. The loose one-off
+scripts it superseded (nuclear_clear_positions.py, delete_all_trades.py, …) were
+retired to repo-root `_attic/cta-scripts/` on 2026-08-24 and are excluded from
+the production image. Never run anything from _attic against live state.
 """
 from __future__ import annotations
 
