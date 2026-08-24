@@ -1,0 +1,17 @@
+# TLS-terminating reverse proxy. SITE_ADDRESS = <dashed-public-ip>.sslip.io gives a
+# real hostname (and therefore real Let's Encrypt TLS + wss://) with no DNS account.
+# WebSockets proxy transparently — no extra config needed in Caddy v2.
+
+{$SITE_ADDRESS} {
+	reverse_proxy backend:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
