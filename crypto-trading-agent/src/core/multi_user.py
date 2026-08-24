@@ -11,6 +11,7 @@ Redis/WS namespacing from the earlier tenancy work). See docs/MULTI_TENANCY.md.
 This is the "shared-engine-per-user-portfolio" model: efficient (analysis/LLM cost is
 paid once, not per user) with strict per-tenant isolation of money and state.
 """
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -28,6 +29,10 @@ class UserRiskConfig:
     """Per-tenant sizing/risk configuration."""
     initial_balance: float = 10000.0
     risk_params: Optional[RiskParameters] = None
+    # Leverage the user's paper desk opens positions at. Before this existed the
+    # engine silently ran its hardcoded default regardless of any preference —
+    # and, worse, the value was persisted nowhere (R2.1 G1).
+    leverage: int = 10
 
 
 def _normalize_tps(setup: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -75,6 +80,7 @@ class UserSession:
             message_bus=message_bus,
             state_manager=state_manager,
             user_id=user_id,
+            leverage=cfg.leverage,
         )
         self.order_manager = OrderManager(self.engine)
         # snapshot_dir MUST be per-user: the tracker persists to a stable filename, so a
@@ -91,6 +97,67 @@ class UserSession:
         # its tracker positions then persist until reconcile, erring over-strict.
         if hasattr(self.engine, "on_position_closed"):
             self.engine.on_position_closed = self._on_position_closed
+        # Rehydration tri-state (R2.1): None = no rehydration regime in play (tests,
+        # the legacy single-bot path — booking allowed); False = a rehydration pass
+        # is PENDING for this session and booking is refused until it completes
+        # (persisted rows are the source of truth; trading blocked until diffed);
+        # True = pass done. The daemon flips None→False at materialization.
+        self.rehydrated: Optional[bool] = None
+
+    async def rehydrate(self, trade_manager: Any) -> Any:
+        """Rebuild this user's engine + risk tracker from their persisted rows.
+
+        Fail-closed for money: on ANY failure `rehydrated` stays False and this
+        user's bookings stay refused — a desk that might be missing an open
+        position must not take new risk. Other users are unaffected (the daemon
+        isolates per-user).
+        """
+        from src.core.rehydration import load_trades, rehydrate_engine
+
+        open_rows, closed_rows = await asyncio.to_thread(
+            load_trades, trade_manager, self.user_id
+        )
+        mirror = []
+        sm = getattr(self.engine, "state_manager", None)
+        if sm is not None:
+            try:
+                mirror = await sm.get_positions(user_id=self.user_id) or []
+            except Exception:
+                mirror = []  # a dead mirror is only a lost zombie report
+
+        report = await rehydrate_engine(self.engine, open_rows, closed_rows, mirror)
+
+        # Tracker second: reconcile from its snapshot (local-disk best-effort), then
+        # overwrite its open set from the rows — position_id/opened_at must match the
+        # engine's or monitors reset and the time stop measures from boot (G7).
+        try:
+            await self.portfolio.reconcile_on_startup(live_mode=False)
+        except Exception as e:
+            logger.warning(f"[rehydrate] tracker reconcile failed for {self.user_id}: {e}")
+        for r in open_rows:
+            try:
+                await self.portfolio.add_position(
+                    position_id=f"POS_{r.trade_id}",
+                    symbol=str(r.symbol).upper(),
+                    direction=str(r.direction).upper(),
+                    entry_price=float(r.entry_price or 0.0),
+                    position_size=float(r.position_size or 0.0),
+                    stop_loss=float(r.stop_loss or 0.0),
+                    take_profit_levels=[
+                        float(p) for p in (r.take_profit_levels or [])
+                        if isinstance(p, (int, float))
+                    ],
+                    risk_amount=float(r.risk_amount or 0.0),
+                    strategy_type=r.strategy_type or "DAY_TRADE",
+                    confidence_score=float(r.confidence_score or 0.0),
+                    opened_at=r.entry_time,
+                )
+            except Exception as e:
+                logger.warning(f"[rehydrate] tracker add failed for "
+                               f"{self.user_id}/{r.trade_id}: {e}")
+
+        self.rehydrated = True
+        return report
 
     async def _on_position_closed(
         self, position_id: str, symbol: str, exit_price: float, pnl: float, reason: str
@@ -103,6 +170,13 @@ class UserSession:
         Returns a per-user result dict; never raises (errors are captured) so one
         tenant's failure can't abort the fan-out to others.
         """
+        # Block-until-diffed (R2.1): while this session's rehydration pass is
+        # pending or failed, its desk may be missing open positions — every risk
+        # gate downstream (heat, position count, daily loss) would be vacuous.
+        # Refusing here is the reconciliation doctrine's only money door.
+        if self.rehydrated is False:
+            return {"user_id": self.user_id, "approved": False,
+                    "reasons": ["rehydrating — trading resumes once persisted state is restored"]}
         try:
             result = await self.risk.validate_trade_setup(
                 symbol=setup["symbol"],
@@ -219,6 +293,21 @@ class UserSession:
         if self.message_bus is None:
             return
         trade_id = str(position_id).replace("POS_", "")
+        # Bracket-leg identity for rehydration (R2.1): the row must let a restart
+        # rebuild the resting SL/TP legs with their real ids, prices, and per-leg
+        # QUANTITY FRACTIONS — bare TP prices lose the sizes, and an evenly-split
+        # guess would mis-size every partial-TP bracket it restores.
+        entry_order = getattr(execution, "entry_order", None)
+        sl_order = getattr(execution, "stop_loss_order", None)
+        tp_orders = list(getattr(execution, "take_profit_orders", None) or [])
+        tp_order_ids = []
+        for o in tp_orders:
+            qty = float(getattr(o, "quantity", 0.0) or 0.0)
+            tp_order_ids.append({
+                "order_id": getattr(o, "order_id", None),
+                "price": float(getattr(o, "price", 0.0) or 0.0),
+                "size": round(qty / size, 6) if size > 0 else 0.0,
+            })
         try:
             await self.message_bus.publish(
                 "memory_agent_inbox",
@@ -238,6 +327,10 @@ class UserSession:
                         "position_size": size,
                         "stop_loss": setup["stop_loss"],
                         "take_profit_levels": tp_levels,
+                        "leverage": float(getattr(pos, "leverage", 0) or 0) or None,
+                        "entry_order_id": getattr(entry_order, "order_id", None),
+                        "sl_order_id": getattr(sl_order, "order_id", None),
+                        "tp_order_ids": tp_order_ids,
                         "risk_amount": risk_amount,
                         "strategy_type": setup.get("strategy_type", ""),
                         "confidence_score": setup.get("confidence_score", 0.0) or 0.0,
@@ -284,6 +377,13 @@ class UserRegistry:
         # Optional: build a LIVE per-user engine (from vault keys) for auto+connected
         # users. Returns None to fall back to the isolated paper engine.
         self._exchange_builder = exchange_builder or (lambda uid: None)
+        # Rehydration hook (R2.1). When the daemon sets this, every NEWLY materialized
+        # session is marked rehydration-pending (booking refused) and handed to the
+        # hook, which schedules the async rows→engine pass. Covers sessions created
+        # AFTER the boot pass: a first-touch materialization mid-run, and the
+        # paper↔auto mode-change rebuild — both would otherwise hand out an engine
+        # that has forgotten this user's open positions.
+        self.on_session_created: Optional[Callable[["UserSession"], None]] = None
 
     def mode_for(self, user_id: str) -> str:
         """This user's trading mode (off | paper | manual | auto)."""
@@ -338,6 +438,15 @@ class UserRegistry:
         s.built_mode = mode
         s.is_live = live_engine is not None
         self._sessions[user_id] = s
+        if self.on_session_created is not None:
+            # Mark pending SYNCHRONOUSLY so there is no window where the fresh,
+            # empty engine can book; the hook schedules the actual async pass.
+            s.rehydrated = False
+            try:
+                self.on_session_created(s)
+            except Exception as e:
+                logger.error(f"[multi-user] rehydration hook failed for {user_id}: {e} "
+                             "— session stays booking-blocked (fail-closed)")
         return s
 
 

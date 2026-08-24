@@ -1009,7 +1009,8 @@ async def get_trades(
                 "exitTime": trade.exit_time.isoformat() if trade.exit_time else None,
                 "exitReason": trade.exit_reason,
                 "strategy": trade.strategy_type,
-                "leverage": trade.leverage if hasattr(trade, 'leverage') else 10,
+                # Real column since R2.1; None on legacy rows (unknown ≠ 10).
+                "leverage": trade.leverage,
                 "confidence": float(trade.confidence_score) if trade.confidence_score else 0.0,
                 "isWinner": trade.is_winner
             })
@@ -2143,7 +2144,15 @@ async def get_user_positions(user_id: str = Depends(require_user)):
     if state_manager is None:
         raise HTTPException(status_code=503, detail="State manager unavailable")
     positions = await state_manager.get_positions(user_id=user_id)
-    return {"positions": positions, "source": "state"}
+    # While the boot rehydration pass runs (R2.1), this mirror is the thing being
+    # reconciled — tell the client so it renders "reattaching", not a position
+    # whose close button would race the pass. TTL-bounded key; absent == false.
+    rehydrating = False
+    try:
+        rehydrating = bool(await state_manager.get("rehydration:in_progress"))
+    except Exception:
+        pass
+    return {"positions": positions, "source": "state", "rehydrating": rehydrating}
 
 
 @app.get("/api/monitors")

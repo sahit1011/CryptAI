@@ -259,10 +259,15 @@ class PortfolioStateTracker:
         take_profit_levels: List[float],
         risk_amount: float,
         strategy_type: str = 'DAY_TRADE',
-        confidence_score: float = 0.75
+        confidence_score: float = 0.75,
+        opened_at: Optional[datetime] = None,
     ) -> Position:
         """
         Add a new open position
+
+        `opened_at` exists for rehydration (R2.1): a restored position must keep its
+        ORIGINAL entry time or the monitor's time-stop restarts from boot, silently
+        extending every held position's lifetime by one restart.
         """
         async with self._lock:
             position = Position(
@@ -277,7 +282,7 @@ class PortfolioStateTracker:
                 risk_amount=risk_amount,
                 unrealized_pnl=0.0,
                 risk_percentage=risk_amount / self.account_balance,
-                opened_at=datetime.now(),
+                opened_at=opened_at or datetime.now(),
                 strategy_type=strategy_type,
                 confidence_score=confidence_score
             )

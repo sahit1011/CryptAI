@@ -68,6 +68,8 @@ class MultiUserTradingDaemon:
         self.coordinator: Optional[MultiUserCoordinator] = None
         self.engine_switch = None  # EngineSwitch, set once Redis is up
         self.monitor_supervisor = None  # MonitorSupervisor, set in start()
+        self.trade_manager = None  # TradeHistoryManager, set in _rehydrate_engines (R2.1)
+        self.trade_ledger = None   # TradeLedgerConsumer when the memory agent is disabled
         self._loop_task: Optional[asyncio.Task] = None
         self._tick_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
@@ -159,6 +161,21 @@ class MultiUserTradingDaemon:
         if "memory" in disabled:
             plog.info("Memory Agent disabled via DAEMON_DISABLE_AGENTS", agent="daemon")
             self.memory_agent = None
+            # THE TRADE LEDGER IS NOT OPTIONAL (R2.1, wiring law). MemoryAgent was the
+            # only subscriber to memory_agent_inbox, so disabling it silently dropped
+            # every log_trade/update_trade — production persisted NO trade rows: no
+            # user journal, nothing to rehydrate from. This lightweight consumer is
+            # the row-persistence core without chromadb; exactly one of the two
+            # subscribes (both would double-insert).
+            try:
+                from src.core.trade_ledger import TradeLedgerConsumer
+                self.trade_ledger = TradeLedgerConsumer(self.config.database.postgres_url)
+                await bus.subscribe("memory_agent_inbox", self.trade_ledger.handle)
+                plog.info("  └─ ✅ Trade ledger online (row persistence without the "
+                          "memory agent)", agent="daemon")
+            except Exception as e:
+                plog.error(f"Trade ledger failed to start: {e} — trade rows will NOT "
+                           "persist this run", agent="daemon")
         else:
             self.memory_agent = await self._add_agent(
                 "Memory Agent",
@@ -466,6 +483,93 @@ class MultiUserTradingDaemon:
             plog.warning(f"[live] engine build failed for {user_id}: {e}", agent="daemon")
             return None
 
+    # ------------------------------------------------------------- rehydration
+    async def _rehydrate_engines(self) -> None:
+        """R2.1 boot pass: rebuild every active tenant's paper desk from Postgres.
+
+        Fault-isolated per user: one user's bad row leaves THAT user booking-blocked
+        (fail-closed for money) and the daemon boots on. Also installs the registry
+        hook so sessions materialized later (first touch mid-run, paper↔auto mode
+        rebuild) get the same treatment instead of a blank engine.
+        """
+        if self.registry is None:
+            return
+        try:
+            from src.memory.trade_history_manager import TradeHistoryManager
+            db_url = self.config.database.postgres_url
+            # Constructed in a thread: its init runs the idempotent schema self-heal
+            # (adds trades.leverage ahead of an operator alembic run, same pattern
+            # as SessionManager._ensure_schema).
+            self.trade_manager = await asyncio.to_thread(TradeHistoryManager, db_url)
+        except Exception as e:
+            plog.error(f"[rehydrate] trade store unavailable ({e}) — ALL paper booking "
+                       "stays blocked until restart (fail-closed)", agent="daemon")
+            self.trade_manager = None
+            # Sessions materialized later must still be blocked, not blank-approved.
+            self.registry.on_session_created = lambda s: None
+            for uid in self.registry.active_user_ids():
+                self.registry.session(uid)  # hook marks each rehydrated=False
+            return
+
+        # A visible marker while the pass runs: the API can say "reattaching" instead
+        # of serving a mirror that is about to be reconciled.
+        if self.state_manager is not None:
+            try:
+                await self.state_manager.set("rehydration:in_progress", "1", ttl=300)
+            except Exception:
+                pass
+
+        # Install the hook FIRST so eager materialization below flows through it and
+        # every path (boot or later) is the same code.
+        def _hook(session) -> None:
+            asyncio.get_running_loop().create_task(self._rehydrate_one(session))
+        self.registry.on_session_created = _hook
+
+        users = self.registry.active_user_ids()
+        for uid in users:
+            self.registry.session(uid)          # materialize -> hook schedules the pass
+        # The boot pass must COMPLETE before start() proceeds (ordering contract in
+        # start()); drain the scheduled tasks by rehydrating directly instead of racing
+        # them — _rehydrate_one is idempotent per session via the rehydrated flag.
+        for uid in users:
+            await self._rehydrate_one(self.registry._sessions.get(uid))
+
+        if self.state_manager is not None:
+            try:
+                await self.state_manager.delete("rehydration:in_progress")
+            except Exception:
+                pass
+        plog.info(f"  └─ ✅ Rehydration pass complete ({len(users)} tenant(s))",
+                  agent="daemon")
+
+    async def _rehydrate_one(self, session) -> None:
+        """Rehydrate a single session; never raises (per-user fault isolation)."""
+        if session is None or session.rehydrated is True or getattr(session, "is_live", False):
+            # Live engines reconcile at the venue, not from paper rows; flip them
+            # straight to allowed — the paper doctrine does not apply.
+            if session is not None and getattr(session, "is_live", False):
+                session.rehydrated = True
+            return
+        if self.trade_manager is None:
+            session.rehydrated = False
+            return
+        # Single-flight: the boot pass awaits directly while the creation hook may
+        # have scheduled the same session — the pre-await check-and-set is atomic
+        # on the event loop, so exactly one pass places legs.
+        if getattr(session, "_rehydrating", False):
+            return
+        session._rehydrating = True
+        try:
+            report = await session.rehydrate(self.trade_manager)
+            if report.positions_restored or report.zombie_symbols:
+                # Converge Redis + the WS frame to the reconciled truth.
+                await session.engine.publish_initial_state()
+        except Exception as e:
+            plog.error(f"[rehydrate] {session.user_id} failed: {e} — this user's "
+                       "booking stays blocked (fail-closed)", agent="daemon")
+        finally:
+            session._rehydrating = False
+
     # ------------------------------------------------------------------ run
     async def start(self):
         if self.running:
@@ -482,6 +586,15 @@ class MultiUserTradingDaemon:
         # the exchange in the API process.) initialize_multi_user only needs
         # infrastructure, so this reorder is safe.
         self.initialize_multi_user()
+        # Rehydration (R2.1) sits EXACTLY here, and the ordering is load-bearing:
+        #   after initialize_multi_user  — needs the registry;
+        #   before the user_commands sub — a close arriving mid-boot must find the
+        #     engine's positions, not the zombie-drop branch;
+        #   before the tick/stream/monitor tasks below — a rehydrated SL must be
+        #     armed before the first price tick, exposure must be visible to the
+        #     first stream-gate pass, and MonitorSupervisor's first discovery must
+        #     see the restored positions (an empty first pass caches "no monitors").
+        await self._rehydrate_engines()
         await self.message_bus.subscribe("user_commands", self._handle_user_command)
         await self.initialize_agents()
 

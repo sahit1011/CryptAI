@@ -205,6 +205,11 @@ class MemoryAgent(BaseAgent):
                 smc_patterns=payload.get('smc_patterns'),
                 ict_setups=payload.get('ict_setups'),
                 user_id=payload.get('user_id'),
+                # Rehydration identity (R2.1): pass-through, absent on legacy payloads.
+                leverage=payload.get('leverage'),
+                entry_order_id=payload.get('entry_order_id'),
+                sl_order_id=payload.get('sl_order_id'),
+                tp_order_ids=payload.get('tp_order_ids'),
             )
             
             # Store in vector memory for similarity search

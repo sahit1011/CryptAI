@@ -54,6 +54,11 @@ class Trade(Base):
 
     # Risk management (runtime TradeRecord path)
     risk_amount = Column(Float)
+    # Leverage the position was opened at. Nullable: legacy rows predate the column
+    # and a NULL is honest ("not recorded") where a fabricated default is not — two
+    # API paths used to invent `10` for every trade (R2.1 G1). Readers must surface
+    # NULL as unknown, never substitute a number.
+    leverage = Column(Float)
 
     # Performance
     pnl = Column(Float)

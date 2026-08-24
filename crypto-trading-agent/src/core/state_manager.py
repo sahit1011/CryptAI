@@ -564,7 +564,9 @@ class StateManager:
                     "exit_reason": trade.exit_reason,
                     "is_winner": trade.is_winner,
                     "confidence_score": trade.confidence_score,
-                    "leverage": trade.leverage if hasattr(trade, 'leverage') else 10,
+                    # Real column since R2.1. NULL on legacy rows stays None — an
+                    # unrecorded leverage is unknown, never a fabricated 10.
+                    "leverage": trade.leverage,
                     "created_at": trade.created_at
                 }
                 for trade in trades

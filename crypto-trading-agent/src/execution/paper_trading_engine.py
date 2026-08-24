@@ -723,107 +723,31 @@ class PaperTradingEngine:
         }
     
     async def restore_from_historical_trades(self, database_url: str):
-        """
-        Restore portfolio state from historical trades in PostgreSQL.
-        This allows the engine to continue from where it left off instead of resetting.
-        
-        CRITICAL: This method now properly calculates the current portfolio balance
-        from all historical trades, ensuring continuity across system restarts.
+        """Legacy single-bot restore — now a thin delegate to src.core.rehydration.
+
+        Kept for src/main.py, the standalone single-process entrypoint. The
+        multi-user daemon does NOT call this: UserSession.rehydrate() runs the
+        same core per tenant with a scoped query. This path stays UNSCOPED only
+        when the engine has no user_id (true single-bot deployments, where all
+        rows belong to the bot); with a user_id it scopes like everyone else.
         """
         try:
+            from src.core.rehydration import load_trades, rehydrate_engine
             from src.memory.trade_history_manager import TradeHistoryManager
-            
-            logger.info("🔄 Restoring portfolio state from historical trades in PostgreSQL...")
-            
-            # Load trade history from database
-            trade_manager = TradeHistoryManager(database_url)
-            all_trades = trade_manager.get_recent_trades(limit=10000)  # Get all trades
-            
-            if not all_trades:
-                logger.info("✅ No historical trades found - starting with initial balance")
-                # Keep the initial balance as-is
-                return
-            
-            # Calculate metrics from ALL closed trades
-            total_realized_pnl = 0.0
-            total_commission_paid = 0.0
-            winning_count = 0
-            losing_count = 0
-            total_closed_trades = 0
-            
-            logger.info(f"📊 Processing {len(all_trades)} historical trades...")
-            
-            for trade in all_trades:
-                # Handle CLOSED trades
-                if trade.exit_price and trade.pnl is not None:
-                    total_closed_trades += 1
-                    pnl = float(trade.pnl)
-                    total_realized_pnl += pnl
-                    
-                    if pnl > 0:
-                        winning_count += 1
-                    elif pnl < 0:
-                        losing_count += 1
-                    
-                    # Calculate actual commission (entry + exit)
-                    # Entry commission
-                    entry_notional = float(trade.position_size) * float(trade.entry_price)
-                    entry_commission = entry_notional * self.taker_fee
-                    
-                    # Exit commission
-                    exit_notional = float(trade.position_size) * float(trade.exit_price)
-                    exit_commission = exit_notional * self.taker_fee
-                    
-                    total_commission_paid += (entry_commission + exit_commission)
-                
-                # Handle OPEN trades (Active Positions)
-                elif trade.exit_time is None:
-                    logger.info(f"🔓 Found active trade: {trade.trade_id} ({trade.symbol})")
-                    
-                    # Create PaperPosition
-                    position = PaperPosition(
-                        symbol=trade.symbol,
-                        side=trade.direction,
-                        quantity=float(trade.position_size),
-                        entry_price=float(trade.entry_price),
-                        current_price=float(trade.entry_price), # Will be updated by price loop
-                        leverage=1, # Default or fetch if available
-                        position_id=trade.trade_id
-                    )
-                    self.positions[trade.symbol] = position
-                    
-                    # Calculate entry commission only
-                    entry_notional = float(trade.position_size) * float(trade.entry_price)
-                    total_commission_paid += (entry_notional * self.taker_fee)
-            
-            # CRITICAL: Calculate current balance from initial balance + realized P&L - commissions
-            self.balance = self.initial_balance + total_realized_pnl - total_commission_paid
-            self.total_trades = total_closed_trades
-            self.winning_trades = winning_count
-            self.total_commission = total_commission_paid
-            self.peak_balance = max(self.balance, self.initial_balance)
-            
-            # Calculate max drawdown
-            if self.peak_balance > 0:
-                current_drawdown = (self.peak_balance - self.balance) / self.peak_balance
-                self.max_drawdown = max(self.max_drawdown, current_drawdown)
-            
-            logger.info(
-                f"✅ Portfolio state restored from PostgreSQL:\n"
-                f"   📈 Total Trades: {total_closed_trades}\n"
-                f"   💰 Realized P&L: ${total_realized_pnl:+,.2f}\n"
-                f"   💸 Total Commission: ${total_commission_paid:,.2f}\n"
-                f"   💵 Current Balance: ${self.balance:,.2f}\n"
-                f"   🏆 Win Rate: {(winning_count/max(total_closed_trades,1)*100):.1f}%\n"
-                f"   📉 Max Drawdown: {self.max_drawdown*100:.2f}%"
+
+            logger.info("🔄 Restoring portfolio state from historical trades...")
+            manager = TradeHistoryManager(database_url)
+            open_rows, closed_rows = load_trades(
+                manager, self.user_id, allow_unscoped=self.user_id is None
             )
-            
+            if not open_rows and not closed_rows:
+                logger.info("✅ No historical trades found - starting with initial balance")
+                return
+            await rehydrate_engine(self, open_rows, closed_rows)
         except Exception as e:
             logger.warning(f"⚠️ Could not restore from historical trades: {e}")
             logger.info("Starting with initial balance")
-            import traceback
-            traceback.print_exc()
-    
+
     async def publish_initial_state(self):
         """
         Publish initial portfolio state immediately on startup.
