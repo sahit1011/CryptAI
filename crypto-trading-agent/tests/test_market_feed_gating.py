@@ -174,3 +174,78 @@ async def test_a_viewer_arriving_during_the_grace_period_cancels_the_teardown(mo
 
     await asyncio.sleep(0.05)
     assert calls["unsubscribed"] == [], "teardown fired despite a viewer returning"
+
+
+# --- client-requested extra channels: refcounted, no longer add-only ------------
+
+@pytest.fixture
+def upstream(monkeypatch):
+    """Server module with a fake client, no linger, and clean channel state.
+
+    _ensure_upstream used to be add-only for process lifetime: one depth.<SYM>
+    request re-created a permanent ~10 msg/s stream that only a restart could
+    stop. These tests pin the refcounted lifecycle.
+    """
+    from src.api import server as srv
+
+    calls = {"unsubscribed": []}
+
+    class FakeClient:
+        async def unsubscribe(self, streams):
+            calls["unsubscribed"].extend(streams)
+
+    monkeypatch.setattr(srv, "binance_client", FakeClient())
+    monkeypatch.setattr(srv, "MARKET_FEED_LINGER_S", 0)
+    monkeypatch.setattr(srv, "_upstream_channels", set())
+    monkeypatch.setattr(srv, "_upstream_release_pending", set())
+    monkeypatch.setattr(srv, "_upstream_release_task", None)
+    monkeypatch.setattr(srv.manager, "channel_subs", {})
+    return srv, calls
+
+
+@pytest.mark.asyncio
+async def test_unwatched_extra_channel_is_released_upstream(upstream):
+    """The last watcher leaves -> the upstream stream must actually stop, or the
+    bandwidth of a single curious click runs until the next deploy."""
+    srv, calls = upstream
+    srv._upstream_channels.add("depth.ETHUSDT")
+
+    srv._schedule_upstream_release({"depth.ETHUSDT"})
+    await asyncio.sleep(0.01)  # linger is 0; let the release task run
+
+    assert calls["unsubscribed"] == ["ethusdt@depth5@100ms"]
+    assert "depth.ETHUSDT" not in srv._upstream_channels
+
+
+@pytest.mark.asyncio
+async def test_channel_stays_while_another_socket_still_watches(upstream):
+    srv, calls = upstream
+    srv._upstream_channels.add("kline.5m.ETHUSDT")
+    srv.manager.channel_subs["other-socket"] = {"kline.5m.ETHUSDT"}
+
+    srv._schedule_upstream_release({"kline.5m.ETHUSDT"})
+    await asyncio.sleep(0.01)
+
+    assert calls["unsubscribed"] == []
+    assert "kline.5m.ETHUSDT" in srv._upstream_channels
+
+
+@pytest.mark.asyncio
+async def test_base_channels_are_never_released_by_the_refcount(upstream):
+    """The base BTCUSDT feed has its own viewer-gated lifecycle — the channel
+    refcount must not fight it."""
+    srv, calls = upstream
+    srv._upstream_channels.add("ticker.BTCUSDT")
+
+    srv._schedule_upstream_release({"ticker.BTCUSDT"})
+    await asyncio.sleep(0.01)
+
+    assert calls["unsubscribed"] == []
+
+
+def test_channel_to_stream_mapping():
+    from src.api import server as srv
+    assert srv._channel_stream("ticker.ETHUSDT") == "ethusdt@ticker"
+    assert srv._channel_stream("depth.ETHUSDT") == "ethusdt@depth5@100ms"
+    assert srv._channel_stream("kline.5m.ETHUSDT") == "ethusdt@kline_5m"
+    assert srv._channel_stream("garbage") is None

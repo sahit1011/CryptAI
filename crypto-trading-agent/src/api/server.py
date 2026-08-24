@@ -399,10 +399,15 @@ _session_tick_task = None
 BASE_CHANNELS = {"ticker.BTCUSDT", "depth.BTCUSDT", "kline.1m.BTCUSDT"}
 _ALLOWED_KLINE_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 _allowed_symbols = {s.upper() for s in get_config().trading.symbols}
-# Streams already requested from Binance this process-lifetime. Add-only: with a
-# handful of symbols the upstream cost is tiny, and per-connection filtering
-# controls who actually receives frames.
+# Streams currently requested from Binance for client-driven channels. This used
+# to be add-only "for process lifetime" — but one depth.<SYM> request is a
+# permanent ~10 msg/s stream (~216MB/day-rate) that only a restart could stop.
+# Channels are now refcounted against live sockets: when the last watcher of a
+# channel leaves, its upstream stream is released after the same linger the base
+# feed uses (see _schedule_upstream_release).
 _upstream_channels: set = set()
+_upstream_release_pending: set = set()
+_upstream_release_task: Optional[asyncio.Task] = None
 
 
 def _parse_channel(channel: str) -> Optional[Dict[str, str]]:
@@ -459,6 +464,67 @@ async def _ensure_upstream(channels: set) -> None:
             logger.info(f"[ws] upstream subscribed: {channel}")
         except Exception as e:
             logger.error(f"[ws] upstream subscribe failed for {channel}: {e}")
+
+
+def _channel_stream(channel: str) -> Optional[str]:
+    """The upstream Binance stream a client channel maps to (None when malformed)."""
+    parsed = _parse_channel(channel)
+    if parsed is None:
+        return None
+    sym = parsed["symbol"].lower()
+    if parsed["kind"] == "ticker":
+        return f"{sym}@ticker"
+    if parsed["kind"] == "depth":
+        return f"{sym}@depth5@100ms"
+    return f"{sym}@kline_{parsed['interval']}"
+
+
+def _channel_watchers(channel: str) -> int:
+    """How many live sockets are subscribed to this channel."""
+    return sum(1 for subs in manager.channel_subs.values() if channel in subs)
+
+
+def _schedule_upstream_release(channels: set) -> None:
+    """Queue channels for upstream release once nobody watches them.
+
+    Cheap and idempotent — the actual watcher re-check happens after the linger,
+    so a client that unsubscribes and immediately re-subscribes (or a reconnecting
+    dashboard) never churns Binance control frames.
+    """
+    global _upstream_release_task
+    candidates = {c for c in channels if c in _upstream_channels and c not in BASE_CHANNELS}
+    if not candidates:
+        return
+    _upstream_release_pending.update(candidates)
+    if _upstream_release_task is None or _upstream_release_task.done():
+        _upstream_release_task = asyncio.create_task(_release_upstream_after_linger())
+
+
+async def _release_upstream_after_linger() -> None:
+    global _upstream_release_task
+    try:
+        while _upstream_release_pending:
+            await asyncio.sleep(MARKET_FEED_LINGER_S)
+            batch, doomed = sorted(_upstream_release_pending), []
+            _upstream_release_pending.clear()
+            for channel in batch:
+                if channel not in _upstream_channels or _channel_watchers(channel) > 0:
+                    continue
+                stream = _channel_stream(channel)
+                if stream is None:
+                    continue
+                _upstream_channels.discard(channel)
+                doomed.append(stream)
+            if doomed:
+                try:
+                    await binance_client.unsubscribe(doomed)
+                    logger.info(f"[ws] upstream released (unwatched): {', '.join(doomed)}")
+                except Exception as e:
+                    # Channels are already off the books — a future re-request
+                    # simply re-subscribes them.
+                    logger.error(f"[ws] upstream release failed: {e}")
+    finally:
+        _upstream_release_task = None
 
 
 async def handle_binance_update(data: Dict[str, Any]):
@@ -883,6 +949,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _ensure_upstream(requested)
             else:
                 current = manager.remove_channels(websocket, requested)
+                _schedule_upstream_release(requested)
             # Ack with the connection's full channel set so the client can verify.
             try:
                 await websocket.send_text(json.dumps(
@@ -891,12 +958,16 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 pass
     except WebSocketDisconnect:
+        had = set(manager.channel_subs.get(websocket, ()))
         manager.disconnect(websocket)
         release_market_feed_when_idle()
+        _schedule_upstream_release(had)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        had = set(manager.channel_subs.get(websocket, ()))
         manager.disconnect(websocket)
         release_market_feed_when_idle()
+        _schedule_upstream_release(had)
 
 @app.get("/api/trades")
 async def get_trades(
