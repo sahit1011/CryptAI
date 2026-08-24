@@ -72,6 +72,9 @@ class MultiUserTradingDaemon:
         self._tick_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
         self._stream_task: Optional[asyncio.Task] = None  # demand-gates market streams
+        self._switch_task: Optional[asyncio.Task] = None  # heals evicted engine:on
+        self._switch_always_on = False   # did we last see the switch ON with no timer?
+        self._switch_seen_at = 0.0
         self._was_on = None  # tracks on/off transitions for one-time log lines
         self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
         # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
@@ -450,6 +453,21 @@ class MultiUserTradingDaemon:
         self._stream_task = None
         if self.data_agent is not None:
             self._stream_task = asyncio.create_task(self._stream_gate_loop())
+        # Switch guard: heals an LRU-evicted always-on engine switch (R1.7).
+        self._switch_task = None
+        if self.engine_switch is not None:
+            self._switch_task = asyncio.create_task(self._switch_guard_loop())
+        # Cadence sanity (R1.7): the UI's staleness check measures against the published
+        # SESSION_CYCLE_SECONDS; an analysis cadence slower than the session cycle makes
+        # every healthy session look stale. Loud, not fatal — prod must still boot.
+        session_cycle = int(os.getenv("SESSION_CYCLE_SECONDS", "180"))
+        if self.cycle_interval > session_cycle:
+            plog.error(
+                f"CONFIG DRIFT: CYCLE_INTERVAL={self.cycle_interval}s > "
+                f"SESSION_CYCLE_SECONDS={session_cycle}s — sessions will look stale "
+                "against a cadence nobody runs. Keep them equal (render.yaml pins both).",
+                agent="daemon",
+            )
         # Session plane: one worker per ACTIVE session (metered, per-user), plus the
         # sweeper that expires lapsed proposals and un-pauses their sessions.
         self._pool_task = None
@@ -945,6 +963,64 @@ class MultiUserTradingDaemon:
             except Exception as e:
                 plog.warning(f"[stream-gate] loop error: {e}", agent="daemon")
 
+    # ------------------------------------------------------------------ switch guard
+    SWITCH_GUARD_POLL_S = 30.0
+    #: How long the memory of an always-on switch stays actionable. Short by design:
+    #: a fresh process remembers nothing, so a restart still fails OFF (the switch
+    #: module's deliberate money-safety), and a stale memory never resurrects anything.
+    SWITCH_GUARD_MEMORY_S = 300.0
+
+    async def _switch_guard_once(self, now: Optional[float] = None) -> bool:
+        """Heal an EVICTED always-on engine switch (R1.7). Returns True if re-asserted.
+
+        engine:on lives in a 25MB allkeys-lru Redis with no persistence — under memory
+        pressure the key can be evicted mid-day, which reads exactly like owner-OFF:
+        every new session 503s and running scans are refunded, silently. Re-assert ONLY
+        when all three hold: (a) THIS process recently observed the switch ON with no
+        auto-off timer, (b) it is now absent, and (c) the owner did not just turn it
+        off (turn_off leaves a tombstone). A timed switch is never re-asserted — its
+        expiry is the feature, not a failure.
+        """
+        if self.engine_switch is None:
+            return False
+        now = time.time() if now is None else now
+        try:
+            st = await self.engine_switch.status()
+        except Exception:
+            return False
+        if st.get("enabled"):
+            self._switch_always_on = st.get("expires_in_seconds") is None
+            self._switch_seen_at = now
+            return False
+        remembered = (
+            self._switch_always_on
+            and self._switch_seen_at
+            and (now - self._switch_seen_at) < self.SWITCH_GUARD_MEMORY_S
+        )
+        if not remembered:
+            return False
+        if await self.engine_switch.owner_turned_off_recently():
+            self._switch_always_on = False  # deliberate OFF — forget the memory
+            return False
+        plog.warning(
+            "[switch-guard] engine:on vanished with no owner action (Redis eviction?) — "
+            "re-asserting always-on; check `evicted_keys` in Redis INFO",
+            agent="daemon",
+        )
+        await self.engine_switch.turn_on(duration_seconds=None, enabled_by="switch-guard(re-assert)")
+        self._switch_seen_at = now
+        return True
+
+    async def _switch_guard_loop(self):
+        while self.running:
+            try:
+                await asyncio.sleep(self.SWITCH_GUARD_POLL_S)
+                await self._switch_guard_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[switch-guard] loop error: {e}", agent="daemon")
+
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.
 
@@ -1080,7 +1156,7 @@ class MultiUserTradingDaemon:
                 await self.monitor_supervisor.stop()
             except Exception as e:
                 plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
-        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task"):
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task"):
             task = getattr(self, task_name, None)
             if task:
                 task.cancel()

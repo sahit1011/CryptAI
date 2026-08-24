@@ -175,6 +175,11 @@ class MessageBus:
             # Only persist to queue if requested (for orchestrator polling)
             if persist:
                 await self.redis_client.lpush(f"queue:{channel}", message_json)
+                # Bound the queue (R1.7): candle-bearing payloads run hundreds of KB, and
+                # an unbounded list in a 25MB allkeys-lru Redis makes eviction of critical
+                # keys (engine:on, cmd_reply:*) the EXPECTED state under load, not a tail
+                # risk. Consumers only ever want recent messages; 50 newest is generous.
+                await self.redis_client.ltrim(f"queue:{channel}", 0, 49)
                 await self.redis_client.expire(f"queue:{channel}", 3600)  # 1 hour TTL
                 plog.debug(
                     f"Message published and queued | channel={channel}, type={message_type}",
