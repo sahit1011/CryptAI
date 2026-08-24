@@ -176,9 +176,7 @@ class BinanceWebSocketClient:
                 self.subscriptions.append(stream)
                 new_streams.append(stream)
 
-            if stream not in self.callbacks:
-                self.callbacks[stream] = []
-            self.callbacks[stream].append(callback)
+            self._register_callback(stream, callback)
 
             logger.info(f"Subscribed to {stream}")
 
@@ -205,13 +203,13 @@ class BinanceWebSocketClient:
         symbol = symbol.lower()
         stream = f"{symbol}@depth{levels}@{update_speed}"
 
-        self.subscriptions.append(stream)
+        is_new = stream not in self.subscriptions
+        if is_new:
+            self.subscriptions.append(stream)
         if callback:
-            if stream not in self.callbacks:
-                self.callbacks[stream] = []
-            self.callbacks[stream].append(callback)
+            self._register_callback(stream, callback)
 
-        if self.ws:
+        if self.ws and is_new:
             await self._subscribe([stream])
 
         logger.info(f"Subscribed to {stream}")
@@ -222,12 +220,12 @@ class BinanceWebSocketClient:
         # Use markPrice stream which includes funding rate information
         stream = f"{symbol}@markprice@1s"
 
-        self.subscriptions.append(stream)
-        if stream not in self.callbacks:
-            self.callbacks[stream] = []
-        self.callbacks[stream].append(callback)
+        is_new = stream not in self.subscriptions
+        if is_new:
+            self.subscriptions.append(stream)
+        self._register_callback(stream, callback)
 
-        if self.ws:
+        if self.ws and is_new:
             await self._subscribe([stream])
 
         logger.info(f"Subscribed to mark price (funding rate): {stream}")
@@ -237,15 +235,31 @@ class BinanceWebSocketClient:
         symbol = symbol.lower()
         stream = f"{symbol}@ticker"
 
-        self.subscriptions.append(stream)
-        if stream not in self.callbacks:
-            self.callbacks[stream] = []
-        self.callbacks[stream].append(callback)
+        is_new = stream not in self.subscriptions
+        if is_new:
+            self.subscriptions.append(stream)
+        self._register_callback(stream, callback)
 
-        if self.ws:
+        if self.ws and is_new:
             await self._subscribe([stream])
 
         logger.info(f"Subscribed to ticker (live price): {stream}")
+
+    def _register_callback(self, stream: str, callback: Callable) -> None:
+        """Attach a callback to a stream exactly once.
+
+        subscribe/unsubscribe cycles re-call the subscribe_* methods with the same
+        handler (the feed gate re-acquires the base streams every time a dashboard
+        returns; the data agent re-applies its stream profile every demand change).
+        An unconditional append accumulated one duplicate per cycle, and every
+        duplicate re-delivered every frame — N reopen cycles meant N copies of each
+        message hitting the handlers. Equality (not identity) so bound methods and
+        module-level functions both dedupe; fresh lambdas never will — callers must
+        pass stable handlers.
+        """
+        handlers = self.callbacks.setdefault(stream, [])
+        if callback not in handlers:
+            handlers.append(callback)
 
     async def _subscribe(self, streams: List[str]):
         """Send subscription message"""
@@ -379,6 +393,17 @@ class BinanceWebSocketClient:
             return False
         return (asyncio.get_event_loop().time() - self._last_message_at) > self.STALENESS_TIMEOUT
 
+    def _should_reconnect_stale(self) -> bool:
+        """Staleness only means 'dead socket' when something SHOULD be flowing.
+
+        With zero subscriptions no data frames ever arrive, so a plain staleness
+        check declared the healthy idle socket dead every 90s and reconnected it
+        forever (~960 pointless TLS handshakes/day once the feed gate made idle
+        backends subscribe nothing). A socket with no streams has nothing to be
+        stale about — keepalive pings are enough.
+        """
+        return bool(self.subscriptions) and self._is_stale()
+
     async def _close_socket(self):
         """Close the current socket (best-effort) and clear the handle."""
         if self.ws is not None:
@@ -429,9 +454,9 @@ class BinanceWebSocketClient:
             except asyncio.TimeoutError:
                 # No frame within RECV_TIMEOUT. This is normal on quiet streams:
                 # send a keepalive ping. But if the socket has been silent past
-                # STALENESS_TIMEOUT, treat it as dead (stale prices) and let the
-                # supervisor reconnect.
-                if self._is_stale():
+                # STALENESS_TIMEOUT while streams are subscribed, treat it as dead
+                # (stale prices) and let the supervisor reconnect.
+                if self._should_reconnect_stale():
                     logger.error(
                         f"WebSocket stale: no messages for >{self.STALENESS_TIMEOUT}s. "
                         f"Treating socket as dead and reconnecting."

@@ -71,6 +71,7 @@ class MultiUserTradingDaemon:
         self._loop_task: Optional[asyncio.Task] = None
         self._tick_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
+        self._stream_task: Optional[asyncio.Task] = None  # demand-gates market streams
         self._was_on = None  # tracks on/off transitions for one-time log lines
         self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
         # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
@@ -443,6 +444,12 @@ class MultiUserTradingDaemon:
         # when the live price crosses them, positions mark to market, and the
         # UI's uPnL stays current — without a human touching anything.
         self._tick_task = asyncio.create_task(self._price_tick_loop())
+        # Stream gate: the DataAgent subscribes market data only while there is a
+        # live consumer — a scanning session (full feed) or an open position
+        # (price-only feed). Idle deployments stream nothing (R0.2).
+        self._stream_task = None
+        if self.data_agent is not None:
+            self._stream_task = asyncio.create_task(self._stream_gate_loop())
         # Session plane: one worker per ACTIVE session (metered, per-user), plus the
         # sweeper that expires lapsed proposals and un-pauses their sessions.
         self._pool_task = None
@@ -840,6 +847,104 @@ class MultiUserTradingDaemon:
                          agent="daemon")
             return False
 
+    # ------------------------------------------------------------------ stream gate
+    # How often demand is re-checked. Cheap: two dict scans + one session query.
+    STREAM_GATE_POLL_S = 10.0
+
+    def _exposure_symbols(self) -> list:
+        """Symbols with money at risk in any cached PAPER engine.
+
+        These are the positions the price tick fills SL/TP for and the monitors
+        watch — both read state_manager prices, which only flow while a kline
+        stream is up. Live/keyed engines are excluded: the exchange fills their
+        orders. Best-effort by design: an unreadable engine contributes nothing
+        rather than raising.
+        """
+        symbols: set = set()
+        sessions = dict(getattr(self.registry, "_sessions", {}) or {}) if self.registry else {}
+        for session in sessions.values():
+            engine = getattr(session, "engine", None)
+            if engine is None or not hasattr(engine, "check_limit_orders"):
+                continue
+            try:
+                for sym in (getattr(engine, "positions", {}) or {}):
+                    symbols.add(str(sym))
+                for order in engine.get_open_orders() or []:
+                    sym = order.get("symbol") if isinstance(order, dict) else getattr(order, "symbol", None)
+                    if sym:
+                        symbols.add(str(sym))
+            except Exception:
+                continue
+        return sorted(symbols)
+
+    async def _stream_demand(self):
+        """(profile, price_symbols) the market-data plane should serve right now.
+
+        scan   — somebody is scanning (or the owner keeps analysis warm): the
+                 analysis feed must be live.
+        prices — nobody scans, but positions/resting orders exist: paper fills
+                 and monitors still need prices, one light stream per symbol.
+        None   — idle. Nothing runs for nobody; this is what makes the free
+                 tier's bandwidth budget real (the Aug-10 suspension was this
+                 rule not existing).
+        """
+        keep_warm = os.getenv("ANALYSIS_KEEP_WARM", "").strip().lower() == "true"
+        if keep_warm or await self._has_scan_demand():
+            return "scan", None
+        exposed = self._exposure_symbols()
+        if exposed:
+            return "prices", exposed
+        return None, None
+
+    @staticmethod
+    def _gate_decision(current_rank: int, desired_rank: int, lower_since, now: float, linger: float):
+        """(apply_now, new_lower_since) — upgrades are immediate, downgrades linger.
+
+        The linger exists for the same reason as the API feed's: demand often
+        flaps (a session ends and the next starts a minute later; a position
+        closes and the approval that reopens one is in flight), and Binance
+        rate-limits control frames — churn could get the connection dropped.
+        """
+        if desired_rank >= current_rank:
+            return True, None
+        if lower_since is None:
+            return False, now
+        if (now - lower_since) >= linger:
+            return True, None
+        return False, lower_since
+
+    async def _stream_gate_loop(self):
+        """Drive the DataAgent's stream profile from live demand (R0.2)."""
+        linger = float(os.getenv("STREAM_LINGER_SECONDS", "120"))
+        rank = {None: 0, "prices": 1, "scan": 2}
+        applied = (None, None)   # (profile, tuple(symbols))
+        lower_since = None
+        while self.running:
+            try:
+                await asyncio.sleep(self.STREAM_GATE_POLL_S)
+                if self.data_agent is None:
+                    continue
+                profile, symbols = await self._stream_demand()
+                desired = (profile, tuple(symbols or ()))
+                if desired == applied:
+                    lower_since = None
+                    continue
+                now = time.time()
+                apply_now, lower_since = self._gate_decision(
+                    rank[applied[0]], rank[profile], lower_since, now, linger
+                )
+                # Same tier but a different symbol set (a new position's symbol
+                # needs its price stream NOW) — apply immediately.
+                if not apply_now and rank[profile] == rank[applied[0]]:
+                    apply_now, lower_since = True, None
+                if apply_now:
+                    await self.data_agent.set_stream_profile(profile, list(symbols or ()) or None)
+                    applied = desired
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[stream-gate] loop error: {e}", agent="daemon")
+
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.
 
@@ -975,7 +1080,7 @@ class MultiUserTradingDaemon:
                 await self.monitor_supervisor.stop()
             except Exception as e:
                 plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
-        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task"):
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task"):
             task = getattr(self, task_name, None)
             if task:
                 task.cancel()
