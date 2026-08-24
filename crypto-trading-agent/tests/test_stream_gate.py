@@ -204,7 +204,11 @@ async def test_entering_scan_after_a_long_gap_backfills_the_buffers():
     with a silent hole is worse than a few cached REST calls, so entering scan
     mode after a quiet spell refills first. Timestamps are rewound, never slept."""
     agent, backfills = make_agent()
-    agent._scan_streams_until = 0.0  # streams last ran "ages" ago
+    # Rewind past the refill window RELATIVE to the loop clock — an absolute 0.0
+    # sentinel only means "ages ago" on machines with large uptime (CI containers
+    # boot with a seconds-old monotonic clock, which is how this bug was caught).
+    loop_now = asyncio.get_event_loop().time()
+    agent._scan_streams_until = loop_now - (agent.SCAN_GAP_REFILL_S + 1)
 
     await agent.set_stream_profile("scan")
     assert len(backfills) == 1

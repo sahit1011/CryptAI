@@ -116,7 +116,11 @@ class DataCollectionAgent(BaseAgent):
                 
                 await self._fetch_initial_data()
                 self.initial_data_loaded = True
-                
+                # Buffers are fresh AS OF NOW: stamp it so the scan-gap refill logic
+                # doesn't depend on the magnitude of the monotonic clock (which is
+                # seconds-small on a freshly booted container — CI caught exactly that).
+                self._scan_streams_until = asyncio.get_event_loop().time()
+
                 step.complete(success=True, details="Initial data loaded")
 
                 # Step 3: streams are DEMAND-GATED — nothing is subscribed here.
@@ -273,7 +277,8 @@ class DataCollectionAgent(BaseAgent):
         """
         try:
             now = asyncio.get_event_loop().time()
-            if (now - self._depth_snapshot_at.get(symbol, 0.0)) < 5.0:
+            last = self._depth_snapshot_at.get(symbol)
+            if last is not None and (now - last) < 5.0:
                 return  # a snapshot this fresh is indistinguishable from a stream's
             book = await self.historical_fetcher.fetch_order_book(symbol, limit=20)
             if not book or not book.get('bids') or not book.get('asks'):
