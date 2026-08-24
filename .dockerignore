@@ -24,3 +24,4 @@ _attic
 **/.claude
 **/.agent
 signal-engine/eval
+backtest-lab/
