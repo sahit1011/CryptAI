@@ -1381,6 +1381,25 @@ CAPACITY_UNAVAILABLE = "capacity_unavailable"
 CAPACITY_PAUSED = "paused"
 CAPACITY_DEGRADED = "degraded"
 CAPACITY_MODEL_ERROR = "model_error"
+CAPACITY_SIGNAL_STALE = "signal_stale"
+
+# Lazy probe for the shared signal plane. Only consulted when SIGNAL_PLANE_ENABLED=true:
+# with the plane demanded, every metered cycle is pulse-gated fail-closed, so a dead or
+# stale plane means sessions meter time while producing nothing (skipped_stale) — the
+# capacity gate must refuse new scans and the tick loop must refund running ones (R1.3).
+_pulse_probe = None
+
+
+def _pulse_probe_client():
+    global _pulse_probe
+    if _pulse_probe is None and state_manager is not None and getattr(state_manager, "redis", None) is not None:
+        from src.signals.pulse_client import PulseClient
+        _pulse_probe = PulseClient(state_manager.redis)
+    return _pulse_probe
+
+
+def _signal_plane_demanded() -> bool:
+    return (os.getenv("SIGNAL_PLANE_ENABLED") or "").strip().lower() == "true"
 
 
 async def _analysis_capacity() -> Dict[str, Any]:
@@ -1426,6 +1445,28 @@ async def _analysis_capacity() -> Dict[str, Any]:
         )
     ):
         return down(CAPACITY_MODEL_ERROR)
+
+    # With the signal plane demanded, sessions are pulse-gated fail-closed — a stale or
+    # absent plane makes every metered cycle a skipped_stale no-op. Refuse at the door
+    # instead, and let the tick loop's capacity check refund sessions already running.
+    # Checked BEFORE the switch: pulse liveness is orthogonal to the emergency stop, and
+    # the switch-less deployment must still refuse to meter time against a dead plane.
+    if _signal_plane_demanded():
+        probe = _pulse_probe_client()
+        if probe is None:
+            return down(CAPACITY_SIGNAL_STALE)
+        symbols = [
+            s.strip().upper()
+            for s in (os.getenv("PLATFORM_SYMBOLS") or "BTCUSDT,ETHUSDT,SOLUSDT").split(",")
+            if s.strip()
+        ]
+        try:
+            fresh = await probe.get_many(symbols)
+        except Exception as e:
+            logger.warning(f"capacity: pulse probe failed ({e})")
+            return down(CAPACITY_SIGNAL_STALE)
+        if not fresh:
+            return down(CAPACITY_SIGNAL_STALE)
 
     switch = _engine_switch()
     if switch is None:

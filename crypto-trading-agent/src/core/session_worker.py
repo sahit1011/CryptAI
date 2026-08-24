@@ -31,6 +31,7 @@ adds a gate rather than replacing one.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
@@ -232,7 +233,33 @@ class SessionWorker:
             logger.warning(f"pulse read failed for session {self.session_id}: {e}")
             return None
 
-        return pulses if pulses else None
+        # Normalize at the boundary: PulseClient returns frozen Pulse dataclasses,
+        # while everything downstream (_pulse_allows, ProposalService.create,
+        # synthesis) consumes dicts via .get(). Tests faked get_many with plain
+        # dicts, so the mismatch only surfaced with a LIVE engine — where it failed
+        # EVERY metered cycle on AttributeError while the user's clock drained.
+        # One conversion here keeps the whole pipeline dict-shaped (R1.3).
+        normalized: Dict[str, Any] = {}
+        for sym, pulse in pulses.items():
+            as_dict = self._pulse_as_dict(pulse)
+            if as_dict:
+                normalized[sym] = as_dict
+            else:
+                logger.warning(
+                    f"pulse for {sym} has an unusable shape ({type(pulse).__name__}); skipping"
+                )
+        return normalized if normalized else None
+
+    @staticmethod
+    def _pulse_as_dict(pulse: Any) -> Optional[Dict[str, Any]]:
+        """A pulse as the plain dict the pipeline consumes, or None."""
+        if isinstance(pulse, dict):
+            return pulse
+        try:
+            return dataclasses.asdict(pulse)
+        except TypeError:
+            d = getattr(pulse, "__dict__", None)
+            return dict(d) if d else None
 
     # -- loop ----------------------------------------------------------------
 
