@@ -122,6 +122,9 @@ services:
                                       # the switch only admits/refuses new scans at the door.
       - key: STREAM_LINGER_SECONDS    # grace before market-data streams unsubscribe after
         value: "120"                  # demand (scans / open positions) disappears.
+      - key: PULSE_SNAPSHOT_SECONDS   # calibration-log sampling cadence (FR-SIGNAL-3).
+        value: "300"                  # 5-min samples fully cover a 4-12h-horizon score
+                                      # while keeping the free 500MB Postgres honest.
       - key: DAEMON_DISABLE_AGENTS    # chromadb + ONNX embeddings don't fit a 512MB free
         value: "memory"               # instance (and re-download on every deploy). Regime
                                       # falls back to the analysis agent's estimate.

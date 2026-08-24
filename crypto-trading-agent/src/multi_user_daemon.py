@@ -75,6 +75,8 @@ class MultiUserTradingDaemon:
         self._switch_task: Optional[asyncio.Task] = None  # heals evicted engine:on
         self._switch_always_on = False   # did we last see the switch ON with no timer?
         self._switch_seen_at = 0.0
+        self.pulse_log_writer = None     # calibration log (R1.5); set when plane is live
+        self._pulse_log_task: Optional[asyncio.Task] = None
         self._was_on = None  # tracks on/off transitions for one-time log lines
         self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
         # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
@@ -347,6 +349,20 @@ class MultiUserTradingDaemon:
             self.proposal_service = ProposalService(db_url)
             self.setup_cache = SharedSetupCache()
 
+            # Calibration log (R1.5, FR-SIGNAL-3): sample every published pulse into
+            # pulse_snapshots. Only meaningful when the signal plane is live — and it
+            # must ship WITH the engine enable: lost snapshots are unrecoverable, and
+            # every downstream quant claim (weight re-validation, learned hot hours,
+            # the real-money evidence memo) starves without them.
+            if self.pulse_client is not None:
+                from src.core.pulse_snapshots import PulseSnapshotWriter
+                self.pulse_log_writer = PulseSnapshotWriter.from_database_url(
+                    db_url,
+                    self.pulse_client,
+                    self.symbols,
+                    interval_s=float(os.getenv("PULSE_SNAPSHOT_SECONDS", "300")),
+                )
+
             self.worker_pool = SessionWorkerPool(
                 self.session_manager,
                 self.preferences_store,
@@ -457,6 +473,12 @@ class MultiUserTradingDaemon:
         self._switch_task = None
         if self.engine_switch is not None:
             self._switch_task = asyncio.create_task(self._switch_guard_loop())
+        # Calibration log: samples live pulses into pulse_snapshots (R1.5).
+        self._pulse_log_task = None
+        if self.pulse_log_writer is not None:
+            self._pulse_log_task = asyncio.create_task(
+                self.pulse_log_writer.run(running=lambda: self.running)
+            )
         # Cadence sanity (R1.7): the UI's staleness check measures against the published
         # SESSION_CYCLE_SECONDS; an analysis cadence slower than the session cycle makes
         # every healthy session look stale. Loud, not fatal — prod must still boot.
@@ -1156,7 +1178,7 @@ class MultiUserTradingDaemon:
                 await self.monitor_supervisor.stop()
             except Exception as e:
                 plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
-        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task"):
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task", "_pulse_log_task"):
             task = getattr(self, task_name, None)
             if task:
                 task.cancel()
