@@ -71,26 +71,11 @@ jobs:
           cache: pip
           cache-dependency-path: crypto-trading-agent/requirements-dev.txt
 
-      - name: Install TA-Lib C library
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          # Build the TA-Lib C library from source — the Python `ta-lib` wheel needs
-          # the native headers/libs present at install time.
-          curl -fsSL -o /tmp/ta-lib.tar.gz \
-            https://github.com/ta-lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4.0-src.tar.gz
-          tar -xzf /tmp/ta-lib.tar.gz -C /tmp
-          cd /tmp/ta-lib
-          ./configure --prefix=/usr
-          make
-          sudo make install
-          sudo ldconfig
-
       - name: Install Python dependencies
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip wheel setuptools
-          # NumPy must be present before building the ta-lib Python wheel.
+          # NumPy first: several native wheels in requirements build against it.
           pip install "numpy>=1.26.4"
           pip install -r requirements-dev.txt
 
