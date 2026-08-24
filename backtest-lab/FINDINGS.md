@@ -57,3 +57,85 @@ fees 5bps/side, zero slippage, one event at a time per symbol. ~2,970 touch even
 
 Runs: `results/s1_ab_summary_{pessimistic,optimistic}.md` (regenerate with
 `study_s1_ab.py`; `SAME_BAR=optimistic` for the bound check).
+
+---
+
+## 2026-08-25 — S1 A/B v2: pre-registered environment gates + maker/taker fees
+
+**Setup:** exactly the three changes v1 pre-registered, nothing else — no sweeps, no
+new arms. Same v1 event stream (2,974 touches, identical per-symbol counts 991/1023/960,
+same brackets/time stop/pessimistic same-bar; `study_s1_ab_v2.py` imports v1's
+enumeration and bracket walk, so exits are bit-identical and only pricing/filtering
+changed). (1) Three binary gates at the touch bar, past data only: `G_vol` (trailing
+24h realized vol inside the P25–P75 of its own trailing 30-day hourly-sampled
+distribution; fails closed on <30d history), `G_part` (shipped `participation_ok` at
+the touch), `G_session` (touch in 13:30–16:30 UTC). (2) Maker/taker fees by how each
+fill executes: edge entries + target exits maker 2bps; flip entries, stops, time-stops
+taker 5bps. (3) Report matrix: {baseline, each gate alone, all three} × the 5 arms.
+Gates filter the fixed baseline event stream.
+
+**Gate survival:** G_vol 46.0% (1,368 events) · G_part 87.4% (2,600) · G_session
+17.1% (510) · all three 8.1% (240).
+
+**Pooled baseline (v1 events, new fee model — avg net R):**
+
+| arm | 1.5R | 2R | n |
+|---|---|---|---|
+| control_all | −0.159 | −0.188 | 2,974 |
+| control_confirmed (oracle) | −0.024 | −0.066 | 730 |
+| treatment | −0.432 | −0.468 | 730 |
+| treatment_wide | −0.301 | −0.317 | 730 |
+| treatment_retest | −0.326 | −0.337 | 583 |
+
+**Pooled all-three gates (avg net R):**
+
+| arm | 1.5R | 2R | n |
+|---|---|---|---|
+| control_all | −0.033 | −0.041 | 240 |
+| control_confirmed (oracle) | **+0.339** | +0.238 | 55 |
+| treatment | −0.303 | −0.354 | 55 |
+| treatment_wide | −0.186 | −0.174 | 55 |
+| treatment_retest | −0.277 | −0.352 | 38 |
+
+**Findings:**
+
+1. **Maker repricing alone recovers ~0.10–0.11R on edge-entry arms** (control_all
+   −0.268 → −0.159; oracle −0.139 → −0.024) and much less on flip arms (treatment
+   −0.473 → −0.432, still paying taker in). Nothing implementable clears zero on fees
+   alone.
+2. **The session window is the decisive gate.** G_session alone: oracle goes positive
+   (+0.110 at 1.5R, n=100), control_all improves to −0.145, and touches cluster in the
+   window (17.1% survive vs 12.5% if uniform). G_vol alone is a mild positive filter
+   (control_all −0.112, oracle +0.023, n=329). **G_part alone does nothing at event
+   level** (control_all −0.165 vs −0.159 baseline, i.e. a hair worse on 87% survival) —
+   its value in v1 was inside confirmation, not as an event gate.
+3. **Under all three gates, the oracle clears zero for the first time: +0.339 ± 0.171
+   (se) at 1.5R** — but n=55 over 24 months × 3 symbols (~2.3/month), t≈2.0, and it is
+   one cell in a 5-config × 5-arm × 2-target matrix; that is one modest-significance
+   cell among 50, on the arm that needs a fill conditioned on FUTURE confirmation.
+4. **No implementable arm clears zero anywhere in the matrix.** Best is control_all
+   under all three gates at −0.033 ± 0.082 (t=−0.40): statistically indistinguishable
+   from zero — and from modestly negative. Total, not per-trade: −7.9R over 24 months
+   at ~10 trades/month. The flip-entry arms stay decisively negative in every config
+   (−0.17 to −0.35 gated); the environment stage does not rescue paying up at the flip.
+5. Directionally consistent with v1's mechanism story: gates + maker fees closed ~87%
+   of control_all's baseline deficit (−0.268 → −0.033) but the oracle-vs-implementable
+   gap (~+0.37 under all three) is still the un-capturable price of the confirmation
+   information.
+
+**What this licenses / forbids:**
+
+- ✅ Use the environment stage (session window first, vol regime second) as
+  **proposal-context/scoring inputs** alongside v1's confirmed-flow annotation — both
+  now have event-level evidence of positive selection.
+- ❌ Do NOT wire S1 as a live entry trigger. `S1_ENABLED` stays false. Nothing
+  implementable cleared zero — a ~breakeven-at-best config is not a product.
+- ❌ Do NOT treat the +0.34R oracle cell as a strategy: one pre-registered
+  configuration, n=55, non-implementable entry. If anything is pursued it is
+  walk-forward + held-out validation of the gated config (and an honest attempt at an
+  implementable capture under the gates), not shipping.
+- ❌ Still no threshold sweeps; v2 spent the pre-registered budget. Any v3 must be
+  pre-registered the same way before it runs.
+
+Runs: `results/s1_ab_v2_summary.md`, `results/s1_ab_v2_trades.csv` (regenerate with
+`study_s1_ab_v2.py`; requires v1's `study_s1_ab.py` unchanged, pessimistic same-bar).
