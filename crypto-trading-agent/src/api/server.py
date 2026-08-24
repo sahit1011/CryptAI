@@ -1355,6 +1355,13 @@ class SessionStartBody(BaseModel):
     # the persistent goal_horizon persona. None keeps the persona default; an unknown
     # value is rejected by the session manager.
     channel: Optional[str] = Field(default=None, max_length=16)
+    # Strategy profile for this session ("s1" | "s2"). None means the default (S2,
+    # today's swing behavior — absent field == pre-S1 behavior, byte for byte).
+    # Resolved via src.strategy.profiles.resolve_profile: S1 is paper-only
+    # scaffolding behind the default-off S1_ENABLED flag, and asking for it on a
+    # deployment that does not offer it is refused honestly (403) rather than
+    # silently downgraded to S2.
+    strategy: Optional[str] = Field(default=None, max_length=32)
 
 
 def _require_sessions():
@@ -1375,6 +1382,11 @@ async def _owned_session(user_id: str) -> Dict[str, Any]:
 #: `detail.code` on the start gate's 503. The client branches on this rather than
 #: pattern-matching prose, so copy edits cannot break the handling.
 CAPACITY_UNAVAILABLE = "capacity_unavailable"
+
+#: `detail.code` on the start gate's 403 when the requested strategy profile is real
+#: but not enabled on this deployment (S1 behind its default-off flag). Structured
+#: like CAPACITY_UNAVAILABLE so the client branches on `code`, not prose.
+STRATEGY_UNAVAILABLE = "strategy_unavailable"
 
 # Internal vocabulary for why analysis is down. Never rendered — the UI maps these to
 # its own copy, so renaming user-facing text does not touch the API.
@@ -1532,8 +1544,35 @@ async def start_session(
     the clock is live against an engine that cannot serve it.
     """
     from src.core.session_manager import QuotaExhausted, SessionError
+    from src.strategy.profiles import (
+        DEFAULT_PROFILE,
+        STRATEGY_KEY_TTL_SECONDS,
+        ProfileError,
+        ProfileUnavailable,
+        resolve_profile,
+        session_strategy_key,
+    )
 
     mgr = _require_sessions()
+
+    # Resolved BEFORE the capacity probe: this is pure validation, and a request
+    # naming a profile this deployment cannot serve deserves its specific answer
+    # rather than whatever the capacity gate happens to say today. Nothing has been
+    # created yet, so a refusal here has nothing to roll back — same reasoning as
+    # the capacity-before-start ordering below.
+    try:
+        profile = resolve_profile(body.strategy)
+    except ProfileUnavailable as e:
+        # 403 rather than 409/422: the value is well-formed and names a real
+        # profile, but this deployment does not offer it (S1_ENABLED is off).
+        # Honest and structured — never a silent downgrade to the default.
+        raise HTTPException(
+            status_code=403,
+            detail={"code": STRATEGY_UNAVAILABLE, "message": str(e)},
+        )
+    except ProfileError as e:
+        # Unknown value — a caller bug, same class as a malformed field: 422.
+        raise HTTPException(status_code=422, detail=str(e))
 
     capacity = await _analysis_capacity()
     if not capacity["available"]:
@@ -1551,7 +1590,7 @@ async def start_session(
         )
 
     try:
-        return await asyncio.to_thread(mgr.start, user_id, body.quota_seconds, body.channel)
+        started = await asyncio.to_thread(mgr.start, user_id, body.quota_seconds, body.channel)
     except QuotaExhausted as e:
         # 429 rather than 403: this is a rate limit that resets, not a permission
         # problem the user can do anything about.
@@ -1559,6 +1598,34 @@ async def start_session(
     except SessionError as e:
         # Covers both "already have a session" and "unknown channel"; both are 409.
         raise HTTPException(status_code=409, detail=str(e))
+
+    # Carry the resolved profile where the daemon's session worker can read it
+    # later (via session_strategy_key — one shared key builder, so the shape cannot
+    # drift between processes).
+    #
+    # PERSISTENCE GAP (deliberate, documented): `sessions` has no strategy column
+    # and this scaffolding ships without a schema change, so a NON-DEFAULT profile
+    # lives only in Redis (state:session:{id}:strategy, TTL-bounded). A Redis flush
+    # or restart mid-session loses the marker and every reader must fall back to
+    # S2 — today's behavior, i.e. the fail-safe direction for a paper-only
+    # experiment. The default path writes nothing at all, so S2 sessions behave
+    # identically to before this field existed (and GET /api/session does not yet
+    # surface the profile — that lands with the daemon-side consumer). A real
+    # column follows when S1 leaves scaffolding.
+    if profile is not DEFAULT_PROFILE and state_manager is not None:
+        try:
+            await state_manager.set(
+                session_strategy_key(started["session_id"]),
+                profile.value,
+                ttl=STRATEGY_KEY_TTL_SECONDS,
+            )
+        except Exception as e:
+            # Scaffolding, paper-only: losing the marker degrades the session to
+            # S2 rather than blocking it. Logged so a dead Redis stays visible.
+            logger.warning(f"could not record strategy profile for session: {e}")
+    # Echoed so the caller knows which profile actually governs this session.
+    started["strategy"] = profile.value
+    return started
 
 
 @app.post("/api/session/end")
