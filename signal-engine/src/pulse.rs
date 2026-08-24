@@ -178,6 +178,49 @@ pub struct Pulse {
     pub reference_price: f64,
 }
 
+/// Cross-market aggregate (FR-SIGNAL-2): "is the MARKET hot right now?", computed each
+/// tick from the same per-symbol pulses just published. Published to
+/// `market:pulse:global`.
+///
+/// Same contract as the per-symbol pulse, same enforcement: facts and scores only —
+/// never a direction, entry, stop, or target — and it is a NOW-cast, not a forecast
+/// (the honesty law: no forward "hottest hour" claims until logged calibration data
+/// earns them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlobalPulse {
+    pub v: u32,
+    pub ts: i64,
+    /// Symbols that produced a pulse this tick (warm history, scored).
+    pub symbols_scored: usize,
+    /// Of those, how many are currently vetoed (tradability forced to 0).
+    pub symbols_vetoed: usize,
+    pub tradability_max: u8,
+    pub tradability_median: u8,
+}
+
+impl GlobalPulse {
+    /// Aggregate one tick's per-symbol results: `(tradability, is_vetoed)` pairs.
+    /// `None` when nothing was scored — an empty market is "no data", never "quiet".
+    pub fn aggregate(ts: i64, scored: &[(u8, bool)]) -> Option<Self> {
+        if scored.is_empty() {
+            return None;
+        }
+        let mut scores: Vec<u8> = scored.iter().map(|&(t, _)| t).collect();
+        scores.sort_unstable();
+        // Even count takes the LOWER middle: for a hotness banner the conservative
+        // read is the honest one.
+        let median = scores.get(scores.len().saturating_sub(1) / 2).copied().unwrap_or(0);
+        Some(Self {
+            v: SCHEMA_VERSION,
+            ts,
+            symbols_scored: scored.len(),
+            symbols_vetoed: scored.iter().filter(|&&(_, vetoed)| vetoed).count(),
+            tradability_max: scores.last().copied().unwrap_or(0),
+            tradability_median: median,
+        })
+    }
+}
+
 impl Pulse {
     /// Build a pulse, enforcing the veto invariant.
     ///
@@ -392,6 +435,51 @@ mod tests {
             assert!(
                 !obj.contains_key(forbidden),
                 "pulse gained `{forbidden}` — the shared plane must not emit trade decisions"
+            );
+        }
+    }
+
+    // ---- the cross-market aggregate (FR-SIGNAL-2) -----------------------------
+
+    #[test]
+    fn global_pulse_aggregates_median_max_and_veto_count() {
+        let scored = [(60u8, false), (10u8, true), (80u8, false), (40u8, false)];
+        let g = GlobalPulse::aggregate(1_700_000_000_000, &scored).expect("aggregated");
+        assert_eq!(g.symbols_scored, 4);
+        assert_eq!(g.symbols_vetoed, 1);
+        assert_eq!(g.tradability_max, 80);
+        // Even count takes the LOWER middle (sorted: 10,40,60,80 -> 40): the
+        // conservative read is the honest one for a hotness banner.
+        assert_eq!(g.tradability_median, 40);
+        assert_eq!(g.v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn global_pulse_odd_count_takes_the_true_median() {
+        let g = GlobalPulse::aggregate(0, &[(10, false), (50, false), (90, false)]).expect("aggregated");
+        assert_eq!(g.tradability_median, 50);
+    }
+
+    #[test]
+    fn an_empty_market_is_no_data_not_quiet() {
+        assert_eq!(GlobalPulse::aggregate(0, &[]), None);
+    }
+
+    #[test]
+    fn the_global_pulse_can_never_carry_a_trade_decision() {
+        // Same contract as the per-symbol pulse — and additionally nothing that smells
+        // like a FORECAST: the aggregate is a now-cast; "hottest hour" claims must be
+        // earned from logged calibration data, never emitted by the engine.
+        let g = GlobalPulse::aggregate(0, &[(50, false)]).expect("aggregated");
+        let json = serde_json::to_value(g).expect("serialize");
+        let obj = json.as_object().expect("object");
+        for forbidden in [
+            "entry", "stop", "target", "direction", "side", "position_size",
+            "forecast", "predicted", "best_hour", "hottest_hour", "next_window",
+        ] {
+            assert!(
+                !obj.contains_key(forbidden),
+                "global pulse gained `{forbidden}` — facts and scores only, now-cast only"
             );
         }
     }

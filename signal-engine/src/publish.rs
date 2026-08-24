@@ -13,10 +13,15 @@ use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use tracing::{debug, warn};
 
-use crate::pulse::Pulse;
+use crate::pulse::{GlobalPulse, Pulse};
 
 pub const KEY_PREFIX: &str = "market:pulse:";
 pub const CHANNEL_PREFIX: &str = "market:pulse:updates:";
+/// The cross-market aggregate (FR-SIGNAL-2). Note it deliberately lives under the same
+/// prefix and TTL discipline as the per-symbol keys: if the engine dies, "the market is
+/// hot" must expire with it.
+pub const GLOBAL_KEY: &str = "market:pulse:global";
+pub const GLOBAL_CHANNEL: &str = "market:pulse:updates:GLOBAL";
 
 /// TTL on each key, in seconds.
 ///
@@ -62,6 +67,29 @@ pub async fn publish(conn: &mut ConnectionManager, pulse: &Pulse) -> bool {
     true
 }
 
+/// Publish the cross-market aggregate. Same durable-key + best-effort-fanout shape,
+/// same swallowed errors, as the per-symbol publish.
+pub async fn publish_global(conn: &mut ConnectionManager, global: &GlobalPulse) -> bool {
+    let payload = match serde_json::to_string(global) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("failed to serialise the global pulse: {e}");
+            return false;
+        }
+    };
+    if let Err(e) = conn
+        .set_ex::<_, _, ()>(GLOBAL_KEY, &payload, KEY_TTL_SECS)
+        .await
+    {
+        warn!("failed to SET {GLOBAL_KEY}: {e}");
+        return false;
+    }
+    if let Err(e) = conn.publish::<_, _, ()>(GLOBAL_CHANNEL, &payload).await {
+        debug!("global publish to channel failed (non-fatal): {e}");
+    }
+    true
+}
+
 /// Connect with a ConnectionManager, which reconnects internally rather than requiring
 /// the caller to rebuild the client on every blip.
 pub async fn connect(url: &str) -> Result<ConnectionManager, redis::RedisError> {
@@ -103,14 +131,13 @@ mod tests {
     #[test]
     fn ttl_outlives_a_normal_publish_interval_but_not_an_outage() {
         // Long enough that a slow tick does not expire a healthy key, short enough that
-        // a dead engine's keys vanish quickly.
-        assert!(
-            KEY_TTL_SECS >= 60,
-            "TTL too tight; a slow tick would expire live data"
-        );
-        assert!(
-            KEY_TTL_SECS <= 300,
-            "TTL too loose; a dead engine looks alive for too long"
-        );
+        // a dead engine's keys vanish quickly. Const blocks: the pin now fails at
+        // COMPILE time, which is strictly earlier than a test run.
+        const {
+            assert!(KEY_TTL_SECS >= 60, "TTL too tight; a slow tick would expire live data");
+        }
+        const {
+            assert!(KEY_TTL_SECS <= 300, "TTL too loose; a dead engine looks alive for too long");
+        }
     }
 }

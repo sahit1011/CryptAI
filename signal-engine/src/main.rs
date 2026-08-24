@@ -21,8 +21,9 @@ use tokio::sync::{watch, RwLock};
 use tracing::{error, info, warn};
 
 use signal_engine::feature_store::{FeatureStore, TIMEFRAMES};
-use signal_engine::ingest::{bootstrap_history, now_ms, run_feed};
+use signal_engine::ingest::{bootstrap_history, now_ms};
 use signal_engine::publish;
+use signal_engine::pulse::GlobalPulse;
 use signal_engine::scoring::{score, MarketSnapshot, ScoringConfig, TimeframeData};
 
 const DEFAULT_SYMBOLS: &str = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT";
@@ -80,7 +81,10 @@ async fn main() {
     let loaded = bootstrap_history(&store, &symbols, 500).await;
     info!("bootstrapped {loaded} bars");
 
-    let feed = tokio::spawn(run_feed(
+    // Closed bars by REST at each timeframe boundary (R1.4) — the kline websocket
+    // fleet is gone: it pushed intra-bar updates the scorer discarded, at ~0.6GB/mo
+    // per stream. The boundary poll carries the identical scored information.
+    let feed = tokio::spawn(signal_engine::ingest::poll_klines(
         Arc::clone(&store),
         symbols.clone(),
         shutdown_rx.clone(),
@@ -183,6 +187,8 @@ async fn score_loop(
         let now = now_ms();
         let mut published = 0usize;
         let mut cold = 0usize;
+        // (tradability, vetoed) per published pulse — feeds the cross-market aggregate.
+        let mut tick_scores: Vec<(u8, bool)> = Vec::new();
 
         // BTC is the market's common factor: when everything moves with it, several
         // "diversified" positions are one position, and the per-user risk layer needs to
@@ -242,7 +248,14 @@ async fn score_loop(
             let scored = score(&snapshot, &cfg);
             if publish::publish(&mut conn, &scored.pulse).await {
                 published += 1;
+                tick_scores.push((scored.pulse.tradability, !scored.pulse.vetoes.is_empty()));
             }
+        }
+
+        // The cross-market "is the market hot" aggregate (FR-SIGNAL-2) — published on
+        // the same tick from the same pulses, so it can never disagree with them.
+        if let Some(global) = GlobalPulse::aggregate(now, &tick_scores) {
+            publish::publish_global(&mut conn, &global).await;
         }
 
         if cold > 0 {

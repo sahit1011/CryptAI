@@ -158,8 +158,8 @@ impl SymbolState {
         self.perp.open_interest_1h_ago = self
             .oi_history
             .iter()
-            .filter(|(t, _)| *t <= cutoff)
-            .last()
+            .rev()
+            .find(|(t, _)| *t <= cutoff)
             .map(|(_, v)| *v);
         self.perp.ts = ts;
         self.last_event_ts = self.last_event_ts.max(ts);
