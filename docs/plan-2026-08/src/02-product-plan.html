@@ -50,8 +50,8 @@
     </div>
     <div class="card" style="margin-top:14px">
       <h3>The one-line pitch</h3>
-      <p style="font-size:15px"><b>"Two 30-minute sessions a day with a professional AI trade desk — and an agent that
-      watches every position you take, around the clock, for free."</b></p>
+      <p style="font-size:15px"><b>"Up to two 30-minute sessions a day with a professional AI trade desk — a slot is only spent
+      when it delivers you a trade, and an agent watches every position you take, around the clock, for free."</b></p>
     </div>
   </div>
   <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 2</span></div>
@@ -96,12 +96,12 @@
         </ul>
       </div>
       <div class="card">
-        <h3>Session rules (free)</h3>
+        <h3>Session rules (free) — v2 after red-team review</h3>
         <ul>
-          <li>2 slots/day · 30 min each · server-authoritative clock · resets at 00:00 IST.</li>
+          <li>Up to 2 slots/day · 30 min each · server-authoritative clock · daily reset at midnight (stored UTC, always shown in the user's local time).</li>
+          <li><b>A slot is spent when a proposal is delivered — not when scanning starts.</b> A session that finds no qualifying setup auto-ends after a bounded scan (~10 min) and <b>returns the slot</b>; scan attempts cap at 3/day to protect the request budget.</li>
           <li>Clock <b>pauses</b> while a proposal awaits a decision.</li>
-          <li>While a trade is open, new sessions are <b>held</b> — slots are preserved, monitor keeps working, banner explains why.</li>
-          <li>Unused slots don't roll over.</li>
+          <li>While a trade is open, new sessions are <b>held</b>; a slot held by an open trade survives <b>one</b> midnight reset (intraday holds run 4–12h — the lock routinely spans midnight).</li>
         </ul>
       </div>
     </div>
@@ -126,14 +126,15 @@
       </tr>
       <tr><td><b>Sessions / day</b></td><td class="mono"><b>2 × 30 min</b></td><td class="mono">4 × 45 min</td><td class="mono">8 × 60 min</td><td class="mono">Unlimited windows</td></tr>
       <tr><td><b>Trade mode</b></td><td><b>Synchronous</b> — 1 open trade, session pivots to it</td><td>Async-lite — 2 concurrent trades</td><td>Async — 5 concurrent trades</td><td>Async — 10 concurrent trades</td></tr>
-      <tr><td><b>Channels</b></td><td>Intraday only</td><td>+ Swing</td><td>+ Scalp<sup>†</sup>, advanced setups</td><td>All + experimental strategies</td></tr>
+      <tr><td><b>Channels</b></td><td>Intraday</td><td>Intraday</td><td>+ Swing — <b>only after it passes live validation</b> (the +6-week walk-forward gate)</td><td>+ validated channels as they clear the gate</td></tr>
       <tr><td><b>Execution</b></td><td>Paper desk; exchange connect in testnet beta</td><td>+ Live (Delta India), consent-gated</td><td>+ BingX · auto-mode within consent caps</td><td>+ Multi-exchange, API access</td></tr>
       <tr><td><b>Monitoring</b></td><td colspan="4" style="text-align:center"><b>Unmetered on every tier — position protection is never paywalled</b></td></tr>
       <tr><td><b>Assistant</b></td><td>—</td><td>Ask about your positions</td><td>Full market + book Q&amp;A</td><td>Full + strategy tuning</td></tr>
       <tr><td><b>Price</b></td><td class="mono"><b>$0</b></td><td class="mono">TBD · after payments ship</td><td class="mono">TBD</td><td class="mono">TBD</td></tr>
     </table>
-    <p style="font-size:11px; color:var(--muted); margin-top:10px"><sup>†</sup> Scalp channel carries an India honesty gate: 1% TDS per
-    transfer materially eats scalping edge for Indian users — the UI must say so before a user picks it (see quant assessment, doc 01).</p>
+    <p style="font-size:11px; color:var(--muted); margin-top:10px">Red-team correction (own honesty law): <b>scalp is not on the ladder at all</b> — it failed
+    validation (weights flip at 12 bars) <i>and</i> India's 1% TDS kills its economics; swing IC is currently insignificant, so it is a validation-gated unlock, never
+    marketed "coming soon". The honest paid axes are sessions, concurrency, live execution, and the assistant — never unvalidated channels.</p>
   </div>
   <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 4</span></div>
 </section>
@@ -199,7 +200,7 @@
       <div class="card">
         <h3><span class="dot" style="background:var(--good)"></span>Must — launch blocks on these</h3>
         <ul>
-          <li>Google sign-in + 4-step onboarding (mode → capital → risk → monthly goal)</li>
+          <li>Google sign-in + 4-step onboarding (mode → capital → risk appetite → <b>monthly risk budget</b> — never a return expectation)</li>
           <li>Hot-window banner + per-symbol pulse on dashboard</li>
           <li>2×30-min session flow: start → setups → proposal card → approve → trade focus</li>
           <li>Paper execution + portfolio/history that survives restarts</li>
@@ -245,19 +246,20 @@
         <table>
           <tr><th>Metric</th><th>Target</th><th>Why it matters</th></tr>
           <tr><td><b>Waitlist activation</b></td><td class="num">≥ 60%</td><td>50 invited → 30 complete onboarding + first session</td></tr>
-          <tr><td><b>Session utilization</b></td><td class="num">≥ 1.0/day</td><td>Avg slots used per active user — the core habit</td></tr>
+          <tr><td><b>Active days</b></td><td class="num">≥ 60%</td><td>Days with a session started <b>or</b> a slot held by an open trade — a good trade held 8h must not read as disengagement</td></tr>
+          <tr><td><b>Proposal delivery</b></td><td class="num">≥ 50%</td><td>% of hot-window sessions receiving ≥1 proposal — the denominator that makes approval rate meaningful</td></tr>
           <tr><td><b>Proposal approval rate</b></td><td class="num">25–60%</td><td>Below = setups aren't credible; above = users rubber-stamp</td></tr>
           <tr><td><b>D7 retention</b></td><td class="num">≥ 40%</td><td>Sessions are a daily mechanic — this is the product verdict</td></tr>
           <tr><td><b>Monitor saves</b></td><td class="num">count &gt; 0</td><td>Exits triggered by thesis-break before SL — the differentiator, demo-able</td></tr>
-          <tr><td><b>LLM cost / session</b></td><td class="num">$0.00</td><td>Free-model routing holds; budget breaches alert, never bill</td></tr>
+          <tr><td><b>Request budget</b></td><td class="num">&lt; cap · 0 outages</td><td>OpenRouter requests/day vs key budget + sessions ended by capacity loss = 0 — dollars are $0 by construction; <b>requests</b> are the real meter</td></tr>
         </table>
       </div>
       <div class="card">
         <h3>Founder decisions needed (blocking none of the build)</h3>
         <ul>
-          <li><b>Session reset timezone:</b> 00:00 IST assumed — confirm.</li>
-          <li><b>Paper capital:</b> seed at user-declared capital (realism) vs fixed $10k (comparability). Plan assumes <b>user-declared, capped $1k–$100k</b>.</li>
-          <li><b>Waitlist rollout:</b> all 50 at once vs 10/day cohorts. Plan assumes <b>cohorts of 10</b> — engine + quota behavior observed under load before full open.</li>
+          <li><b>Waitlist geography:</b> India-only or global? Decides whether hot-window copy may say IST — internally everything is stored UTC and rendered in the viewer's local time.</li>
+          <li><b>Paper capital:</b> user-declared (capped $1k–$100k), with <b>desk epochs</b>: capital edits blocked while a position is open; an edit closes the desk epoch and opens a new logged one, so the proposal→outcome ledger can't be laundered by resets. All cross-user analysis in R-multiples and %.</li>
+          <li><b>Waitlist rollout:</b> all 50 at once vs 10/day cohorts. Plan assumes <b>cohorts of 10</b>.</li>
           <li><b>Tier pricing:</b> deferred until payments ship — no number needed now.</li>
           <li><b>Brand voice on hot windows:</b> "market is hot" vs "conditions favorable" — copy choice, compliance-relevant.</li>
         </ul>

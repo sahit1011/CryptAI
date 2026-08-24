@@ -77,7 +77,7 @@
       <div class="arrow">→</div>
       <div class="step"><span class="n">4</span><h4>Risk appetite</h4><p>Conservative / Balanced / Aggressive cards — each shows what it concretely means: risk per trade, max leverage, min R:R.</p></div>
       <div class="arrow">→</div>
-      <div class="step"><span class="n">5</span><h4>Monthly goal</h4><p>Expected monthly range (e.g. +3–8%). Shapes ranking and pacing. Unrealistic input gets an honest nudge, not a block.</p></div>
+      <div class="step"><span class="n">5</span><h4>Risk budget</h4><p>"How much are you willing to risk per month?" (e.g. 2–10% max drawdown). Shapes pacing and per-trade risk. <b>Never a return expectation</b> — an asked-for +5% is a promise no evidence supports.</p></div>
       <div class="arrow">→</div>
       <div class="step done"><span class="n">✓</span><h4>Dashboard</h4><p>Lands on the hot-window banner + 2 session slots ready. First-run coach marks point at the session button.</p></div>
     </div>
@@ -101,7 +101,7 @@
         <ul>
           <li>Key verification fails → inline reason (wrong scope, IP allowlist, expired) + retry; never a dead end.</li>
           <li>Abandoned mid-onboarding → resume at the same step on next login.</li>
-          <li>Skipped goal → sensible default (+5%), flagged in Preferences.</li>
+          <li>Skipped risk budget → conservative default (5% max monthly drawdown), flagged in Preferences — never a return number.</li>
         </ul>
       </div>
     </div>
@@ -137,9 +137,11 @@
         </ul>
       </div>
       <div class="card">
-        <h3>No-trade sessions are a feature</h3>
-        <p>If the engine vetoes conditions all session, the UI says <b>"no qualifying setup — capital preserved"</b> and shows what was
-        evaluated and rejected. A disciplined no is the strongest trust moment the product has — never fake a setup to feel productive.</p>
+        <h3>A no-trade scan costs nothing</h3>
+        <p>Qualifying conditions cluster in 1–2 windows a day — so most scans outside them <i>should</i> find nothing. The UI says
+        <b>"no qualifying setup — capital preserved, slot returned"</b> (a slot is only spent when a proposal is delivered; scans cap at 3/day),
+        shows what was evaluated and rejected, and steers to the hot window. First-run lands on the banner with "come back at the active hours" —
+        never coach-marks Start at a random hour.</p>
       </div>
       <div class="card">
         <h3>Re-engagement</h3>
@@ -221,16 +223,16 @@
             <div class="wf"><span class="t">Manual controls</span><p>Close now · Move stop (tighten-only on free) — user always outranks the agent</p></div>
           </div>
         </div>
-        <div class="wf dimmed"><span class="t">Session footer</span><p>Session clock (if still running) · "new setups paused while this trade runs" · slot status</p></div>
+        <div class="wf dimmed"><span class="t">Status footer</span><p>"Session complete — slot spent well · monitor on duty" · next-slot status (held while the trade runs)</p></div>
       </div>
       <div class="stack">
         <div class="card">
           <h3>Interaction rules</h3>
           <ul>
-            <li>Entering trade focus is <b>automatic</b> on fill; leaving it is automatic on close — no navigation to learn.</li>
-            <li>Monitor actions (tighten, partial, exit) appear as <b>verdicts with reasons</b>, timestamped — an audit trail the user reads like a story.</li>
+            <li>Trade focus is a <b>derived state</b> — open position + monitor status. The session <i>ended</i> the moment the trade opened (slot spent well); there is no session clock here to expire.</li>
+            <li>Monitor actions (tighten, partial, exit) appear as <b>verdicts with reasons</b>, timestamped, read from the append-only <code>monitor_events</code> trail — persisted, so the story survives restarts and feeds the exit recap.</li>
             <li>Manual close always available, one confirm, shows realized P&amp;L instantly.</li>
-            <li>If the session clock expires mid-trade: banner — <b>"session over, your monitor is still on duty"</b>.</li>
+            <li>The one banner: <b>"session complete — your monitor is on duty."</b></li>
           </ul>
         </div>
         <div class="card">

@@ -79,8 +79,8 @@
         <div class="card flat">
           <ul style="margin-top:2px">
             <li style="font-size:11.5px">One crash domain — accepted tradeoff on the free tier; the supervisor + Render restarts cover it.</li>
-            <li style="font-size:11.5px">Monitors reconcile from Postgres on boot, so a restart never orphans an open position.</li>
-            <li style="font-size:11.5px">The separate-services HLD topology stays the scale-up path, not the launch path.</li>
+            <li style="font-size:11.5px"><b>Honest gap:</b> monitor/desk rehydration lands at <b>R2.4</b> — until then a deploy mid-trade orphans paper positions (rebuild must include SL/TP bracket legs + leverage from the trade rows, Postgres as source of truth). No unattended open trades before R2.4.</li>
+            <li style="font-size:11.5px">RAM: memory agent (chromadb + ONNX) disabled in prod (<code>DAEMON_DISABLE_AGENTS=memory</code>) — 512MB instance; runbook verifies steady-state RSS.</li>
           </ul>
         </div>
       </div>
@@ -157,27 +157,29 @@
     </div>
     <div class="cols cols-3">
       <div class="card">
-        <h3>Slot accounting (replaces minutes pool)</h3>
+        <h3>Slot accounting (v2 — red-team hardened)</h3>
         <ul>
-          <li>Today: one pooled 1800s/day quota, <b>identical for every tier</b>, unlimited session count (30 one-minute sessions is legal). Replaced by per-plan policy: <code>slots_per_day × slot_minutes</code>, fixed grant per slot.</li>
-          <li>Slot consumed at <b>start</b>, never refunded for boredom; refunded only for <b>our</b> failures (the capacity-loss refund path already exists).</li>
-          <li>Client-supplied <code>quota_seconds</code> is gone — tier config is the only quota source.</li>
+          <li>Today: one pooled 1800s/day quota for every tier, unlimited session count. Replaced by per-plan policy — and <b>a slot is spent on proposal delivery, not scan start</b>: a bounded scan (~10 min) with no qualifying setup auto-ends and returns the slot (scan attempts cap 3/day).</li>
+          <li><b>Slot-native refunds:</b> a CAPACITY_LOST session re-opens its own slot with the <i>remaining</i> grant — never a fresh 30 min (flap test: capacity down/up ×5 must never mint extra scan time).</li>
+          <li><b>Race-safe consumption:</b> partial unique index (one active session per user) + slot count and focus-lock check in one transaction; usage is <b>derived</b> (COUNT per trading day) — no stored counter, no reset job. Boundary stored UTC, rendered local.</li>
+          <li>The sweeper ends any SCANNING session past its grant, <b>connection or not</b> — ticks must not depend on an open WebSocket.</li>
         </ul>
       </div>
       <div class="card">
         <h3>The focus lock (free tier)</h3>
         <ul>
-          <li>Invariant: <code>open_positions ≥ 1 ⇒ session_start refused</code> with an honest reason + the monitor's live status.</li>
-          <li>Proposal flow already ends the session on <code>trade_opened</code> — the lock closes the loop by holding the <i>next</i> start until flat.</li>
-          <li>Paid tiers raise the concurrency cap instead of dropping the rule — same code path, different limit.</li>
+          <li>Invariant: <code>open_positions ≥ 1 ⇒ session_start refused</code>, with the 409 distinguishing <b>monitored</b> from "position exists, monitor reattaching".</li>
+          <li><b>Source of truth: reconciled Redis + engine</b>, with zombie auto-drop in the lock check — which is why restart-safe rehydration (R2.4) ships <b>before</b> the lock (R2.2). <code>/api/positions/close</code> stays the escape hatch.</li>
+          <li>A slot held by the lock survives exactly <b>one</b> midnight reset (intraday holds span midnight routinely).</li>
+          <li>Paid tiers raise the concurrency cap; at the cap an async session <b>pauses unmetered</b> (new held-at-cap state, mirroring the proposal pause) — skipping synthesis alone would still burn the user's clock.</li>
         </ul>
       </div>
       <div class="card">
         <h3>Reject / expire / end paths</h3>
         <ul>
           <li>Reject or shelf-life expiry → back to SCANNING, clock resumes — covered today.</li>
+          <li>Approve → the session <b>ends</b> as <code>trade_opened</code> (slot spent well). "Trade focus" is a <b>derived UI state</b> — open position + monitor status, no session row and no session clock.</li>
           <li>Quota spent or user ends → ENDED; open positions keep their monitors — quota never stops a monitor.</li>
-          <li>Expiry sweeper ends sessions of disconnected users — ticks must not depend on an open WebSocket.</li>
         </ul>
       </div>
     </div>
@@ -194,8 +196,8 @@
   <div class="body">
     <table id="compute-table">
       <tr><th style="width:24%">Workload</th><th style="width:11%">Cadence</th><th style="width:24%">Target behavior</th><th style="width:23%">Bandwidth (external)</th><th style="width:18%">Status</th></tr>
-      <tr><td><b>Daemon DataAgent streams</b> — depth20@100ms + markprice@1s + ticker + 5 kline TFs, per symbol</td><td class="num">24/7</td><td><b>Gate to scan demand</b> (same signal as analysis) + drop depth/ticker to REST snapshots at cycle cadence</td><td class="num"><b>~2.2 GB/day today</b> → ~0 idle</td><td><span class="pill bad">R0 BLOCKER</span></td></tr>
-      <tr><td><b>Signal engine ingest</b> (child process)</td><td class="num">5s score</td><td>REST-poll closed bars per TF boundary (bootstrap already does REST) + 5s batched book poll; bookTicker stream already removed</td><td class="num">~7.4 GB/mo as WS → <b>~1 GB/mo as REST</b></td><td><span class="pill warn">R1 · KLINES→REST</span></td></tr>
+      <tr><td><b>Daemon DataAgent streams</b></td><td class="num">demand</td><td><span class="pill ok">DONE · 2896402</span> — demand = <b>scans OR open exposure</b> (never scans-only: paper fills + monitors read stream-fed prices): scan → klines+markprice; positions → one kline_1m per held symbol; idle+flat → <b>zero streams</b>; 120s linger; depth/ticker replaced by REST snapshots</td><td class="num">~2.2 GB/day → ~0 idle</td><td><span class="pill ok">SHIPPED</span></td></tr>
+      <tr><td><b>Signal engine ingest</b> (child process)</td><td class="num">5s score</td><td>REST-poll closed bars per TF boundary + 5s batched book poll (the poll is the staleness heartbeat — never stretch it past ~10s to save bytes)</td><td class="num">~7.4 GB/mo as WS → <b>~25 MB/day as REST</b></td><td><span class="pill warn">R1 · KLINES→REST</span></td></tr>
       <tr><td><b>Shared LLM analysis cycle</b></td><td class="num">180s</td><td>≥1 active scan or explicit keep-warm — zero scans = zero LLM calls (uncommitted diff completes this)</td><td class="num">LLM only</td><td><span class="pill ok">DEMAND-GATED</span></td></tr>
       <tr><td><b>SessionWorkers · PositionMonitors</b></td><td class="num">180s / 15s</td><td>1 per active session · 1 per open position; none exist otherwise</td><td class="num">internal</td><td><span class="pill ok">DEMAND-GATED</span></td></tr>
       <tr><td><b>Dashboard market feed</b></td><td class="num">stream</td><td>refcounted to live WS viewers + 30s linger (commit 9edada0) — but client-requested extra channels are add-only: refcount them too</td><td class="num">~9 MB per viewed hour</td><td><span class="pill ok">FIXED</span> <span class="pill warn">+R0 REFCOUNT</span></td></tr>
@@ -225,8 +227,9 @@
           <table>
             <tr><th>Delta</th><th>Detail</th></tr>
             <tr><td><b>tier config</b></td><td>plans move from env vars to a <code>plans</code> config (free / lite / pro / pro_max): slots_per_day, slot_minutes, max_concurrent_trades, channels, async flag — free tier hardcoded live, others dormant</td></tr>
-            <tr><td><b>sessions</b></td><td>slot semantics: <code>slot_index</code> per day; daily reset job keys off user's tier; keeps existing state machine columns</td></tr>
-            <tr><td><b>user_preferences</b></td><td>already has capital, risk %, goal fields — onboarding finally writes them; add <code>onboarding_completed_step</code> for resume</td></tr>
+            <tr><td><b>sessions</b></td><td>slot usage <b>derived</b> — COUNT per trading day (index exists); partial unique index enforcing one active session per user; no stored counter, no reset job (derive-don't-store, the module's own law)</td></tr>
+            <tr><td><b>monitor_events</b></td><td><b>new append-only table</b> (user-indexed, trade-keyed): every monitor verdict + reason. The trade-focus verdict log and exit recap have no backing store today — the monitor publishes latest-only TTL'd Redis status. Prerequisite of the trade-focus UI; survives restarts</td></tr>
+            <tr><td><b>user_preferences</b></td><td>capital + risk fields exist — onboarding finally writes them; <b>monthly risk budget</b> (max drawdown %) replaces the return-expectation goal; add <code>onboarding_completed_step</code></td></tr>
             <tr><td><b>pulse_snapshots</b></td><td>gains its writer (engine appends every publish) — the calibration log the quant desk requires</td></tr>
             <tr><td><b>trades</b></td><td>entry rows written on every book (memory loop) — exit updates must never hit "not found"</td></tr>
           </table>
@@ -268,7 +271,7 @@
           <tr><td><code>GET /api/pulse</code></td><td><b>new</b> — per-symbol regime + tradability + global hot/quiet, authenticated, cached 5s server-side; the dashboard's banner + strip read this</td></tr>
           <tr><td><code>GET /api/session/slots</code></td><td><b>new</b> — slots used/remaining today, focus-lock state + reason, next reset time</td></tr>
           <tr><td><code>POST /api/session/start</code></td><td><b>changed</b> — no client <code>quota_seconds</code>; consumes a slot server-side; 409 with monitor status when focus-locked; 503 (no row, no clock) when analysis capacity is down</td></tr>
-          <tr><td><code>GET /api/monitor/:position</code></td><td><b>new</b> — the monitor's verdict log for the trade-focus surface</td></tr>
+          <tr><td><code>GET /api/monitors/:symbol/events</code></td><td><b>new</b> — the monitor's verdict log, read from the append-only <code>monitor_events</code> table (the live status chip keeps using <code>GET /api/monitors</code>)</td></tr>
           <tr><td><code>GET /api/session/recap/:id</code></td><td><b>new</b> — setups seen / action taken / outcome, powers the recap card</td></tr>
         </table>
       </div>

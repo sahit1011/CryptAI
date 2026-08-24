@@ -33,17 +33,17 @@
   <h2>R0 → R4: coherent before bigger, deployed before decorated</h2>
   <div class="body">
     <div class="flow" style="margin-bottom:14px">
-      <div class="mstone done"><div class="mt">R0 · DONE + IN FLIGHT</div><div class="mn">Stop the bleeding</div>
-        <p>Repo re-architecture (✓ done today: 85+ files attic'd, image cleaned, gate green) · DataAgent stream gate · idle-socket fix · commit the demand-gate diff (3 touch-ups) · upstream-channel refcount.</p>
-        <div class="proof"><b>Proof:</b> verify.sh green · idle process opens zero market streams · image contains no destructive scripts</div></div>
+      <div class="mstone done"><div class="mt">R0 · ✓ COMPLETE 2026-08-24</div><div class="mn">Stop the bleeding</div>
+        <p>All shipped on <code>fix/r0-stop-the-bleeding</code>: repo re-architecture (ae7f094) · demand-gate completion (f0dc04a) · <b>stream gate: scans-OR-exposure, idle = zero streams</b> + socket fixes (2896402) · upstream-channel refcount (176c08c) · plan decks (f45f248).</p>
+        <div class="proof"><b>Proof:</b> verify.sh green · 705 backend tests, 0 failed · idle+flat opens zero market streams · image contains no destructive scripts</div></div>
       <div class="arrow">→</div>
       <div class="mstone"><div class="mt">R1 · RESUME &amp; TRUTH</div><div class="mn">Production breathes</div>
-        <p>Render resume + Supabase restore (runbook, doc 05) · env deltas · m1 line becomes default branch · Pulse-dataclass fix · engine klines→REST · enable engine + pulse gating · pulse_snapshots writer + global pulse.</p>
-        <div class="proof"><b>Proof:</b> /health/ready green · market:pulse:* live in prod · bandwidth graph &lt;60 MB/day · a real session proposes on live pulses</div></div>
+        <p>Runbook v2 (doc 05: env-first, resume ONLY two services, schema stamp) · m1 line becomes default branch · Pulse-dataclass fix · engine klines→REST · two-step engine enable (binary verified in logs, then gate) · pulse_snapshots writer + global pulse · <b>pulled forward from later: analysis-prompt shrink (40k→≤5k), fail-closed daily request counter, Redis eviction hardening</b>.</p>
+        <div class="proof"><b>Proof:</b> /health/ready green · market:pulse:* live · bandwidth &lt;90 MB/day incl. LLM egress · RSS &lt;400 MB · a real session proposes on live pulses</div></div>
       <div class="arrow">→</div>
       <div class="mstone"><div class="mt">R2 · THE PRODUCT</div><div class="mn">The free tier exists</div>
-        <p>Slot model (2×30min) + focus lock + channel gating · onboarding 3–5 (capital/risk/goal) · Google-first · hot-window banner + /api/pulse · trade-focus UI + monitor log · <b>monitors survive restart</b> · analysis-prompt shrink.</p>
-        <div class="proof"><b>Proof:</b> two users, same chart, different proposals · restart mid-trade → monitor still watching · slot 3 refused with honest reason</div></div>
+        <p><b>Ordering is load-bearing: rehydration (was R2.4) ships before the focus lock.</b> Slot model — spent on proposal delivery, slot-native refunds · focus lock on reconciled state · channel gate (intraday) · onboarding 3–5 (capital / risk / <b>risk budget</b>) · Google-first · hot-window banner + /api/pulse · monitor_events table → trade-focus UI.</p>
+        <div class="proof"><b>Proof:</b> two users, same chart, different proposals · restart mid-trade → monitor + brackets intact · capacity flap ×5 mints no extra scan time</div></div>
       <div class="arrow">→</div>
       <div class="mstone"><div class="mt">R3 · TRUST</div><div class="mn">Hardened for strangers</div>
         <p>Kill NEXT_PUBLIC_API_TOKEN · anon fail-closed · WS auth off the URL · /metrics behind token · global LLM request counter · session/exit recaps · forgot-password + copy fixes.</p>
@@ -66,12 +66,12 @@
       <div class="card">
         <h3>Founder actions (nobody else can do these)</h3>
         <ul>
-          <li>Render dashboard: settle overage + resume both services (R1, ~5 min)</li>
-          <li>Supabase dashboard: restore the paused project (R1, ~2 min)</li>
-          <li>OpenRouter: one-time $10 credit (R1, ~2 min)</li>
+          <li>Render dashboard: settle overage → resume <b>ONLY</b> cryptai-backend + cryptai-redis (klaro + SlackBot <b>stay suspended</b> — hours cap)</li>
+          <li>Supabase: verified <b>ACTIVE_HEALTHY</b> — nothing to do, just don't let the frontend go dark for 7+ days</li>
+          <li>OpenRouter: one-time $10 credit, then verify the real daily cap empirically</li>
           <li>Rotate the Render API key (leaked to chat 2026-08-03)</li>
           <li>Back up <code>VAULT_ENC_KEY</code> to a password manager</li>
-          <li>Confirm the five product decisions in doc 02, slide 7</li>
+          <li>Confirm the product decisions in doc 02, slide 7</li>
         </ul>
       </div>
     </div>
@@ -86,15 +86,17 @@
   <div class="body">
     <table>
       <tr><th style="width:5%">ID</th><th style="width:33%">Task</th><th style="width:8%">Team</th><th style="width:38%">Definition of done</th><th style="width:16%">Anchor</th></tr>
-      <tr><td class="num">R0.1</td><td><span class="pill ok">DONE</span> Repo re-architecture — attic 85+ dead files, clean the image, fix pointers</td><td>infra</td><td>verify.sh green after the move; destructive scripts out of Docker context; _attic/README explains restores</td><td class="mono">_attic/</td></tr>
-      <tr><td class="num">R0.2</td><td>Gate the daemon DataAgent streams to scan demand (+linger); depth/ticker → REST snapshots at cycle cadence</td><td>backend</td><td>Idle daemon opens <b>zero</b> Binance streams; scanning subscribes, last-scan-out unsubscribes after linger; test asserts idle = no subscriptions</td><td class="mono">data_agent.py:120-186</td></tr>
-      <tr><td class="num">R0.3</td><td>Commit the demand-gate working-tree diff with its 3 touch-ups (docstring, CYCLE_INTERVAL=180 alignment, document new envs)</td><td>backend</td><td>Clean tree; demand-gate tests 10/10; render.yaml documents ANALYSIS_KEEP_WARM + ANALYSIS_POLL_SECONDS</td><td class="mono">multi_user_daemon.py:858-890</td></tr>
-      <tr><td class="num">R0.4</td><td>Idle-socket staleness skip + refcount client-requested extra WS channels</td><td>backend</td><td>No reconnect churn at zero subscriptions; an unsubscribed extra channel is released upstream after linger</td><td class="mono">server.py:401-460</td></tr>
-      <tr><td class="num">R1.1</td><td>Resume production per runbook (Render + Supabase + env deltas)</td><td>founder+infra</td><td>/health/ready green; runbook probes pass; bandwidth graph &lt;60 MB/day over 48h</td><td class="mono">doc 05 · slide 4</td></tr>
+      <tr><td class="num">R0.1</td><td><span class="pill ok">DONE</span> Repo re-architecture — 98 dead files attic'd, image cleaned, pointers fixed</td><td>infra</td><td>verify.sh green after the move; destructive scripts out of Docker context</td><td class="mono">ae7f094</td></tr>
+      <tr><td class="num">R0.2</td><td><span class="pill ok">DONE</span> Stream gate — demand = <b>scans OR open exposure</b>; scan/prices/idle profiles, 120s linger, REST depth snapshots</td><td>backend</td><td>Idle+flat = zero streams; a position keeps one kline_1m per held symbol; 14 tests</td><td class="mono">2896402</td></tr>
+      <tr><td class="num">R0.3</td><td><span class="pill ok">DONE</span> Demand-gate completion — keep-warm decoupled from the switch; cadence aligned; envs documented</td><td>backend</td><td>10/10 demand-gate tests; render.yaml documents the new envs</td><td class="mono">f0dc04a</td></tr>
+      <tr><td class="num">R0.4</td><td><span class="pill ok">DONE</span> Idle-socket staleness skip · ws-callback dedupe · upstream-channel refcount</td><td>backend</td><td>No churn at zero subs; last watcher out → upstream released; 5 tests</td><td class="mono">176c08c</td></tr>
+      <tr><td class="num">R1.1</td><td>Resume per runbook v2 — env deltas FIRST, resume <b>only</b> cryptai-backend + cryptai-redis, schema check + alembic stamp</td><td>founder+infra</td><td>/health/ready green; exactly one web service deployed; bandwidth &lt;90 MB/day + RSS &lt;400 MB over 48h; evicted_keys = 0</td><td class="mono">doc 05 · slide 4</td></tr>
       <tr><td class="num">R1.2</td><td>Make the m1 line the repo default branch; retire v2's stale keepalive; delete the TA-Lib CI step</td><td>infra</td><td>Scheduled workflows run the fail-loud keepalive from the default branch; CI ~6 min faster</td><td class="mono">keepalive.yml · ci.yml:74-87</td></tr>
       <tr><td class="num">R1.3</td><td>Fix the Pulse-dataclass bug + fold pulse liveness into the capacity check</td><td>backend</td><td>A test feeds real Pulse objects through the pipeline (not dict fakes); dead plane ends sessions with refund, never drains clocks</td><td class="mono">session_worker.py:216-235</td></tr>
       <tr><td class="num">R1.4</td><td>Engine klines → REST-polled closed bars; then enable engine + pulse gating (two-step, logs between)</td><td>backend+infra</td><td>market:pulse:* live with ≤5s refresh; engine bandwidth ≤2 MB/day; sessions refuse honestly when pulse is stale</td><td class="mono">ingest.rs · doc 05 slide 4</td></tr>
       <tr><td class="num">R1.5</td><td>pulse_snapshots writer + market:pulse:global (median/max aggregate) + forward-return backfill job</td><td>backend+quant</td><td>Every publish appends a row with full factor JSON + reference price; backfill fills fwd returns; the calibration clock starts</td><td class="mono">FR-SIGNAL-2/3</td></tr>
+      <tr><td class="num">R1.6</td><td><b>Pulled forward:</b> prompt shrink 40k→≤5k tokens (LLM egress ≈ 1 GB/mo) + fail-closed daily request counter at ~80% of the live-verified cap</td><td>backend+quant</td><td>Prompt bytes measured before/after; setup quality spot-checked on 10 cycles; counter trip → 503 new + refund mid-scan, ops log names the cap</td><td class="mono">analysis_agent.py:1316</td></tr>
+      <tr><td class="num">R1.7</td><td><b>Redis eviction hardening:</b> candle bus messages persist=False; engine:on re-asserted; startup asserts cadence ≤ session cycle</td><td>backend</td><td>Queue payloads stop accumulating in the 25MB LRU; synthetic eviction of engine:on self-heals in ≤1 min</td><td class="mono">message_bus.py:120</td></tr>
     </table>
   </div>
   <div class="footer"><span class="brand"><b>CryptAI</b> · roadmap</span><span>06 · 3</span></div>
@@ -107,14 +109,14 @@
   <div class="body">
     <table>
       <tr><th style="width:5%">ID</th><th style="width:34%">Task</th><th style="width:9%">Team</th><th style="width:36%">Definition of done</th><th style="width:16%">Anchor</th></tr>
-      <tr><td class="num">R2.1</td><td>Plan model v2: session policy per tier (slots/day, slot minutes, channels, async flag, concurrency) + lite/pro_max entries; per-plan quota resolution in SessionManager; <b>slot-count metering</b></td><td>backend</td><td>Free = 2 slots × 30 min, fixed grant, reset 00:00 IST; a 3rd start refuses with a structured reason; paid tiers dormant behind config</td><td class="mono">plans.py:57-79 · session_manager.py:316</td></tr>
-      <tr><td class="num">R2.2</td><td><b>Focus lock</b>: session start refused while a sync-tier user has an open position; cycle skips synthesis deterministically when at the concurrency cap</td><td>backend</td><td>409 "trade in flight" carries the monitor's live status; no clock ever burns on undeliverable setups</td><td class="mono">server.py:1397 · session_pipeline.py:150</td></tr>
-      <tr><td class="num">R2.3</td><td>Channel tier-gate: free = intraday only (quant verdict); scalp not offered; swing flagged beta</td><td>backend</td><td>start(channel) validates against plan.allowed_channels; UI shows why a channel is locked</td><td class="mono">preferences.py:29</td></tr>
-      <tr><td class="num">R2.4</td><td><b>Monitors + paper desks survive restart</b>: rehydrate per-user engines from Redis/Postgres on daemon boot</td><td>backend</td><td>Kill the daemon mid-trade → on boot the monitor reattaches and the desk balance is intact; test with a real restart</td><td class="mono">multi_user_daemon.py:778</td></tr>
-      <tr><td class="num">R2.5</td><td>Onboarding steps 3–5 (capital → risk cards → monthly range) + Google-first reorder; capital finally gets a UI</td><td>frontend</td><td>All five answers persist to preferences; resume-at-step works; consequence copy on every choice</td><td class="mono">onboarding/page.tsx · TradingPersona.tsx</td></tr>
+      <tr><td class="num">R2.1</td><td><b>Rehydration first (was R2.4):</b> engines rebuilt on boot from <b>Postgres</b> — positions, <b>SL/TP bracket legs OCO-linked, original leverage</b> (trade rows carry all three), desk balance; monitors reattach</td><td>backend</td><td>Kill the daemon mid-trade → monitor reattaches, a post-restart stop cross <b>actually fills</b>, balance intact</td><td class="mono">paper_trading_engine.py:784</td></tr>
+      <tr><td class="num">R2.2</td><td>Plan model v2 + <b>slot metering v2</b>: slot spent on <b>proposal delivery</b> (bounded ~10-min scan auto-returns it; ≤3 scans/day); slot-native refunds (CAPACITY_LOST re-opens its slot with the <i>remaining</i> grant); transactional consumption + one-active-session unique index; usage derived, no stored counter; boundary UTC, rendered local; sweeper ends disconnected sessions past grant</td><td>backend</td><td>Capacity flap ×5 mints no extra scan time; double-tap costs one slot; disconnected session ends at grant; a held slot survives one reset</td><td class="mono">plans.py:57 · session_manager.py:316</td></tr>
+      <tr><td class="num">R2.3</td><td><b>Focus lock</b> (after R2.1): start refused on <b>reconciled Redis+engine</b> positions with zombie auto-drop; async tiers get a <b>held-at-cap unmetered pause state</b> (skipping synthesis alone still burns clock)</td><td>backend</td><td>409 distinguishes "monitored" from "reattaching"; capped async session accrues zero seconds; /api/positions/close stays the escape hatch</td><td class="mono">server.py:1397 · session_pipeline.py:150</td></tr>
+      <tr><td class="num">R2.4</td><td>Channel tier-gate: intraday everywhere; scalp not in the product; swing behind the +6-week validation gate</td><td>backend</td><td>start(channel) validates against plan.allowed_channels; UI says why a channel is locked</td><td class="mono">preferences.py:29</td></tr>
+      <tr><td class="num">R2.5</td><td>Onboarding steps 3–5 (capital → risk cards → <b>monthly risk budget</b>, never a return expectation) + Google-first reorder; desk epochs (capital edits blocked while a position is open)</td><td>frontend</td><td>All answers persist; resume-at-step works; no UI surface suggests a return number</td><td class="mono">onboarding/page.tsx · TradingPersona.tsx</td></tr>
       <tr><td class="num">R2.6</td><td>Hot-window surface: GET /api/pulse (per-symbol + global + "typically active hours" from the session-liquidity clock) + Desk banner + pulse strip</td><td>backend+frontend</td><td>Banner truthful states: hot now / quiet / engine warming / unavailable; never a forward prediction (quant framing)</td><td class="mono">doc 03 slide 7</td></tr>
-      <tr><td class="num">R2.7</td><td>Trade-focus pivot: "watching" phase in the session UI; re-mount ActiveTrades as the focus surface; monitor verdict log via GET /api/monitors</td><td>frontend</td><td>Approve → executing → watching, automatically; verdicts render with reasons; "session over, monitor on duty" state exists</td><td class="mono">SessionPanel.tsx · ActiveTrades.tsx</td></tr>
-      <tr><td class="num">R2.8</td><td>Shrink the 40k-token analysis prompt to ≤5k (pulse summary + structured levels in; raw JSON dumps out); wire or delete the orphaned strategy cache</td><td>backend+quant</td><td>Token/session drops ~8×; setup quality spot-checked against 10 recorded cycles before/after</td><td class="mono">analysis_agent.py:1316-1462</td></tr>
+      <tr><td class="num">R2.7</td><td>Trade-focus pivot — a <b>derived UI state</b> (position + monitor status; the session ENDED at trade_opened). Prerequisite: <b>monitor_events append-only table</b> + events endpoint — the verdict log/exit recap have no backing store today</td><td>backend+frontend</td><td>Approve → executing → watching automatically; verdicts persist across restarts; exit recap reads the trade's event trail from Postgres</td><td class="mono">monitor_worker.py:327</td></tr>
+      <tr><td class="num">R2.8</td><td>Wire or delete the orphaned strategy cache (prompt shrink moved to R1.6)</td><td>backend</td><td>Cache has a caller or is attic'd — never tested-but-unwired</td><td class="mono">llm_cache.py:236</td></tr>
     </table>
   </div>
   <div class="footer"><span class="brand"><b>CryptAI</b> · roadmap</span><span>06 · 4</span></div>
@@ -156,7 +158,7 @@
     </div>
     <div class="card" style="margin-top:13px">
       <h3>R3 + R4 in one line each</h3>
-      <p><b>R3 (trust):</b> retire the static admin token · anonymous fail-closed · WS auth out of the URL · /metrics behind auth · global LLM request counter (fail-closed) · recap cards · forgot-password.
+      <p><b>R3 (trust):</b> retire the static admin token · anonymous fail-closed · WS auth out of the URL · /metrics behind auth · recap cards · forgot-password (the LLM request counter moved up to R1.6).
       <b>R4 (launch):</b> honest free-beta landing (no purchasable pricing) · cohorts of 10/day · product metrics live (activation, slots, approval rate, monitor saves) · hot-window nudge · week-one incident watch.</p>
     </div>
   </div>
@@ -170,8 +172,8 @@
   <div class="body">
     <table>
       <tr><th style="width:13%">Team</th><th style="width:29%">Next</th><th style="width:29%">Then</th><th style="width:29%">Then</th></tr>
-      <tr><td><b>Product</b></td><td>Confirm the 5 founder decisions (doc 02 s7); lock free-tier copy: "2 sessions, one trade, always watched"</td><td>Landing page → honest free-beta; tier ladder as "coming soon"</td><td>Define week-one metric review ritual against the doc-02 targets</td></tr>
-      <tr><td><b>Backend</b></td><td>R0.2–R0.4: stream gate, demand-gate commit, socket fixes</td><td>R1.3–R1.5: Pulse bug, engine enable path, snapshots writer</td><td>R2.1–R2.4: slots, focus lock, channel gate, restart-safe monitors</td></tr>
+      <tr><td><b>Product</b></td><td>Confirm the founder decisions (doc 02 s7); lock free-tier copy: "up to 2 sessions — a slot is only spent when it delivers a trade"</td><td>Landing page → honest free-beta; ladder markets only validated axes</td><td>Define week-one metric review ritual against the doc-02 targets</td></tr>
+      <tr><td><b>Backend</b></td><td><span class="pill ok">R0 DONE</span> → R1.3–R1.5: Pulse bug, engine enable path, snapshots writer</td><td>R1.6–R1.7: prompt shrink, request counter, Redis hardening</td><td>R2.1–R2.4: rehydration, slots v2, focus lock, channel gate</td></tr>
       <tr><td><b>Frontend / UX</b></td><td>Google-first reorder + forgot-password + stale-copy fixes (small, unblocks trust)</td><td>R2.5 onboarding steps + R2.6 hot-window banner</td><td>R2.7 trade-focus pivot + monitor verdict log + recaps</td></tr>
       <tr><td><b>Infra / DevOps</b></td><td>R1.1 resume runbook with the founder; verify bandwidth graph daily for a week</td><td>R1.2 default-branch flip + keepalive + CI cleanup</td><td>Ops rhythm (doc 05 s5) + Sentry free tier when quiet</td></tr>
       <tr><td><b>Quant</b></td><td>R1.5 snapshots writer spec: factor JSON, reference price, backfill horizons</td><td>+6 weeks: re-run walk-forward on live data; hot-hours from logged seasonality</td><td>Proposal→outcome ledger review; go/no-go evidence memo for real-money gate</td></tr>
