@@ -9,6 +9,138 @@ from datetime import datetime
 import pandas as pd
 from loguru import logger
 
+# How many raw bars each timeframe contributes to the PROMPT (not to the detectors —
+# they keep the full window). The indicators/SMC/ICT sections already carry the
+# computed meaning of the older bars; re-sending 1,500 raw candles as indented JSON
+# was ~35 tokens per candle of pure repetition, and it is exactly what pushed a
+# 6-requests-per-cycle pipeline into the free tier's daily request cap (R1.6b).
+RECENT_BARS_IN_PROMPT = 20
+
+
+def _fmt_num(value: Any) -> str:
+    """Compact numeric rendering: 64150.0 -> '64150', 0.2500 -> '0.25'.
+
+    10 significant digits so no real price loses a cent — compaction must never
+    round away information the model is asked to reason about.
+    """
+    try:
+        return f"{float(value):.10g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _short_ts(value: Any) -> str:
+    """'2026-08-24T20:00:00+00:00' -> '2026-08-24T20:00' (candles align to minutes)."""
+    s = str(value)
+    return s[:16] if len(s) > 16 and s[4:5] == "-" and s[10:11] == "T" else s
+
+
+def _candle_lines(tf: str, bars: List[Dict]) -> List[str]:
+    """One timeframe as: a whole-window stats line + the recent bars as CSV rows."""
+    if not bars:
+        return [f"### {tf}: no data"]
+
+    def col(key: str) -> List[float]:
+        out = []
+        for b in bars:
+            try:
+                out.append(float(b[key]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        return out
+
+    highs, lows, closes, opens = col("h"), col("l"), col("c"), col("o")
+    header = f"### {tf} — {len(bars)} bars, {_short_ts(bars[0].get('t'))} → {_short_ts(bars[-1].get('t'))}"
+    if highs and lows and closes and opens:
+        net = (closes[-1] - opens[0]) / opens[0] * 100 if opens[0] else 0.0
+        header += (
+            f" | window high {_fmt_num(max(highs))} low {_fmt_num(min(lows))}"
+            f" | net {net:+.2f}% | last close {_fmt_num(closes[-1])}"
+        )
+
+    lines = [header, f"recent {min(len(bars), RECENT_BARS_IN_PROMPT)} bars (time,open,high,low,close,volume):"]
+    for b in bars[-RECENT_BARS_IN_PROMPT:]:
+        lines.append(
+            f"{_short_ts(b.get('t'))},{_fmt_num(b.get('o'))},{_fmt_num(b.get('h'))},"
+            f"{_fmt_num(b.get('l'))},{_fmt_num(b.get('c'))},{_fmt_num(b.get('v'))}"
+        )
+    return lines
+
+
+def _safe_default(o: Any) -> Any:
+    # Context has already been through _make_serializable upstream; this is the
+    # last-resort catch so a stray numpy/pandas scalar can't kill a live cycle.
+    if hasattr(o, "item"):
+        return o.item()
+    if isinstance(o, pd.Series):
+        return o.tolist()
+    if isinstance(o, pd.DataFrame):
+        return o.to_dict("records")
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    return str(o)
+
+
+def _compact(data: Any) -> str:
+    return json.dumps(data, separators=(",", ":"), default=_safe_default)
+
+
+# Detector sections (SMC/ICT/patterns) emit up to ~10 structures per list per
+# timeframe; the most recent few carry the tradeable information. Keep the newest
+# LIST_CAP and say how many were dropped — the cost law wants the tokens back, the
+# honesty law forbids pretending the omitted structures never existed.
+LIST_CAP = 5
+
+
+def _slim(data: Any) -> Any:
+    """Prompt-display copy of a detector section: recent-N lists, rounded floats.
+
+    Rounding is display-only (the engine keeps full precision): 2 decimals for
+    price-scale values, 4 for ratios/strengths below 10.
+    """
+    if isinstance(data, dict):
+        return {k: _slim(v) for k, v in data.items()}
+    if isinstance(data, list):
+        kept = [_slim(v) for v in data[-LIST_CAP:]]
+        if len(data) > LIST_CAP:
+            kept.insert(0, f"(+{len(data) - LIST_CAP} earlier entries omitted)")
+        return kept
+    if isinstance(data, float):
+        return round(data, 2) if abs(data) >= 10 else round(data, 4)
+    if isinstance(data, str):
+        return _short_ts(data)  # no-op unless the string is ISO-timestamp shaped
+    return data
+
+
+def render_user_message(context: Dict[str, Any]) -> str:
+    """The ONE user-message renderer for analysis LLM calls (all provider tiers).
+
+    Replaces three identical inline builders that dumped the whole context as
+    indent=2 JSON (~40k tokens/call, mostly raw candles). Candles render as a
+    per-timeframe stats line + recent bars in CSV; every other section keeps its
+    full content, just without the indentation tax.
+    """
+    lines = ["Analyze the following market data:", "", "## Market Data"]
+    for tf, bars in (context.get("current_data") or {}).items():
+        lines.extend(_candle_lines(tf, bars if isinstance(bars, list) else []))
+        lines.append("")
+
+    for title, key, slim in (
+        ("## Technical Indicators", "indicators", False),
+        ("## Smart Money Concepts Analysis", "smc_analysis", True),
+        ("## ICT Methodology Analysis", "ict_analysis", True),
+        ("## Chart Patterns", "patterns", True),
+        ("## Historical Context", "historical_context", False),
+    ):
+        section = context.get(key, {})
+        lines.append(title)
+        lines.append(_compact(_slim(section) if slim else section))
+        lines.append("")
+
+    lines.append(str(context.get("task_instructions", "")))
+    return "\n".join(lines)
+
+
 class LLMContextBuilder:
     """
     Builds and optimizes context for LLM analysis

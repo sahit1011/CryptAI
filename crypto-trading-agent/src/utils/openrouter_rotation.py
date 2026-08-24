@@ -69,10 +69,15 @@ def complete_with_rotation(
         # braces so error messages stay log-safe.
         return text.replace("{", "(").replace("}", ")")
 
+    from src.utils.llm_request_budget import record_attempt
+
     last = "no attempts made"
     for model in models:
         status = "ok"
         try:
+            # Counted BEFORE the request departs: a failed/empty attempt still spent
+            # one of the day's requests — that is precisely what the budget meters.
+            record_attempt()
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,

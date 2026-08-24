@@ -259,9 +259,13 @@ def build_openai_compatible_chat(client, models: List[str], max_tokens: int = 40
     import asyncio as _asyncio
 
     async def chat(messages: List[Dict[str, str]]) -> Tuple[str, Any]:
+        from src.utils.llm_request_budget import record_attempt
+
         last_error: Optional[Exception] = None
         for model in models:
             def _call(m=model):
+                # Counted before departure: a failed attempt still spent a request.
+                record_attempt()
                 return client.chat.completions.create(
                     model=m,
                     messages=messages,

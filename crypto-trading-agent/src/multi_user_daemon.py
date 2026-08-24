@@ -79,6 +79,9 @@ class MultiUserTradingDaemon:
         self.pulse_backfill_job = None   # fills forward returns once windows elapse
         self._pulse_log_task: Optional[asyncio.Task] = None
         self._pulse_backfill_task: Optional[asyncio.Task] = None
+        self.llm_budget = None           # daily request budget (R1.6); set once Redis is up
+        self._llm_budget_task: Optional[asyncio.Task] = None
+        self._budget_was_exhausted = False  # log the transition, not every idle cycle
         self._was_on = None  # tracks on/off transitions for one-time log lines
         self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
         # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
@@ -95,6 +98,8 @@ class MultiUserTradingDaemon:
         await self.state_manager.connect()
         from src.core.engine_switch import EngineSwitch
         self.engine_switch = EngineSwitch(self.state_manager.redis)
+        from src.utils.llm_request_budget import LlmRequestBudget
+        self.llm_budget = LlmRequestBudget(self.state_manager.redis)
         plog.info("  └─ ✅ Infrastructure ready", agent="daemon")
 
     async def _add_agent(self, name: str, factory):
@@ -522,6 +527,10 @@ class MultiUserTradingDaemon:
             self._pulse_backfill_task = asyncio.create_task(
                 self.pulse_backfill_job.run(running=lambda: self.running)
             )
+        # Flush in-process LLM attempt counts into the Redis daily budget (R1.6).
+        self._llm_budget_task = None
+        if self.llm_budget is not None:
+            self._llm_budget_task = asyncio.create_task(self._llm_budget_flush_loop())
         # Cadence sanity (R1.7): the UI's staleness check measures against the published
         # SESSION_CYCLE_SECONDS; an analysis cadence slower than the session cycle makes
         # every healthy session look stale. Loud, not fatal — prod must still boot.
@@ -1076,6 +1085,17 @@ class MultiUserTradingDaemon:
         self._switch_seen_at = now
         return True
 
+    async def _llm_budget_flush_loop(self):
+        """Drain record_attempt()'s thread-safe counter into Redis every 30s (R1.6)."""
+        while self.running:
+            try:
+                await asyncio.sleep(30)
+                await self.llm_budget.flush()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[llm-budget] flush loop error: {e}", agent="daemon")
+
     async def _switch_guard_loop(self):
         while self.running:
             try:
@@ -1112,6 +1132,20 @@ class MultiUserTradingDaemon:
         # of demand. Keep-warm is its own opt-in, off by default.
         keep_warm = os.getenv("ANALYSIS_KEEP_WARM", "").strip().lower() == "true"
         demand = await self._has_scan_demand()
+
+        # The daily request budget outranks demand (R1.6): once the free-tier cap is
+        # spent, another cycle buys 6 more requests toward an escalating provider
+        # block — the capacity gate is refusing NEW scans on the same signal, and the
+        # tick loop refunds running ones, so skipping here completes the fail-closed
+        # triangle without burning anyone's clock.
+        llm_budget = getattr(self, "llm_budget", None)  # None until infra init — fail open
+        if llm_budget is not None and (demand or keep_warm):
+            if await llm_budget.exhausted():
+                if not self._budget_was_exhausted:
+                    plog.warning("⛔ analysis paused — daily LLM request cap reached", agent="daemon")
+                    self._budget_was_exhausted = True
+                return []
+            self._budget_was_exhausted = False
 
         if not demand and not keep_warm:
             if self._was_on is not False:  # log the transition, not every idle cycle
@@ -1221,7 +1255,7 @@ class MultiUserTradingDaemon:
                 await self.monitor_supervisor.stop()
             except Exception as e:
                 plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
-        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task", "_pulse_log_task", "_pulse_backfill_task"):
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task", "_pulse_log_task", "_pulse_backfill_task", "_llm_budget_task"):
             task = getattr(self, task_name, None)
             if task:
                 task.cancel()

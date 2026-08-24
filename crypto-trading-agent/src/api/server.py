@@ -1382,6 +1382,7 @@ CAPACITY_PAUSED = "paused"
 CAPACITY_DEGRADED = "degraded"
 CAPACITY_MODEL_ERROR = "model_error"
 CAPACITY_SIGNAL_STALE = "signal_stale"
+CAPACITY_LLM_BUDGET = "llm_budget"
 
 # Lazy probe for the shared signal plane. Only consulted when SIGNAL_PLANE_ENABLED=true:
 # with the plane demanded, every metered cycle is pulse-gated fail-closed, so a dead or
@@ -1445,6 +1446,18 @@ async def _analysis_capacity() -> Dict[str, Any]:
         )
     ):
         return down(CAPACITY_MODEL_ERROR)
+
+    # Daily LLM request budget (R1.6): once the free-tier request cap is spent, a new
+    # scan meters minutes into cycles the provider will refuse — refuse at the door and
+    # let the tick loop refund running scans. Reads fail toward available (the budget
+    # is a protective rail; its failure mode must never be a second outage).
+    if state_manager is not None and getattr(state_manager, "redis", None) is not None:
+        from src.utils.llm_request_budget import LlmRequestBudget
+        try:
+            if await LlmRequestBudget(state_manager.redis).exhausted():
+                return down(CAPACITY_LLM_BUDGET)
+        except Exception:
+            pass
 
     # With the signal plane demanded, sessions are pulse-gated fail-closed — a stale or
     # absent plane makes every metered cycle a skipped_stale no-op. Refuse at the door

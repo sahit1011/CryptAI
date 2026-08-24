@@ -127,6 +127,11 @@ services:
                                       # while keeping the free 500MB Postgres honest.
       - key: PULSE_BACKFILL_SECONDS   # forward-return evaluation cadence; catch-up-able
         value: "3600"                 # by design (an outage delays it, never loses it).
+      - key: LLM_DAILY_REQUEST_CAP    # fail-closed daily budget on OUTBOUND LLM attempts
+        value: "800"                  # (~80% of the credited 1,000/day OpenRouter cap —
+                                      # verify the live number, then tune). At the cap:
+                                      # new scans 503, running scans refund, ops log
+                                      # names the cause.
       - key: DAEMON_DISABLE_AGENTS    # chromadb + ONNX embeddings don't fit a 512MB free
         value: "memory"               # instance (and re-download on every deploy). Regime
                                       # falls back to the analysis agent's estimate.
