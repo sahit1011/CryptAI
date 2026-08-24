@@ -119,7 +119,7 @@ pub async fn bootstrap_history(
     store: &Arc<RwLock<FeatureStore>>,
     symbols: &[String],
     limit: usize,
-) -> usize {
+) -> (usize, Option<i64>) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -140,9 +140,13 @@ pub async fn bootstrap_history(
                 Ok(resp) => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    if ban_until_ms(status.as_u16(), &body, now_ms()).is_some() {
-                        error!("bootstrap aborted: venue rate limit/ban ({status}) — hammering through a ban escalates it; the kline poller backfills once it lifts");
-                        return loaded;
+                    if let Some(until) = ban_until_ms(status.as_u16(), &body, now_ms()) {
+                        error!(
+                            "bootstrap aborted: venue rate limit/ban ({status}) — hammering \
+                             through a ban escalates it; the caller retries after it lifts \
+                             (the kline poller alone cannot rebuild DEEP history)"
+                        );
+                        return (loaded, Some(until));
                     }
                     warn!("bootstrap {symbol} {tf}: HTTP {status}");
                     continue;
@@ -177,7 +181,7 @@ pub async fn bootstrap_history(
         }
         info!("bootstrapped history for {symbol}");
     }
-    loaded
+    (loaded, None)
 }
 
 // ---------------------------------------------------------------- perp state

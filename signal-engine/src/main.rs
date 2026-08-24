@@ -77,8 +77,34 @@ async fn main() {
     // Backfill first. Without it the 4h timeframe would need weeks of uptime before the
     // engine could score anything, and every pulse until then would be an
     // InsufficientHistory veto — correct, but useless.
+    // Bootstrap MUST eventually succeed: the score loop cannot warm the 1h/4h
+    // timeframes from forward polling alone (that would take days), so an aborted
+    // bootstrap — e.g. the host's shared egress IP is rate-limit banned at the venue,
+    // seen live on first deploy — retries after the ban lifts instead of giving up.
+    // Until it succeeds the engine publishes nothing, consumers' staleness gates hold,
+    // and sessions fail closed: cold and honest beats warm and wrong.
     info!("bootstrapping history over REST...");
-    let loaded = bootstrap_history(&store, &symbols, 500).await;
+    let mut bootstrap_shutdown = shutdown_rx.clone();
+    let loaded = loop {
+        let (loaded, ban_until) = bootstrap_history(&store, &symbols, 500).await;
+        if loaded > 0 {
+            break loaded;
+        }
+        let wait_ms = ban_until
+            .map(|until| (until - now_ms()).clamp(60_000, 3_600_000))
+            .unwrap_or(300_000);
+        warn!(
+            "bootstrap loaded nothing — retrying in {}s (venue ban or outage)",
+            wait_ms / 1000
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(wait_ms as u64)) => {}
+            _ = bootstrap_shutdown.changed() => {
+                info!("shutdown during bootstrap wait");
+                return;
+            }
+        }
+    };
     info!("bootstrapped {loaded} bars");
 
     // Closed bars by REST at each timeframe boundary (R1.4) — the kline websocket
