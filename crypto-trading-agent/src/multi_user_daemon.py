@@ -76,7 +76,9 @@ class MultiUserTradingDaemon:
         self._switch_always_on = False   # did we last see the switch ON with no timer?
         self._switch_seen_at = 0.0
         self.pulse_log_writer = None     # calibration log (R1.5); set when plane is live
+        self.pulse_backfill_job = None   # fills forward returns once windows elapse
         self._pulse_log_task: Optional[asyncio.Task] = None
+        self._pulse_backfill_task: Optional[asyncio.Task] = None
         self._was_on = None  # tracks on/off transitions for one-time log lines
         self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
         # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
@@ -363,6 +365,42 @@ class MultiUserTradingDaemon:
                     interval_s=float(os.getenv("PULSE_SNAPSHOT_SECONDS", "300")),
                 )
 
+                # The backfill half of the calibration loop: fills each snapshot's
+                # forward returns once its windows have elapsed. Reads self.data_agent
+                # AT CALL TIME — the agents initialize after this method runs.
+                from src.core.pulse_backfill import PulseBackfillJob
+
+                async def _fetch_15m_closes(symbol: str, since_ms: int, until_ms: int):
+                    import pandas as pd
+
+                    agent = self.data_agent
+                    if agent is None:
+                        return []
+                    bars_needed = int((until_ms - since_ms) / 900_000) + 3
+                    df = await agent.historical_fetcher.fetch_ohlcv(
+                        symbol=symbol, timeframe="15m", since=since_ms,
+                        limit=min(1000, max(bars_needed, 5)),
+                    )
+                    if df is None or getattr(df, "empty", True):
+                        return []
+                    out = []
+                    for _, row in df.iterrows():
+                        # ccxt stamps the OPEN; forward returns need the CLOSE.
+                        open_ms = int(pd.Timestamp(row["timestamp"]).value // 1_000_000)
+                        out.append({
+                            "ts_ms": open_ms + 900_000,
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "close": float(row["close"]),
+                        })
+                    return out
+
+                self.pulse_backfill_job = PulseBackfillJob(
+                    self.pulse_log_writer.session_factory,
+                    _fetch_15m_closes,
+                    interval_s=float(os.getenv("PULSE_BACKFILL_SECONDS", "3600")),
+                )
+
             self.worker_pool = SessionWorkerPool(
                 self.session_manager,
                 self.preferences_store,
@@ -478,6 +516,11 @@ class MultiUserTradingDaemon:
         if self.pulse_log_writer is not None:
             self._pulse_log_task = asyncio.create_task(
                 self.pulse_log_writer.run(running=lambda: self.running)
+            )
+        self._pulse_backfill_task = None
+        if self.pulse_backfill_job is not None:
+            self._pulse_backfill_task = asyncio.create_task(
+                self.pulse_backfill_job.run(running=lambda: self.running)
             )
         # Cadence sanity (R1.7): the UI's staleness check measures against the published
         # SESSION_CYCLE_SECONDS; an analysis cadence slower than the session cycle makes
@@ -1178,7 +1221,7 @@ class MultiUserTradingDaemon:
                 await self.monitor_supervisor.stop()
             except Exception as e:
                 plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
-        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task", "_pulse_log_task"):
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task", "_pulse_log_task", "_pulse_backfill_task"):
             task = getattr(self, task_name, None)
             if task:
                 task.cancel()

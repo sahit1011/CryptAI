@@ -125,6 +125,8 @@ services:
       - key: PULSE_SNAPSHOT_SECONDS   # calibration-log sampling cadence (FR-SIGNAL-3).
         value: "300"                  # 5-min samples fully cover a 4-12h-horizon score
                                       # while keeping the free 500MB Postgres honest.
+      - key: PULSE_BACKFILL_SECONDS   # forward-return evaluation cadence; catch-up-able
+        value: "3600"                 # by design (an outage delays it, never loses it).
       - key: DAEMON_DISABLE_AGENTS    # chromadb + ONNX embeddings don't fit a 512MB free
         value: "memory"               # instance (and re-download on every deploy). Regime
                                       # falls back to the analysis agent's estimate.
