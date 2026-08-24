@@ -23,7 +23,38 @@ use tracing::{error, info, warn};
 use crate::feature_store::{BookTop, FeatureStore, TIMEFRAMES};
 use crate::indicators::Candle;
 
-const REST_BASE: &str = "https://api.binance.com/api/v3";
+/// Public market data goes through Binance's DATA MIRROR, not api.binance.com: the
+/// per-IP request-weight budget on the main API is shared with every other tenant on
+/// the host's egress IP (a cloud box got this engine 418-banned within minutes of its
+/// first deploy, at ~48 weight/min of its own usage against a 6,000/min budget). The
+/// mirror exists precisely for public data consumers and serves identical /api/v3
+/// endpoints. Funding/OI stay on fapi (no mirror exists) at one poll a minute.
+const REST_BASE: &str = "https://data-api.binance.vision/api/v3";
+
+/// How long to stay away after the venue says go away (ms since epoch), or None for a
+/// non-rate-limit status. 418 means an active IP ban — CONTINUING TO SEND requests
+/// while banned is what escalates bans (2min → 3 days), so callers must actually wait.
+pub fn ban_until_ms(status: u16, body: &str, now_ms: i64) -> Option<i64> {
+    if status != 418 && status != 429 {
+        return None;
+    }
+    // Binance embeds the expiry: "... IP banned until 1787609279289."
+    if let Some(idx) = body.find("banned until ") {
+        let digits: String = body[idx + "banned until ".len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(ts) = digits.parse::<i64>() {
+            if ts > now_ms {
+                // Cap at an hour: a clock-skewed or garbage timestamp must not
+                // silence the feed for days.
+                return Some(ts.min(now_ms + 3_600_000));
+            }
+        }
+    }
+    // No parseable expiry: back off hard on a ban, gently on a rate limit.
+    Some(now_ms + if status == 418 { 600_000 } else { 60_000 })
+}
 
 // ---------------------------------------------------------------- parsing
 
@@ -99,13 +130,23 @@ pub async fn bootstrap_history(
         for (tf, _) in TIMEFRAMES {
             let url = format!("{REST_BASE}/klines?symbol={symbol}&interval={tf}&limit={limit}");
             let rows: Vec<serde_json::Value> = match client.get(&url).send().await {
-                Ok(resp) => match resp.json().await {
+                Ok(resp) if resp.status().is_success() => match resp.json().await {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("bootstrap {symbol} {tf}: bad JSON: {e}");
                         continue;
                     }
                 },
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    if ban_until_ms(status.as_u16(), &body, now_ms()).is_some() {
+                        error!("bootstrap aborted: venue rate limit/ban ({status}) — hammering through a ban escalates it; the kline poller backfills once it lifts");
+                        return loaded;
+                    }
+                    warn!("bootstrap {symbol} {tf}: HTTP {status}");
+                    continue;
+                }
                 Err(e) => {
                     warn!("bootstrap {symbol} {tf}: {e}");
                     continue;
@@ -254,6 +295,7 @@ pub async fn poll_book_tops(
 
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut banned_until: i64 = 0;
 
     loop {
         tokio::select! {
@@ -264,7 +306,20 @@ pub async fn poll_book_tops(
             }
         }
 
-        let tops = fetch_book_tops(&client, &url, &symbols_param).await;
+        if now_ms() < banned_until {
+            continue; // sit out the ban — polling through it is what escalates it
+        }
+
+        let (tops, ban) = fetch_book_tops(&client, &url, &symbols_param).await;
+        if let Some(until) = ban {
+            banned_until = until;
+            warn!(
+                "book poll pausing {}s: venue rate limit/ban — pulses will go stale and \
+                 sessions will fail closed until it lifts (the designed outcome)",
+                (until - now_ms()) / 1000
+            );
+            continue;
+        }
         if tops.is_empty() {
             // A failed poll is survivable: the previous book stands and the staleness
             // gate takes over if the outage outlives the budget. That is the honest
@@ -285,12 +340,12 @@ async fn fetch_book_tops(
     client: &reqwest::Client,
     url: &str,
     symbols_param: &str,
-) -> Vec<(String, BookTop)> {
+) -> (Vec<(String, BookTop)>, Option<i64>) {
     let response = match client.get(url).query(&[("symbols", symbols_param)]).send().await {
         Ok(r) => r,
         Err(e) => {
             warn!("book poll failed: {e}");
-            return Vec::new();
+            return (Vec::new(), None);
         }
     };
 
@@ -307,21 +362,21 @@ async fn fetch_book_tops(
             "book poll rejected ({status}): {} — the feed heartbeat depends on this call",
             body.chars().take(200).collect::<String>()
         );
-        return Vec::new();
+        return (Vec::new(), ban_until_ms(status.as_u16(), &body, now_ms()));
     }
 
     let body: serde_json::Value = match response.json().await {
         Ok(v) => v,
         Err(e) => {
             warn!("book poll: bad JSON: {e}");
-            return Vec::new();
+            return (Vec::new(), None);
         }
     };
 
     let now = now_ms();
     let Some(rows) = body.as_array() else {
         warn!("book poll: expected an array, got something else");
-        return Vec::new();
+        return (Vec::new(), None);
     };
 
     let mut out = Vec::new();
@@ -346,7 +401,7 @@ async fn fetch_book_tops(
             },
         ));
     }
-    out
+    (out, None)
 }
 
 async fn fetch_funding(client: &reqwest::Client, symbol: &str) -> Option<f64> {
@@ -403,6 +458,7 @@ pub async fn poll_klines(
         symbols.len(),
         TIMEFRAMES.len()
     );
+    let mut banned_until: i64 = 0;
 
     loop {
         tokio::select! {
@@ -414,6 +470,9 @@ pub async fn poll_klines(
         }
 
         let now = now_ms();
+        if now < banned_until {
+            continue; // sit out the ban; missed boundaries refetch afterwards
+        }
         for &(tf, _) in TIMEFRAMES {
             let Some(tf_ms) = tf_millis(tf) else { continue };
             let boundary = latest_closed_boundary(now, tf_ms, KLINE_SETTLE_MS);
@@ -438,7 +497,12 @@ pub async fn poll_klines(
                         }
                     },
                     Ok(resp) => {
-                        warn!("kline poll {symbol} {tf}: HTTP {}", resp.status());
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        warn!("kline poll {symbol} {tf}: HTTP {status}");
+                        if let Some(until) = ban_until_ms(status.as_u16(), &body, now_ms()) {
+                            banned_until = until;
+                        }
                         continue;
                     }
                     Err(e) => {
@@ -463,6 +527,9 @@ pub async fn poll_klines(
 
                 // Stay well inside the public REST weight limit.
                 tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+            if now_ms() < banned_until {
+                break; // ban hit mid-round: leave last_fetched so this boundary refetches
             }
             last_fetched.insert(tf, boundary);
         }
@@ -553,5 +620,31 @@ mod tests {
         let b1 = latest_closed_boundary(1_700_000_000_000, tf, 3_000);
         let b2 = latest_closed_boundary(1_700_000_000_000 + tf, tf, 3_000);
         assert_eq!(b2 - b1, tf);
+    }
+
+    // ---- ban handling (the thing that keeps a rate limit from becoming a 3-day ban) --
+
+    #[test]
+    fn a_ban_with_an_expiry_is_honored_but_capped() {
+        let now = 1_700_000_000_000;
+        let body = r#"{"code":-1003,"msg":"Way too much request weight used; IP banned until 1700000500000."}"#;
+        assert_eq!(ban_until_ms(418, body, now), Some(1_700_000_500_000));
+        // A garbage far-future expiry must not silence the feed for days.
+        let far = r#"{"msg":"IP banned until 1900000000000."}"#;
+        assert_eq!(ban_until_ms(418, far, now), Some(now + 3_600_000));
+    }
+
+    #[test]
+    fn bans_without_expiries_back_off_hard_and_rate_limits_gently() {
+        let now = 1_700_000_000_000;
+        assert_eq!(ban_until_ms(418, "teapot", now), Some(now + 600_000));
+        assert_eq!(ban_until_ms(429, "slow down", now), Some(now + 60_000));
+    }
+
+    #[test]
+    fn ordinary_statuses_are_not_bans() {
+        for status in [200u16, 400, 404, 500, 503] {
+            assert_eq!(ban_until_ms(status, "whatever", 0), None);
+        }
     }
 }

@@ -10,6 +10,7 @@ under multi-user load and errors on stale connections after idle periods.
   pool_size/overflow — bound concurrent connections (Supabase pooler + our own cap)
 """
 import os
+from uuid import uuid4
 
 
 def pool_kwargs() -> dict:
@@ -42,5 +43,15 @@ def async_pool_kwargs() -> dict:
     harmless on a direct or session-mode connection, so it ships ahead of the URL switch.
     """
     kw = pool_kwargs()
-    kw["connect_args"] = {"statement_cache_size": 0}
+    kw["connect_args"] = {
+        "statement_cache_size": 0,
+        # statement_cache_size=0 stops asyncpg's OWN cache, but SQLAlchemy's asyncpg
+        # adapter still PREPARES named statements per execute with sequential names
+        # (__asyncpg_stmt_N__). Two pooled clients multiplexed onto one server
+        # connection race those names — seen live 2026-08-24 as
+        # DuplicatePreparedStatementError ("already exists", the mirror image of the
+        # "does not exist" this function already guards). Unique names remove the
+        # collision entirely; harmless on direct connections.
+        "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
+    }
     return kw
