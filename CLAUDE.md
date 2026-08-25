@@ -12,7 +12,13 @@ it is accurate and worth reading before touching `crypto-trading-agent/src`.
 2. `docs/ARCHITECTURE.md` — what the code actually does today (verified 2026-08-11).
 3. `docs/PRD_CURRENT_STATE.md` + `docs/HLD.md` — the 2026-08-02 baseline + FR-* target
    design. Still authoritative for anything the plan docs don't cover.
+4. `backtest-lab/FINDINGS.md` — the committed quant evidence ledger (what has been
+   tested offline, what it licenses, what it forbids). Authoritative for strategy claims.
 Superseded docs live in **`_attic/`** (see its README) — never cite them as current.
+
+**Queue status (2026-08-25):** R0 ✅ · R1 ✅ (all of R1.2–R1.7) · R2.1 ✅ rehydration ·
+S1/S2 strategy split scaffolded (S1 flag OFF, awaiting lab evidence). **Next: R2.2**
+slot metering v2 — a slot is spent on PROPOSAL DELIVERY, not session start.
 
 ## ⚠️ Branches: work on `fix/m1-foundation-bugs`
 
@@ -26,10 +32,17 @@ Reality (verified 2026-08-24):
   default to the m1 line is task R1.2.
 - `feat/m0-foundation`, `main` — historical; do not build on them.
 
-**Production is SUSPENDED** (Render bandwidth overage, 2026-08-10). Do NOT resume it
-before task R0.2 (DataAgent stream gate) merges — resume auto-deploys HEAD and the
-still-unfixed always-on streams (~2.2 GB/day vs a 167 MB/day budget) re-suspend the
-workspace within days. Full runbook: plan doc 05, slide 4.
+**Production is LIVE and healthy** (restored 2026-08-24 after the Aug-10 bandwidth
+suspension; R0 + R1 + R2.1 deployed). What is live: demand-gated streams, the Rust
+engine publishing `market:pulse:*` every 5s with `SIGNAL_PLANE_ENABLED=true`, the
+calibration ledger writing `pulse_snapshots`, the daily LLM request budget, and
+engine rehydration. Ops via `scripts/render_ops.py` (status/set-env/resume/verify).
+
+Two things that look like incidents but are not:
+- **Every deploy reboot eats a ~15-minute Binance 418 on the shared Render IP.** The
+  engine sits the ban out and retries bootstrap until it succeeds (observed working
+  in prod twice). Boot-time 418s are expected; only a ban that never clears is news.
+- **Free tier sleeps after ~15 min idle**; the GitHub keepalive cron is load-bearing.
 
 ## Layout
 ```
@@ -83,11 +96,10 @@ relative to v2 and wastes CI minutes; deleting it is a safe cleanup.
 
 ## Verification
 `.claude/verify.sh` gates every turn in **~38s**. Four checks:
-frontend typecheck · 99 frontend unit tests · backend import smoke · 687 backend tests.
-Signal-engine changes additionally need `cargo test` (126 tests) — cargo is NOT on the
+frontend typecheck · 99 frontend unit tests · backend import smoke · 796 backend tests.
+Signal-engine changes additionally need `cargo test` (129 tests) — cargo is NOT on the
 default PATH; use the rustup shims at `/opt/homebrew/opt/rustup/bin` (pinned 1.97.1).
-Known standing failure: `cargo clippy -D warnings` fails on one `.last()`→`.next_back()`
-lint at `signal-engine/src/feature_store.rs:158` — a one-line fix when touched.
+`cargo clippy --all-targets -- -D warnings` is CLEAN as of 2026-08-25; keep it that way.
 
 Not covered, and why:
 - `npm run build` — ~60s. Run before pushing.
@@ -107,8 +119,8 @@ tests pass; nothing was weakened.
 Keep this pattern: never `sleep()` to wait out a cooldown, expiry, or retry window.
 Rewind the stored timestamp or inject the clock.
 
-**Remaining (re-counted 2026-08-24):** 188 tests are quarantined as "stale, drifted from
-the current API" (see `tests/conftest.py`) out of 878 collected — 687 pass. ~21% of the
+**Remaining (re-counted 2026-08-25):** 191 tests are quarantined as "stale, drifted from
+the current API" (see `tests/conftest.py`) out of 987 collected — 796 pass. ~19% of the
 suite provides no protection — a standing correctness gap. Un-quarantine incrementally.
 Never un-quarantine by loosening an assertion.
 
@@ -203,6 +215,42 @@ bugs at the boundary — the fix is one wholesale migration across all money col
 4. **The honesty law:** no fabricated numbers in the UI; regime is never mapped to a
    trade direction (empirically refuted); no forward "hottest hour" claims until logged
    calibration data earns them.
+
+The wiring law has a corollary the ledger P0 earned (2026-08-25): **when a component
+is made optional, check what else was riding on it.** `DAEMON_DISABLE_AGENTS=memory`
+(needed — chromadb won't fit 512MB) silently removed the ONLY subscriber to
+`memory_agent_inbox`, so production persisted **zero trade rows** for weeks: no user
+journal, no outcome ledger, nothing for rehydration to restore. `src/core/trade_ledger.py`
+is now the non-optional row-persistence core; exactly one of it or `MemoryAgent`
+subscribes (both would double-insert). Before disabling anything, grep for its
+subscriptions and constructor side effects.
+
+## Persistence & restart (R2.1, live 2026-08-25)
+Restarts are routine on free tier (deploys, crashes, sleep/wake), so **rows are the
+source of truth and Redis is a display cache to be converged, never believed.**
+- `src/core/rehydration.py` rebuilds each paper desk from `trades` (open = `exit_time
+  IS NULL`; `status` now written too but historical rows predate it). Positions use
+  `POS_{trade_id}` — the close path strips that prefix to find the row, so any other
+  convention updates the WRONG trade. SL/TP legs are re-placed through the engine's
+  own order methods so the tick loop fills them identically to live ones.
+- **Trading is blocked per-user until their pass completes** (`UserSession.rehydrated`
+  tri-state; `None` = no regime, `False` = pending/failed → bookings refused, `True` =
+  done). Failures fail CLOSED and are isolated per tenant.
+- Boot order in `MultiUserTradingDaemon.start()` is load-bearing and tripwired by
+  `tests/test_rehydration.py::test_boot_ordering_is_wired`: rehydrate AFTER
+  `initialize_multi_user()`, BEFORE the `user_commands` subscribe, the tick loop, the
+  stream gate, and `MonitorSupervisor(` construction.
+- `scripts/verify_trade_ledger.py` proves the write path against real Postgres inside
+  an always-rolled-back transaction (the unit tests use sqlite).
+
+## The offline quant lab (`backtest-lab/`, never shipped)
+Excluded from the Docker image; own venv (nautilus 1.x installed, unused so far);
+`data/`+`results/` gitignored and regenerable via `download_klines.sh`. It imports
+strategy math **from `crypto-trading-agent/src/`** so evidence is about shipped code.
+`FINDINGS.md` is the committed ledger — read it before proposing strategy work, and
+**pre-register the next experiment there before running it** (no threshold sweeps
+after the fact). Current verdict: S1's absorption→flip confirmation is a real
+*filter* but no implementable entry captures it; `S1_ENABLED` stays false.
 
 ## Money safety — read before touching execution
 This system can place real futures orders. Two independent gates, both fail-closed:
