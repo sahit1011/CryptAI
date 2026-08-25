@@ -460,3 +460,22 @@ async def test_addon_order_is_rejected_and_costs_nothing():
                                 reduce_only=True)
     assert close["status"] == "FILLED"
     assert e.positions == {}
+
+
+@pytest.mark.asyncio
+async def test_seeded_engines_produce_identical_fills():
+    """Slippage used module-level `random`, so two identical runs disagreed and any
+    other caller's random.seed() could perturb fill prices. Per-engine seeded RNG
+    makes replays and tests reproducible."""
+    from src.execution.paper_trading_engine import (
+        OrderSide, OrderType, PaperTradingEngine,
+    )
+
+    async def fill_price(seed):
+        e = PaperTradingEngine(initial_balance=100_000.0, rng_seed=seed)
+        await e.check_limit_orders("BTCUSDT", 100.0)
+        r = await e.place_order("BTCUSDT", OrderSide.BUY, OrderType.MARKET, 1.0)
+        return float(r["avgPrice"])
+
+    assert await fill_price(1234) == await fill_price(1234)   # reproducible
+    assert await fill_price(1234) != await fill_price(9999)   # and still random

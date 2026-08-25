@@ -168,16 +168,29 @@ class PaperPosition:
 
 class PaperTradingEngine:
     """
-    Realistic paper trading engine that mimics BingX exchange behavior
-    
-    Features:
-    - Realistic order fills with slippage
-    - Market impact simulation
-    - Commission fees (0.04% maker, 0.06% taker)
-    - Position tracking
-    - Stop-loss and take-profit triggers
-    - Order book depth simulation
+    Paper trading engine with a BingX-shaped API.
+
+    What it actually models:
+    - Order fills with a RANDOM slippage draw from `slippage_range` (see below)
+    - Commission fees (maker/taker, charged on every fill)
+    - Netted position tracking, one position per symbol
+    - Resting stop-loss / take-profit legs triggered by fed prices
     - Real-time event publishing to MessageBus
+
+    What it does NOT model, despite an earlier docstring claiming otherwise:
+    **no market-impact simulation and no order-book-depth simulation.** Slippage is
+    a uniform random draw unrelated to order size or book depth, so fills for a
+    $100 and a $100,000 order are statistically identical. Treat paper fill prices
+    as optimistic for anything but small size (honesty law — the false claim was
+    flagged in docs/plan-2026-08/nautilus-memo.md and removed here).
+
+    Margin is also checked only at entry and never reserved across positions; the
+    binding controls on aggregate exposure are the risk layer's portfolio-heat and
+    position-count gates, not this engine.
+
+    Randomness is per-engine and seedable (`rng_seed`) so replays and tests are
+    reproducible; module-level `random` was previously used, which made two
+    identical runs disagree.
     """
     
     def __init__(
@@ -191,7 +204,13 @@ class PaperTradingEngine:
         state_manager: Optional[Any] = None,  # CRITICAL FIX: Add StateManager
         leverage: int = 10,  # Default leverage
         user_id: Optional[str] = None,  # owning tenant (multi-user); falls back to env
+        rng_seed: Optional[int] = None,  # slippage RNG seed; None = system entropy
     ):
+        # Per-engine RNG so slippage draws are reproducible when seeded (offline
+        # replays, deterministic tests) and independent between tenants. Module-level
+        # `random` made two identical runs disagree and let any other caller's
+        # random.seed() perturb fill prices.
+        self._rng = random.Random(rng_seed)
         # Owning tenant: published updates + persisted state are namespaced to this user
         # so multiple per-user engines never share state. Falls back to BOT_USER_ID for
         # the single-bot deployment.
@@ -262,9 +281,9 @@ class PaperTradingEngine:
         
         # Market orders have more slippage
         if order_type == OrderType.MARKET:
-            base_slippage = random.uniform(self.slippage_range[0] * 2, self.slippage_range[1] * 2)
+            base_slippage = self._rng.uniform(self.slippage_range[0] * 2, self.slippage_range[1] * 2)
         else:
-            base_slippage = random.uniform(self.slippage_range[0], self.slippage_range[1])
+            base_slippage = self._rng.uniform(self.slippage_range[0], self.slippage_range[1])
         
         # Slippage direction depends on side
         return base_slippage if side == OrderSide.BUY else -base_slippage
@@ -456,8 +475,8 @@ class PaperTradingEngine:
         fill_price = order.price
         
         # Small chance of price improvement
-        if random.random() < 0.1:  # 10% chance
-            improvement = random.uniform(0, 0.0002)  # Up to 0.02%
+        if self._rng.random() < 0.1:  # 10% chance
+            improvement = self._rng.uniform(0, 0.0002)  # Up to 0.02%
             if order.side == OrderSide.BUY:
                 fill_price *= (1 - improvement)
             else:
