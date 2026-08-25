@@ -479,3 +479,27 @@ async def test_seeded_engines_produce_identical_fills():
 
     assert await fill_price(1234) == await fill_price(1234)   # reproducible
     assert await fill_price(1234) != await fill_price(9999)   # and still random
+
+
+@pytest.mark.asyncio
+async def test_second_same_way_setup_gets_the_real_reason(store, ledger):
+    """The engine's add-on guard alone would surface as 'entry order rejected —
+    no live market price or exchange error', which is untrue. The booking layer
+    names the actual situation so the UI can too."""
+    bus = CaptureBus()
+    session = _session(bus=bus)
+    await _book_long(session)
+    await _pump(bus, ledger)
+
+    await session.engine.check_limit_orders("BTCUSDT", 100.0)
+    result = await session.evaluate_and_book({
+        "symbol": "BTCUSDT", "direction": "LONG", "entry_price": 100.0,
+        "stop_loss": 95.0, "take_profit_levels": [{"price": 103.0, "size": 1.0}],
+        "confidence_score": 0.9, "recommended_position_size": 10.0, "risk_amount": 50.0,
+    })
+    assert result["approved"] is False
+    reason = " ".join(result["reasons"]).lower()
+    assert "already holding" in reason and "btcusdt" in reason
+    assert "market price" not in reason  # not the misleading generic message
+    # the original position is untouched
+    assert session.engine.positions["BTCUSDT"].quantity == pytest.approx(10.0)

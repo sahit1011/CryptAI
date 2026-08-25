@@ -201,6 +201,23 @@ class UserSession:
                 return {"user_id": self.user_id, "approved": False,
                         "reasons": ["non-positive position size"]}
 
+            # Pre-flight the same-symbol case so the user gets the REAL reason. The
+            # engine also refuses same-direction add-ons (its bracket would be
+            # under-sized), but that path surfaces as a generic "entry order
+            # rejected — no live market price or exchange error", which is simply
+            # untrue here. Checking first also skips the wasted execution attempt.
+            held = getattr(self.engine, "positions", {}).get(setup["symbol"])
+            if held is not None:
+                same_way = str(held.side).upper() == str(setup["direction"]).upper()
+                if same_way:
+                    return {
+                        "user_id": self.user_id, "approved": False,
+                        "reasons": [
+                            f"already holding a {held.side} {setup['symbol']} position "
+                            f"({held.quantity}) — close or scale out before adding"
+                        ],
+                    }
+
             execution = await self.order_manager.execute_trade_setup(
                 symbol=setup["symbol"],
                 direction=setup["direction"],
