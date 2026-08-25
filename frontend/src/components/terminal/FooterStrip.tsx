@@ -5,6 +5,9 @@ import { Value, PnL } from "@/components/ui/value"
 import { useStore } from "@/store/useStore"
 import { useTerminalStore } from "@/store/useTerminalStore"
 import { SYMBOLS } from "@/lib/chart/klines"
+import { API_URL } from "@/lib/api"
+import { describeActivity, type ActivityDisplay, type ActivityTone, type PulseResponse } from "@/lib/pulse"
+import { cn } from "@/lib/utils"
 
 /*
  * FooterStrip — 28px account strip: equity · balance · unrealized · realized ·
@@ -40,6 +43,7 @@ export function FooterStrip() {
             </div>
 
             <div className="flex shrink-0 items-center gap-3">
+                <Activity />
                 <Provenance />
                 <Clock />
             </div>
@@ -66,6 +70,53 @@ function Provenance() {
     return (
         <span className="hidden text-[10px] text-subtle-foreground lg:block" title="Data provenance — what streams vs polls, per symbol">
             {parts.join(" · ")}
+        </span>
+    )
+}
+
+/*
+ * Activity — the measured hour rank plus live tradability, from GET /api/pulse.
+ * All interpretation (including every honesty rule) lives in lib/pulse.ts and is
+ * tested there; this only renders what it returns. Polls slowly on purpose: the
+ * rank changes hourly and the badge is context, not a trading signal.
+ */
+const PULSE_POLL_MS = 60_000
+
+const TONE_CLASS: Record<ActivityTone, string> = {
+    peak: "text-profit",
+    active: "text-info",
+    quiet: "text-subtle-foreground",
+    neutral: "text-subtle-foreground",
+}
+
+function Activity() {
+    const [display, setDisplay] = useState<ActivityDisplay | null>(null)
+
+    useEffect(() => {
+        let cancelled = false
+        const load = async () => {
+            try {
+                const r = await fetch(`${API_URL}/api/pulse`, { cache: "no-store" })
+                const body = r.ok ? ((await r.json()) as PulseResponse) : null
+                if (!cancelled) setDisplay(describeActivity(body))
+            } catch {
+                // A failed request is "unknown", which describeActivity renders honestly.
+                if (!cancelled) setDisplay(describeActivity(null))
+            }
+        }
+        const t = setTimeout(load, 0)
+        const id = setInterval(load, PULSE_POLL_MS)
+        return () => { cancelled = true; clearTimeout(t); clearInterval(id) }
+    }, [])
+
+    if (!display) return null
+    return (
+        <span className="hidden shrink-0 items-baseline gap-1.5 md:flex" title={display.title}>
+            <span className="label-md text-subtle-foreground">{display.label}</span>
+            <span className={cn("num text-[10px]", TONE_CLASS[display.tone])}>{display.rank}</span>
+            {display.live && (
+                <span className="num text-[10px] text-subtle-foreground">{display.live}</span>
+            )}
         </span>
     )
 }
