@@ -337,12 +337,34 @@ class PaperTradingEngine:
             logger.error(f"STOP order requires stop_price")
             return order.to_dict()
         
+        # REFUSE SAME-DIRECTION ADD-ONS instead of silently swallowing them.
+        # _update_position only handles the CLOSING case for an existing position, so
+        # an add-on used to fall through every branch: the position stayed unchanged,
+        # the commission was still charged, and the order was still booked FILLED —
+        # a phantom fill the user paid for. Averaging in is not the fix either: the
+        # existing SL/TP legs are sized for the ORIGINAL quantity, so a bigger
+        # position would be partly unprotected. Fail closed and say why.
+        existing = self.positions.get(symbol)
+        if not reduce_only and existing is not None:
+            adds_to_position = (
+                (existing.side == "LONG" and side == OrderSide.BUY)
+                or (existing.side == "SHORT" and side == OrderSide.SELL)
+            )
+            if adds_to_position:
+                order.status = OrderStatus.REJECTED
+                logger.error(
+                    f"Rejected {side.value} {quantity} {symbol}: would add to the open "
+                    f"{existing.side} position ({existing.quantity}) whose bracket is "
+                    f"sized for the original quantity. Close or scale out first."
+                )
+                return order.to_dict()
+
         # Check balance for new positions
         if not reduce_only:
             # Calculate required margin using leverage
             notional_value = quantity * (price or self.current_prices.get(symbol, 0))
             required_margin = notional_value / self.leverage
-            
+
             if required_margin > self.balance:
                 order.status = OrderStatus.REJECTED
                 logger.error(f"Insufficient balance: ${self.balance:.2f} < ${required_margin:.2f} (Margin for ${notional_value:.2f} @ {self.leverage}x)")

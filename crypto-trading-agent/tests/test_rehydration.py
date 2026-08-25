@@ -425,3 +425,38 @@ async def test_a_profitable_stop_is_still_recorded_as_a_stop(store, ledger):
     row = store.get_recent_trades(user_id="rehydrate-user")[0]
     assert row.pnl > 0
     assert row.exit_reason == "SL_HIT"  # ...and is still, truthfully, a stop
+
+
+# --------------------------------------------------------------------------- #
+# same-direction add-ons are refused, not silently swallowed (money law)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_addon_order_is_rejected_and_costs_nothing():
+    """The old path let an add-on fall through every branch of _update_position:
+    position unchanged, commission still charged, order still booked FILLED — a
+    phantom fill the user paid for. Averaging in isn't the fix either (the existing
+    bracket is sized for the original quantity), so it must fail closed."""
+    from src.execution.paper_trading_engine import (
+        OrderSide, OrderType, PaperTradingEngine,
+    )
+
+    e = PaperTradingEngine(initial_balance=100_000.0, enable_realistic_fills=False)
+    await e.check_limit_orders("BTCUSDT", 100.0)
+    entry = await e.place_order("BTCUSDT", OrderSide.BUY, OrderType.MARKET, 1.0)
+    assert entry["status"] == "FILLED"
+
+    balance, commission = e.balance, e.total_commission
+    addon = await e.place_order("BTCUSDT", OrderSide.BUY, OrderType.MARKET, 1.0)
+
+    assert addon["status"] == "REJECTED"
+    assert e.positions["BTCUSDT"].quantity == pytest.approx(1.0)  # unchanged...
+    assert e.total_commission == commission                        # ...and free
+    assert e.balance == balance
+    assert addon["orderId"] not in e.orders  # never booked
+
+    # reduce-only closes are unaffected by the guard
+    close = await e.place_order("BTCUSDT", OrderSide.SELL, OrderType.MARKET, 1.0,
+                                reduce_only=True)
+    assert close["status"] == "FILLED"
+    assert e.positions == {}
