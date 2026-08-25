@@ -38,10 +38,32 @@ engine publishing `market:pulse:*` every 5s with `SIGNAL_PLANE_ENABLED=true`, th
 calibration ledger writing `pulse_snapshots`, the daily LLM request budget, and
 engine rehydration. Ops via `scripts/render_ops.py` (status/set-env/resume/verify).
 
+**⚠️ The BACKEND auto-deploys from this branch; the FRONTEND does not.** Render
+redeploys `cryptai-backend` on every push to `fix/m1-foundation-bugs`. Vercel's
+`cryptai` project (cryptai-app.vercel.app) has NOT deployed since 2026-08-12 —
+its git integration is not following the active branch (GitHub's default is still
+the stale `v2`, task R1.2). So "pushed" means shipped for the API and NOT shipped
+for the UI. Check `npx vercel ls cryptai` before claiming a UI change is live;
+ship it with `cd frontend && npx vercel --prod` (run `npm run build` first —
+verify.sh deliberately skips it), and roll back with
+`npx vercel rollback <previous-url>`.
+
 Two things that look like incidents but are not:
-- **Every deploy reboot eats a ~15-minute Binance 418 on the shared Render IP.** The
-  engine sits the ban out and retries bootstrap until it succeeds (observed working
-  in prod twice). Boot-time 418s are expected; only a ban that never clears is news.
+- **Every deploy reboot eats a Binance 418 on the shared Render IP** — and it can cost
+  up to ~1h of signal plane, not the ~15 min first observed. Measured 2026-08-25: the
+  plane published for 9 minutes (09:00–09:08), then a deploy restart hit a ban and it
+  recovered at **10:51** — 1h42m later, self-healed, exactly when the engine's computed
+  backoff said (600s → 3302s parsed from the venue's own ban timestamp). Do not
+  intervene; do not add retries. **We are not causing these bans**: bootstrap is 12
+  requests at weight ~24 against a 1200/min limit — other Render tenants on the shared
+  egress IP burn the quota. Consequence to respect: with `SIGNAL_PLANE_ENABLED=true`
+  the pulse gate fail-closes, so no user can start a scan during a ban (they see
+  "Market analysis is offline… your scan time is safe" — correct and honest). **Batch
+  deploys** rather than pushing each commit; each restart re-rolls this dice.
+  A Redis warm-start cache does NOT fix it — pulses carry the market data's `feed_ts`,
+  so cached candles produce pulses the staleness gate rightly rejects (see
+  `staleness_uses_feed_ts_not_computation_ts`). The only real fix is a fallback data
+  venue, which is an open founder decision, not a queued task.
 - **Free tier sleeps after ~15 min idle**; the GitHub keepalive cron is load-bearing.
 
 ## Layout
