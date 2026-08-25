@@ -17,6 +17,20 @@ SETUP = {
 }
 
 
+class AllScanning:
+    """Every tenant has a live session.
+
+    `book_for_all` only fans out to paper users who are personally in a session
+    (see tests/test_consent_gates.py for why). These tests are about fault
+    isolation and analysis-runs-once, so they opt every tenant in explicitly
+    rather than relying on a default that no longer books.
+    """
+
+    @staticmethod
+    def get_active(user_id):
+        return {"session_id": f"s-{user_id}"}
+
+
 def _registry():
     return UserRegistry(
         config_for=lambda uid: UserRiskConfig(
@@ -37,7 +51,10 @@ async def test_shared_setup_books_to_every_tenant():
     reg = _registry()
     await _seed_price(reg.session("userA"))
     await _seed_price(reg.session("userB"))
-    results = await MultiUserExecutor(reg).book_for_all(SETUP)  # one shared setup -> all
+    # AllScanning: this test is about per-tenant ISOLATION of one shared setup, so
+    # both tenants opt in. Consent gating is covered in tests/test_consent_gates.py.
+    results = await MultiUserExecutor(
+        reg, session_manager=AllScanning()).book_for_all(SETUP)  # one setup -> all
     assert {r["user_id"] for r in results} == {"userA", "userB"}
     assert all(r["approved"] for r in results)
     # Each tenant booked into their OWN engine.
@@ -246,7 +263,7 @@ async def test_one_tenant_failure_does_not_abort_others():
     # A malformed setup (missing stop_loss) fails risk/exec but must not raise; both
     # tenants get a captured result.
     bad = {k: v for k, v in SETUP.items() if k != "stop_loss"}
-    results = await MultiUserExecutor(reg).book_for_all(bad)
+    results = await MultiUserExecutor(reg, session_manager=AllScanning()).book_for_all(bad)
     assert len(results) == 2
     assert all(r["approved"] is False for r in results)
 
@@ -263,7 +280,7 @@ async def test_analysis_runs_once_per_cycle_regardless_of_tenant_count():
         calls["n"] += 1          # counts how many times analysis ran this cycle
         return [SETUP]
 
-    coord = MultiUserCoordinator(reg)
+    coord = MultiUserCoordinator(reg, session_manager=AllScanning())
     per_setup_results = await coord.run_cycle(analysis_provider)
     assert calls["n"] == 1                      # analysis computed ONCE...
     assert len(per_setup_results) == 1          # one setup

@@ -13,6 +13,7 @@ import { useMarketStore } from "@/hooks/useMarketData";
 import { useClosedTrades } from "@/hooks/useClosedTrades";
 import { computeTradeStats } from "@/lib/tradeStats";
 import { cn } from "@/lib/utils";
+import { ActivityBadge } from "@/components/dashboard/ui/ActivityBadge";
 
 export function OverviewSection() {
     const { portfolio, activeTrades } = useStore();
@@ -46,6 +47,11 @@ export function OverviewSection() {
                         : "Find a trade that fits your rules, decide on it, and we watch it for you."
                 }
             />
+
+            {/* Market activity BEFORE the scan console: the first question a user has
+                is "is now a good time to spend one of my 30 minutes?". Measured rank,
+                never a forecast (see lib/pulse.ts). */}
+            <ActivityBadge />
 
             {/* The scan console FIRST — this page exists to be acted on. It used to sit
                 below the KPI band, so a new user's first screen was four cards reading

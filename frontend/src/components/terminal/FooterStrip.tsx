@@ -5,9 +5,17 @@ import { Value, PnL } from "@/components/ui/value"
 import { useStore } from "@/store/useStore"
 import { useTerminalStore } from "@/store/useTerminalStore"
 import { SYMBOLS } from "@/lib/chart/klines"
-import { API_URL } from "@/lib/api"
-import { describeActivity, type ActivityDisplay, type ActivityTone, type PulseResponse } from "@/lib/pulse"
+import { useActivity } from "@/components/dashboard/ui/ActivityBadge"
+import { type ActivityTone } from "@/lib/pulse"
 import { cn } from "@/lib/utils"
+
+/** Footer tones: text-only (the desk card carries the dot variant). */
+const TONE_CLASS: Record<ActivityTone, string> = {
+    peak: "text-profit",
+    active: "text-info",
+    quiet: "text-subtle-foreground",
+    neutral: "text-subtle-foreground",
+}
 
 /*
  * FooterStrip — 28px account strip: equity · balance · unrealized · realized ·
@@ -75,40 +83,12 @@ function Provenance() {
 }
 
 /*
- * Activity — the measured hour rank plus live tradability, from GET /api/pulse.
- * All interpretation (including every honesty rule) lives in lib/pulse.ts and is
- * tested there; this only renders what it returns. Polls slowly on purpose: the
- * rank changes hourly and the badge is context, not a trading signal.
+ * Activity — compact variant for the terminal footer. Fetch + interpretation are
+ * shared with the desk card via useActivity/lib/pulse, so the two can never drift
+ * into telling the user different things about the same hour.
  */
-const PULSE_POLL_MS = 60_000
-
-const TONE_CLASS: Record<ActivityTone, string> = {
-    peak: "text-profit",
-    active: "text-info",
-    quiet: "text-subtle-foreground",
-    neutral: "text-subtle-foreground",
-}
-
 function Activity() {
-    const [display, setDisplay] = useState<ActivityDisplay | null>(null)
-
-    useEffect(() => {
-        let cancelled = false
-        const load = async () => {
-            try {
-                const r = await fetch(`${API_URL}/api/pulse`, { cache: "no-store" })
-                const body = r.ok ? ((await r.json()) as PulseResponse) : null
-                if (!cancelled) setDisplay(describeActivity(body))
-            } catch {
-                // A failed request is "unknown", which describeActivity renders honestly.
-                if (!cancelled) setDisplay(describeActivity(null))
-            }
-        }
-        const t = setTimeout(load, 0)
-        const id = setInterval(load, PULSE_POLL_MS)
-        return () => { cancelled = true; clearTimeout(t); clearInterval(id) }
-    }, [])
-
+    const display = useActivity()
     if (!display) return null
     return (
         <span className="hidden shrink-0 items-baseline gap-1.5 md:flex" title={display.title}>

@@ -1245,6 +1245,24 @@ async def set_settings(body: SettingsBody, user_id: str = Depends(require_user))
     """Update the caller's trading mode / active exchange."""
     if user_settings_store is None:
         raise HTTPException(status_code=503, detail="Settings store is not configured")
+    # ENFORCE plan.allow_live. It was defined and unit-tested but read NOWHERE in src/,
+    # so any free-tier user could set themselves to `auto` and have the daemon place
+    # orders on connected keys — the exact capability the tier is meant to withhold.
+    # Fails CLOSED: if the plan cannot be resolved, `auto` is refused rather than
+    # granted (the money law — never widen a gate to get past an error).
+    if (body.trading_mode or "").strip().lower() == "auto":
+        try:
+            from src.billing import plan_for_user
+            allowed = bool((await asyncio.to_thread(plan_for_user, user_id)).allow_live)
+            reason = "your plan does not include automated trading"
+        except Exception as e:
+            logger.warning(f"plan lookup failed for {user_id}: {e}; refusing auto")
+            allowed, reason = False, "plan could not be verified"
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "auto_not_permitted", "message": reason},
+            )
     try:
         return await asyncio.to_thread(
             user_settings_store.set, user_id, body.trading_mode, body.active_exchange,
@@ -2050,6 +2068,24 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
 
     Uses the caller's connected exchange (testnet-gated) if present, else a paper engine.
     """
+    # TRADING MODE IS HONORED HERE TOO. This endpoint used to ignore it entirely,
+    # so `off` meant "the daemon won't auto-trade you" rather than "don't trade my
+    # account" — a user who switched everything off could still place a bracket, and
+    # any UI bug or stale tab could do it for them. Checked before ANY engine is
+    # built so nothing is constructed for a user who has opted out.
+    if user_settings_store is not None:
+        try:
+            mode = (await asyncio.to_thread(user_settings_store.get, user_id)).get(
+                "trading_mode", "paper")
+        except Exception:
+            mode = "paper"  # store unreadable: fall back to the safe default, not to live
+        if mode == "off":
+            raise HTTPException(
+                status_code=409,
+                detail="Trading is switched off for your account. Enable paper, manual, "
+                       "or auto mode in settings first.",
+            )
+
     try:
         from src.core.multi_user import UserSession, UserRiskConfig
         try:

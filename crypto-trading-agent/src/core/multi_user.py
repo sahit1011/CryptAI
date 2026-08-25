@@ -470,15 +470,45 @@ class UserRegistry:
 class MultiUserExecutor:
     """Books one shared setup into every active tenant's portfolio, independently."""
 
-    def __init__(self, registry: UserRegistry):
+    def __init__(self, registry: UserRegistry, session_manager: Optional[Any] = None):
         self.registry = registry
+        # Used to answer "did THIS user ask for anything right now?" — see
+        # book_for_all. Optional so the executor stays constructible in tests and in
+        # deployments without the session plane; absent means paper users are not
+        # fanned out to at all (the quiet, non-surprising default).
+        self.session_manager = session_manager
+
+    def _has_own_session(self, user_id: str) -> bool:
+        """Is this user personally in a live session right now?
+
+        Deliberately per-user. The daemon's `_has_scan_demand` is deployment-GLOBAL
+        ("is anybody scanning"), which is the right question for whether to spend an
+        LLM cycle and the WRONG question for whose account to trade.
+        """
+        if self.session_manager is None:
+            return False
+        try:
+            return bool(self.session_manager.get_active(user_id))
+        except Exception as e:
+            # Fail closed: an unreadable session store must not authorize a booking.
+            logger.warning(f"[multi-user] session check failed for {user_id}: {e}")
+            return False
 
     async def book_for_all(self, setup: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Fan a shared setup out to each active tenant, per their trading mode.
+        """Fan a shared setup out to each tenant who actually asked for one.
 
-        off → ignore; manual → suggestion only (the user places it via /api/execute-setup);
-        paper → book to their paper engine; auto → book to their connected exchange (or
-        paper if none). Isolated + fault-tolerant per tenant.
+        off → ignore. manual → suggestion only (the user places it via
+        /api/execute-setup). paper → book ONLY while that user has a live session.
+        auto → book continuously (that is what auto means).
+
+        WHY PAPER IS SESSION-GATED. `paper` is the DEFAULT mode, and this fan-out is
+        driven by a deployment-global "is anybody scanning" signal. Before this gate,
+        one user starting a session booked trades into every other paper user's desk —
+        people who never started a session, never saw a proposal, and never approved
+        anything found positions waiting for them. That contradicts the entire
+        metered, approval-based product, and "it's only paper money" is not a defence:
+        the whole point of the practice desk is to rehearse the real workflow.
+        Isolated + fault-tolerant per tenant.
         """
         # Defensive: never let a malformed setup abort the fan-out.
         if not isinstance(setup, dict) or not setup.get("symbol"):
@@ -491,6 +521,9 @@ class MultiUserExecutor:
             if mode in ("off", "manual"):
                 skipped += 1
                 continue
+            if mode == "paper" and not self._has_own_session(user_id):
+                skipped += 1
+                continue
             session = self.registry.session(user_id)
             r = await session.evaluate_and_book(setup)
             r["mode"] = mode
@@ -499,7 +532,8 @@ class MultiUserExecutor:
         approved = sum(1 for r in results if r.get("approved"))
         logger.info(
             f"[multi-user] setup {setup.get('symbol')} {setup.get('direction')}: "
-            f"booked {approved}/{len(results)} (skipped {skipped} off/manual)"
+            f"booked {approved}/{len(results)} "
+            f"(skipped {skipped}: off/manual, or paper with no live session)"
         )
         return results
 
@@ -515,9 +549,9 @@ class MultiUserCoordinator:
     analysis pipeline (orchestrator/agents) and the per-user execution layer.
     """
 
-    def __init__(self, registry: UserRegistry):
+    def __init__(self, registry: UserRegistry, session_manager: Optional[Any] = None):
         self.registry = registry
-        self.executor = MultiUserExecutor(registry)
+        self.executor = MultiUserExecutor(registry, session_manager=session_manager)
         self._running = False
 
     async def run_cycle(

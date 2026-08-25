@@ -372,6 +372,14 @@ class MultiUserTradingDaemon:
 
             db_url = self.config.database.postgres_url
             self.session_manager = SessionManager(db_url)
+            # The fan-out must be able to ask "does THIS user have a live session?"
+            # before booking into their paper desk. The coordinator is built earlier
+            # (it only needs the registry), so attach the session store now that it
+            # exists. Without this the executor sees None and — by design — never
+            # fans out to paper users at all, which is the safe direction but would
+            # silently disable the practice desk.
+            if self.coordinator is not None:
+                self.coordinator.executor.session_manager = self.session_manager
             self.preferences_store = PreferencesStore(db_url)
             self.proposal_service = ProposalService(db_url)
             self.setup_cache = SharedSetupCache()

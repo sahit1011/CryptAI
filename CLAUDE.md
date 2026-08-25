@@ -12,7 +12,9 @@ it is accurate and worth reading before touching `crypto-trading-agent/src`.
 2. `docs/ARCHITECTURE.md` — what the code actually does today (verified 2026-08-11).
 3. `docs/PRD_CURRENT_STATE.md` + `docs/HLD.md` — the 2026-08-02 baseline + FR-* target
    design. Still authoritative for anything the plan docs don't cover.
-4. `backtest-lab/FINDINGS.md` — the committed quant evidence ledger (what has been
+4. **`docs/LAUNCH_READINESS.md`** — can a real user actually use this? Journey-by-journey
+   status + the ranked blockers before inviting anyone. Read before any launch claim.
+5. `backtest-lab/FINDINGS.md` — the committed quant evidence ledger (what has been
    tested offline, what it licenses, what it forbids). Authoritative for strategy claims.
 Superseded docs live in **`_attic/`** (see its README) — never cite them as current.
 
@@ -247,6 +249,18 @@ is now the non-optional row-persistence core; exactly one of it or `MemoryAgent`
 subscribes (both would double-insert). Before disabling anything, grep for its
 subscriptions and constructor side effects.
 
+## Consent: an account is only traded when its owner asked
+Three separate paths violated this before 2026-08-25, all the same class of bug — a
+mode or plan flag the product promises but some path never read:
+- `book_for_all` skipped only `off`/`manual`, so `paper` (the DEFAULT) was booked from
+  a deployment-GLOBAL "is anybody scanning" signal. One user's session put positions
+  in every other paper user's desk. **`paper` is now session-gated per user**; `auto`
+  still books continuously because that is what auto means.
+- `/api/execute-setup` never read `trading_mode` — "off" meant "won't auto-trade you".
+- `plan.allow_live` was defined, tested, and enforced nowhere.
+When adding any path that books a trade, ask whose account it lands in and what that
+person actually consented to. `tests/test_consent_gates.py` is the contract.
+
 ## Persistence & restart (R2.1, live 2026-08-25)
 Restarts are routine on free tier (deploys, crashes, sleep/wake), so **rows are the
 source of truth and Redis is a display cache to be converged, never believed.**
@@ -275,10 +289,19 @@ after the fact). Current verdict: S1's absorption→flip confirmation is a real
 *filter* but no implementable entry captures it; `S1_ENABLED` stays false.
 
 ## Money safety — read before touching execution
-This system can place real futures orders. Two independent gates, both fail-closed:
-- `ENABLE_EXECUTION=false` → paper trading. **This is the default. Keep it.**
-- Mainnet additionally requires `LIVE_TRADING_CONFIRMED=true`
-  (`src/execution/live_execution_engine.py`).
+This system can place real futures orders.
+
+**Correction (2026-08-25): there is ONE gate on the multi-user path, not two.**
+`ENABLE_EXECUTION` is read only by `src/main.py` (the legacy single-bot entrypoint) —
+it is dead code for `src/api/server.py` and `src/multi_user_daemon.py`, and is not set
+in production at all. Do not rely on it. What actually holds:
+- `LIVE_TRADING_CONFIRMED=false` ⇒ `LiveExecutionEngine` forces `testnet=True`
+  (`src/execution/live_execution_engine.py:51`). Production: `false`.
+- `POST /api/exchange-keys` refuses non-testnet keys after a real auth probe
+  (`server.py:1180`, `src/execution/credential_check.py`).
+Those two agree today, which is why no real-money order can be placed. If you make
+`ENABLE_EXECUTION` load-bearing, read it in `LiveExecutionEngine.__init__` and add a
+test — otherwise fix the claim, not the reader.
 
 Never flip either to make a test pass or a feature "work". Never widen a risk gate,
 position-size cap, or stop-loss to get green. Default to `USE_TESTNET=true` locally.

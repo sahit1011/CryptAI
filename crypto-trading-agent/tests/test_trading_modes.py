@@ -25,13 +25,24 @@ def _registry(modes):
 
 
 @pytest.mark.asyncio
-async def test_off_and_manual_are_skipped_paper_and_auto_book():
-    modes = {"paper_u": "paper", "off_u": "off", "manual_u": "manual", "auto_u": "auto"}
+async def test_only_auto_and_scanning_paper_users_are_booked():
+    """The mode contract, tightened 2026-08-25.
+
+    Previously `paper` booked unconditionally, which meant one user's session
+    booked trades into every other paper user's desk — people who never started a
+    session, never saw a proposal, never approved. `paper` is now session-gated;
+    `auto` still books continuously because that is what auto means. off/manual
+    unchanged. See tests/test_consent_gates.py for the full contract.
+    """
+    modes = {"paper_scanning": "paper", "paper_idle": "paper",
+             "off_u": "off", "manual_u": "manual", "auto_u": "auto"}
     reg = _registry(modes)
-    results = await MultiUserExecutor(reg).book_for_all(SETUP)
+    sessions = type("S", (), {"get_active": staticmethod(
+        lambda uid: {"session_id": uid} if uid == "paper_scanning" else None)})()
+    results = await MultiUserExecutor(reg, session_manager=sessions).book_for_all(SETUP)
     booked = {r["user_id"] for r in results}
-    # off + manual skipped entirely; paper + auto attempted
-    assert booked == {"paper_u", "auto_u"}
+    assert booked == {"paper_scanning", "auto_u"}
+    assert "paper_idle" not in booked, "an idle paper desk must not be traded"
     assert all(r.get("mode") in ("paper", "auto") for r in results)
 
 
@@ -43,8 +54,15 @@ async def test_auto_without_exchange_builder_falls_back_to_paper():
 
 
 @pytest.mark.asyncio
-async def test_mode_default_is_paper():
+async def test_mode_default_is_paper_and_the_default_does_not_trade_you():
+    """paper is the default, so the default must be QUIET. A brand-new user who has
+    not started a session gets no positions from anyone else's scan."""
     reg = UserRegistry(seed_user_ids=["x"])  # no mode_for -> default paper
     assert reg.mode_for("x") == "paper"
-    results = await MultiUserExecutor(reg).book_for_all(SETUP)
+
+    idle = type("S", (), {"get_active": staticmethod(lambda uid: None)})()
+    assert await MultiUserExecutor(reg, session_manager=idle).book_for_all(SETUP) == []
+
+    scanning = type("S", (), {"get_active": staticmethod(lambda uid: {"session_id": uid})})()
+    results = await MultiUserExecutor(reg, session_manager=scanning).book_for_all(SETUP)
     assert {r["user_id"] for r in results} == {"x"}
