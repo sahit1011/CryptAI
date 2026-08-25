@@ -75,6 +75,11 @@ class Pulse:
     structure: Dict[str, Any]
     context: Dict[str, float]
     reference_price: float
+    # Which venue's candles produced this pulse. Defaults to "binance" for pulses
+    # published before the fallback existed (additive-optional field, so no schema
+    # bump was needed). NEVER guess this per-symbol: it is a provenance label that
+    # the calibration ledger stores and later draws conclusions from.
+    venue: str = "binance"
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -91,6 +96,7 @@ class Pulse:
             structure=dict(data.get("structure") or {}),
             context=dict(data.get("context") or {}),
             reference_price=float(data.get("reference_price") or 0.0),
+            venue=str(data.get("venue") or "binance"),
             raw=data,
         )
 

@@ -22,6 +22,7 @@ use tracing::{error, info, warn};
 
 use signal_engine::feature_store::{FeatureStore, TIMEFRAMES};
 use signal_engine::ingest::{bootstrap_history, now_ms};
+use signal_engine::venue::Venue;
 use signal_engine::publish;
 use signal_engine::pulse::GlobalPulse;
 use signal_engine::scoring::{score, MarketSnapshot, ScoringConfig, TimeframeData};
@@ -85,10 +86,13 @@ async fn main() {
     // and sessions fail closed: cold and honest beats warm and wrong.
     info!("bootstrapping history over REST...");
     let mut bootstrap_shutdown = shutdown_rx.clone();
-    let loaded = loop {
-        let (loaded, ban_until) = bootstrap_history(&store, &symbols, 500).await;
+    let (loaded, active_venue) = loop {
+        let (loaded, ban_until, venue) = bootstrap_history(&store, &symbols, 500).await;
         if loaded > 0 {
-            break loaded;
+            // The venue that answered owns this process's history. Mixing venues within
+            // one symbol's window silently shifts every volume/range factor, so this
+            // choice is sticky until the next restart (see signal_engine::venue).
+            break (loaded, venue.unwrap_or(Venue::Binance));
         }
         let wait_ms = ban_until
             .map(|until| (until - now_ms()).clamp(60_000, 3_600_000))
@@ -105,7 +109,7 @@ async fn main() {
             }
         }
     };
-    info!("bootstrapped {loaded} bars");
+    info!("bootstrapped {loaded} bars from {}", active_venue.name());
 
     // Closed bars by REST at each timeframe boundary (R1.4) — the kline websocket
     // fleet is gone: it pushed intra-bar updates the scorer discarded, at ~0.6GB/mo
@@ -114,6 +118,7 @@ async fn main() {
         Arc::clone(&store),
         symbols.clone(),
         shutdown_rx.clone(),
+        active_venue,
     ));
 
     let perp = tokio::spawn(signal_engine::ingest::poll_perp_state(
@@ -147,6 +152,7 @@ async fn main() {
         tick_ms,
         warmup_bars,
         shutdown_rx,
+        active_venue,
     ));
 
     // Handle both SIGINT and SIGTERM: containers are stopped with SIGTERM, and only
@@ -182,6 +188,8 @@ async fn score_loop(
     tick_ms: u64,
     warmup_bars: usize,
     mut shutdown: watch::Receiver<bool>,
+    // Stamped onto every pulse: which venue's candles these scores were computed from.
+    venue: Venue,
 ) {
     let mut conn = loop {
         match publish::connect(&redis_url).await {
@@ -268,6 +276,7 @@ async fn score_loop(
                     } else {
                         btc_closes.clone()
                     },
+                    venue: venue.name().to_string(),
                 }
             };
 

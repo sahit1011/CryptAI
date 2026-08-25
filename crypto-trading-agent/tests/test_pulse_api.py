@@ -145,3 +145,37 @@ async def test_endpoint_says_unknown_not_calm_when_the_plane_is_down(monkeypatch
     assert body["now"]["age_ms"] > 60_000
     # ...and the measured hour profile still works: it needs no live plane at all.
     assert body["hour"]["of"] == 24
+
+
+# --------------------------------------------------------------------------- #
+# venue provenance (the fallback's honesty requirement)
+# --------------------------------------------------------------------------- #
+
+def test_pulse_carries_venue_and_defaults_honestly():
+    from src.signals.pulse_client import Pulse
+
+    base = {"v": 1, "symbol": "BTCUSDT", "ts": 1, "feed_ts": 1,
+            "regime": "trending_up", "tradability": 50, "reference_price": 100.0}
+    assert Pulse.from_dict({**base, "venue": "bybit"}).venue == "bybit"
+    # Pre-fallback pulses carry no venue; they were Binance, and the default says so
+    # rather than leaving an empty string to propagate into the ledger.
+    assert Pulse.from_dict(base).venue == "binance"
+
+
+def test_calibration_rows_record_the_venue_or_null_never_a_guess():
+    """A calibration query that pools two venues unlabelled draws conclusions from an
+    unmeasured variable. Present -> recorded; absent -> NULL ('unlabelled')."""
+    from src.core.pulse_snapshots import PulseSnapshotWriter
+
+    w = PulseSnapshotWriter.__new__(PulseSnapshotWriter)
+    w._last_feed_ts = {}
+
+    pulse = {"v": 1, "ts": 1_700_000_000_000, "feed_ts": 1_700_000_000_000,
+             "regime": "trending_up", "tradability": 61, "reference_price": 64_000.0}
+
+    rows = w.rows_to_write({"BTCUSDT": {**pulse, "venue": "bybit"}})
+    assert rows[0]["venue"] == "bybit"
+
+    w._last_feed_ts = {}
+    rows = w.rows_to_write({"BTCUSDT": pulse})
+    assert rows[0]["venue"] is None, "an unlabelled pulse must not be attributed"

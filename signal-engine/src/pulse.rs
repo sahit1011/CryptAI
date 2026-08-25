@@ -176,6 +176,16 @@ pub struct Pulse {
     /// Price at `feed_ts`. Persisted with the snapshot so forward returns can be
     /// computed later — without it the score is unfalsifiable.
     pub reference_price: f64,
+    /// WHICH VENUE produced the candles behind this pulse ("binance" | "bybit").
+    ///
+    /// Load-bearing for honesty, not diagnostics: the fallback venue (crate::venue)
+    /// means two different exchanges can source pulses on different days, and the
+    /// calibration ledger draws conclusions from those numbers. An unlabelled venue
+    /// would be an unmeasured variable silently mixed into the evidence base. Added
+    /// WITHOUT bumping SCHEMA_VERSION deliberately: it is additive and optional on
+    /// the read side, so a version bump would only have caused a needless window of
+    /// fail-closed PulseIncompatible right after deploy.
+    pub venue: String,
 }
 
 /// Cross-market aggregate (FR-SIGNAL-2): "is the MARKET hot right now?", computed each
@@ -238,6 +248,7 @@ impl Pulse {
         structure: Structure,
         context: Context,
         reference_price: f64,
+        venue: &str,
     ) -> Self {
         let tradability = if vetoes.is_empty() {
             raw_tradability.clamp(0.0, 100.0).round() as u8
@@ -257,6 +268,7 @@ impl Pulse {
             structure,
             context,
             reference_price,
+            venue: venue.to_string(),
         }
     }
 
@@ -314,6 +326,7 @@ mod tests {
             Structure::default(),
             Context::default(),
             67_000.0,
+            "binance",
         )
     }
 
@@ -392,6 +405,7 @@ mod tests {
             "structure",
             "context",
             "reference_price",
+            "venue",
         ] {
             assert!(json.get(key).is_some(), "contract lost its `{key}` field");
         }

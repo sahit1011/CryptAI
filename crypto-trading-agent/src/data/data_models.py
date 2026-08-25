@@ -500,6 +500,12 @@ class PulseSnapshot(Base):
     context = Column(JSON)         # {atr_pct: .., funding_rate: .., spread_bps: .., ...}
 
     reference_price = Column(Float, nullable=False)   # price at pulse_ts, for fwd returns
+    # WHICH VENUE's candles produced this score. Load-bearing for the evidence base:
+    # the engine falls back from Binance to Bybit when a shared-IP ban blocks the
+    # primary, and pooling two venues' rows without a label would be an unmeasured
+    # variable in every calibration conclusion. Nullable for rows written before the
+    # fallback existed — those are Binance, but NULL says "unlabelled", not "assumed".
+    venue = Column(String(20), index=True)
 
     # Backfilled by the calibration job — null until the window has elapsed.
     fwd_return_15m = Column(Float)

@@ -24,6 +24,7 @@ pub mod pulse;
 pub mod quant;
 pub mod scoring;
 pub mod structure;
+pub mod venue;
 
 pub use indicators::Candle;
 pub use pulse::{Context, Factors, Level, Pulse, Regime, Structure, Veto, SCHEMA_VERSION};

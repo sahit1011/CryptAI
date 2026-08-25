@@ -172,6 +172,8 @@ fn main() {
         let htf = aggregate(history, input.htf_factor);
 
         let snapshot = MarketSnapshot {
+            // Offline replay reads the Binance archive.
+            venue: "binance".to_string(),
             symbol: input.symbol.clone(),
             now_ms: current.close_time,
             feed_ts: current.close_time,

@@ -101,6 +101,19 @@ pub struct SymbolState {
 }
 
 impl SymbolState {
+    /// Drop all candle history for this symbol.
+    ///
+    /// Exists for the venue fallback (see `crate::venue`): before retrying bootstrap
+    /// against a different venue, a partial load from the banned one must go. Two
+    /// venues' bars in one window silently shift every volume- and range-derived
+    /// factor, and `push_candle`'s ordering rules would happily interleave them.
+    /// `last_event_ts` resets too — otherwise a cleared symbol keeps claiming the
+    /// freshness of data that is no longer there.
+    pub fn clear_candles(&mut self) {
+        self.candles.clear();
+        self.last_event_ts = 0;
+    }
+
     /// Append a CLOSED candle, evicting the oldest beyond capacity.
     ///
     /// Re-emission of the same bar is idempotent: Binance sends a final update per bar,

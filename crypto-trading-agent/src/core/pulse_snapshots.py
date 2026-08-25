@@ -92,6 +92,12 @@ class PulseSnapshotWriter:
                 "factors": pulse.get("factors") or {},
                 "context": pulse.get("context") or {},
                 "reference_price": float(reference_price),
+                # Provenance, not decoration: the engine falls back to a second venue
+                # during a shared-IP ban, and a calibration query that pools two
+                # venues unlabelled is drawing conclusions from an unmeasured
+                # variable. Absent on pre-fallback pulses -> stored as NULL
+                # ("unlabelled"), never guessed.
+                "venue": (str(pulse.get("venue")) if pulse.get("venue") else None),
             })
         return rows
 

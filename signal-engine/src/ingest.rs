@@ -22,6 +22,7 @@ use tracing::{error, info, warn};
 
 use crate::feature_store::{BookTop, FeatureStore, TIMEFRAMES};
 use crate::indicators::Candle;
+use crate::venue::{Venue, FALLBACK_ORDER};
 
 /// Public market data goes through Binance's DATA MIRROR, not api.binance.com: the
 /// per-IP request-weight budget on the main API is shared with every other tenant on
@@ -87,6 +88,7 @@ fn tf_millis(tf: &str) -> Option<i64> {
 /// return the PREVIOUS bar as the latest closed row.
 const KLINE_SETTLE_MS: i64 = 3_000;
 
+
 /// The close boundary of the most recent bar that is safely CLOSED at `now_ms`.
 ///
 /// Pure, so the scheduler's arithmetic — the part that decides whether the engine
@@ -97,62 +99,116 @@ pub fn latest_closed_boundary(now_ms: i64, tf_ms: i64, settle_ms: i64) -> i64 {
 
 // ---------------------------------------------------------------- REST bootstrap
 
-#[allow(clippy::indexing_slicing)]
-fn kline_row_to_candle(row: &serde_json::Value) -> Option<Candle> {
-    let arr = row.as_array()?;
-    Some(Candle {
-        open: f(arr.get(1)?.as_str()?)?,
-        high: f(arr.get(2)?.as_str()?)?,
-        low: f(arr.get(3)?.as_str()?)?,
-        close: f(arr.get(4)?.as_str()?)?,
-        volume: f(arr.get(5)?.as_str()?).unwrap_or(0.0),
-        close_time: arr.get(6)?.as_i64()?,
-    })
-}
-
 /// Backfill history over REST so the engine can score immediately instead of waiting
-/// hours for the websocket to accumulate enough closed bars.
+/// hours for enough closed bars to accumulate.
 ///
 /// Without this the service starts up emitting `InsufficientHistory` vetoes for every
 /// symbol — correct, but useless, and for the 4h timeframe it would take weeks.
+///
+/// VENUE FALLBACK. Tries `FALLBACK_ORDER` and returns the venue that actually answered.
+/// A shared cloud egress IP gets us Binance-banned through other tenants' traffic, and
+/// on 2026-08-25 that cost 1h42m of signal plane; a second venue turns that into
+/// seconds. A symbol's history is never MIXED across venues — the first venue to load
+/// anything wins for this whole process, and the store is cleared before each attempt
+/// so a partial load from a banned venue cannot be topped up from another one.
 pub async fn bootstrap_history(
     store: &Arc<RwLock<FeatureStore>>,
     symbols: &[String],
     limit: usize,
-) -> (usize, Option<i64>) {
+) -> (usize, Option<i64>, Option<Venue>) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_default();
 
+    let mut first_ban: Option<i64> = None;
+
+    for &venue in FALLBACK_ORDER {
+        // A previous venue may have loaded some bars before being banned. Those bars
+        // must not survive into this attempt: two venues' bars in one window shift
+        // every volume- and range-derived factor silently.
+        {
+            let mut guard = store.write().await;
+            for symbol in symbols {
+                guard.entry(symbol).clear_candles();
+            }
+        }
+
+        match bootstrap_from(&client, store, symbols, limit, venue).await {
+            Ok(loaded) if loaded > 0 => {
+                info!("bootstrap complete via {} ({loaded} bars)", venue.name());
+                return (loaded, None, Some(venue));
+            }
+            Ok(_) => {
+                warn!("bootstrap via {} returned no usable bars", venue.name());
+            }
+            Err(ban_until) => {
+                first_ban = first_ban.or(ban_until);
+                warn!(
+                    "bootstrap via {} hit a rate limit/ban — trying the next venue",
+                    venue.name()
+                );
+            }
+        }
+    }
+
+    // Nothing answered. Report the earliest ban expiry so the caller waits rather than
+    // hammering, exactly as before the fallback existed.
+    (0, first_ban, None)
+}
+
+/// One venue's bootstrap attempt. `Err(Some(until_ms))` means it rate-limited us;
+/// `Err(None)` means it failed for another reason. `Ok(n)` is bars loaded.
+async fn bootstrap_from(
+    client: &reqwest::Client,
+    store: &Arc<RwLock<FeatureStore>>,
+    symbols: &[String],
+    limit: usize,
+    venue: Venue,
+) -> Result<usize, Option<i64>> {
     let mut loaded = 0usize;
     for symbol in symbols {
         for (tf, _) in TIMEFRAMES {
-            let url = format!("{REST_BASE}/klines?symbol={symbol}&interval={tf}&limit={limit}");
-            let rows: Vec<serde_json::Value> = match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => match resp.json().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!("bootstrap {symbol} {tf}: bad JSON: {e}");
-                        continue;
-                    }
-                },
+            let tf_ms = match tf_millis(tf) {
+                Some(ms) => ms,
+                None => continue,
+            };
+            let url = match venue.kline_url(symbol, tf, limit) {
+                Some(u) => u,
+                None => {
+                    warn!("{} has no dialect for {tf}", venue.name());
+                    continue;
+                }
+            };
+
+            let body = match client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => resp.text().await.unwrap_or_default(),
                 Ok(resp) => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    if let Some(until) = ban_until_ms(status.as_u16(), &body, now_ms()) {
+                    if venue.is_rate_limit(status.as_u16()) {
                         error!(
-                            "bootstrap aborted: venue rate limit/ban ({status}) — hammering \
-                             through a ban escalates it; the caller retries after it lifts \
-                             (the kline poller alone cannot rebuild DEEP history)"
+                            "bootstrap aborted on {}: venue rate limit/ban ({status}) — \
+                             hammering through a ban escalates it",
+                            venue.name()
                         );
-                        return (loaded, Some(until));
+                        return Err(ban_until_ms(status.as_u16(), &body, now_ms())
+                            .or(Some(now_ms() + 600_000)));
                     }
-                    warn!("bootstrap {symbol} {tf}: HTTP {status}");
+                    warn!("bootstrap {} {symbol} {tf}: HTTP {status}", venue.name());
                     continue;
                 }
                 Err(e) => {
-                    warn!("bootstrap {symbol} {tf}: {e}");
+                    warn!("bootstrap {} {symbol} {tf}: {e}", venue.name());
+                    continue;
+                }
+            };
+
+            let candles = match venue.parse_klines(&body, tf_ms) {
+                Some(c) => c,
+                None => {
+                    // A body we cannot parse is a FAILED fetch, never an empty market.
+                    warn!("bootstrap {} {symbol} {tf}: unparseable body", venue.name());
                     continue;
                 }
             };
@@ -165,13 +221,11 @@ pub async fn bootstrap_history(
             // that future timestamp, which makes feed_ts exceed now and every staleness
             // check pass forever — a dead feed would look eternally fresh. Verified
             // against live data on 2026-08-02: feed_ts led ts by 1.8 hours.
-            let complete = rows.len().saturating_sub(1);
-            for row in rows.iter().take(complete) {
-                if let Some(candle) = kline_row_to_candle(row) {
-                    if candle_is_sane(&candle) {
-                        state.push_candle(tf, candle);
-                        loaded += 1;
-                    }
+            let complete = candles.len().saturating_sub(1);
+            for candle in candles.iter().take(complete) {
+                if candle_is_sane(candle) {
+                    state.push_candle(tf, *candle);
+                    loaded += 1;
                 }
             }
             drop(guard);
@@ -179,9 +233,9 @@ pub async fn bootstrap_history(
             // Stay well inside the public REST weight limit.
             tokio::time::sleep(Duration::from_millis(120)).await;
         }
-        info!("bootstrapped history for {symbol}");
+        info!("bootstrapped history for {symbol} via {}", venue.name());
     }
-    (loaded, None)
+    Ok(loaded)
 }
 
 // ---------------------------------------------------------------- perp state
@@ -437,6 +491,7 @@ pub async fn poll_klines(
     store: Arc<RwLock<FeatureStore>>,
     symbols: Vec<String>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    venue: Venue,
 ) {
     const POLL_CHECK: Duration = Duration::from_secs(5);
     // One request tops out here — after a longer outage, bootstrap-scale backfill is
@@ -487,44 +542,49 @@ pub async fn poll_klines(
             let missed = ((boundary - last) / tf_ms).clamp(1, MAX_MISSED);
 
             for symbol in &symbols {
-                // +1 row for the forming bar Binance appends; dropped below.
-                let url = format!(
-                    "{REST_BASE}/klines?symbol={symbol}&interval={tf}&limit={}",
-                    missed + 1
-                );
-                let rows: Vec<serde_json::Value> = match client.get(&url).send().await {
-                    Ok(resp) if resp.status().is_success() => match resp.json().await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("kline poll {symbol} {tf}: bad JSON: {e}");
-                            continue;
-                        }
-                    },
+                // +1 row for the forming bar venues append; dropped below.
+                // MUST stay on the venue bootstrap chose: swapping mid-history would
+                // interleave two venues' bars in one window (see crate::venue).
+                let url = match venue.kline_url(symbol, tf, (missed + 1) as usize) {
+                    Some(u) => u,
+                    None => continue,
+                };
+                let body = match client.get(&url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        resp.text().await.unwrap_or_default()
+                    }
                     Ok(resp) => {
                         let status = resp.status();
                         let body = resp.text().await.unwrap_or_default();
-                        warn!("kline poll {symbol} {tf}: HTTP {status}");
-                        if let Some(until) = ban_until_ms(status.as_u16(), &body, now_ms()) {
-                            banned_until = until;
+                        warn!("kline poll {symbol} {tf} [{}]: HTTP {status}", venue.name());
+                        if venue.is_rate_limit(status.as_u16()) {
+                            banned_until = ban_until_ms(status.as_u16(), &body, now_ms())
+                                .unwrap_or(now_ms() + 600_000);
                         }
                         continue;
                     }
                     Err(e) => {
-                        warn!("kline poll {symbol} {tf}: {e}");
+                        warn!("kline poll {symbol} {tf} [{}]: {e}", venue.name());
+                        continue;
+                    }
+                };
+
+                let candles = match venue.parse_klines(&body, tf_ms) {
+                    Some(c) => c,
+                    None => {
+                        warn!("kline poll {symbol} {tf} [{}]: unparseable body", venue.name());
                         continue;
                     }
                 };
 
                 // Same rule as bootstrap: the final row is the bar still FORMING, whose
                 // close_time is in the future — pushing it would poison staleness math.
-                let complete = rows.len().saturating_sub(1);
+                let complete = candles.len().saturating_sub(1);
                 let mut guard = store.write().await;
                 let state = guard.entry(symbol);
-                for row in rows.iter().take(complete) {
-                    if let Some(candle) = kline_row_to_candle(row) {
-                        if candle_is_sane(&candle) {
-                            state.push_candle(tf, candle);
-                        }
+                for candle in candles.iter().take(complete) {
+                    if candle_is_sane(candle) {
+                        state.push_candle(tf, *candle);
                     }
                 }
                 drop(guard);
@@ -555,13 +615,24 @@ mod tests {
 
     // ---- row parsing (the REST equivalent of the old frame tests) ------------
 
+    // Row parsing now lives in ONE place — crate::venue — so Binance and Bybit cannot
+    // drift apart. These tests exercise it through that single door.
+    const TF_MS: i64 = 3_600_000;
+
+    fn parse_one(row: serde_json::Value) -> Option<Candle> {
+        let body = serde_json::Value::Array(vec![row]).to_string();
+        Venue::Binance
+            .parse_klines(&body, TF_MS)
+            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) })
+    }
+
     fn row(o: &str, h: &str, l: &str, c: &str, v: &str, close_time: i64) -> serde_json::Value {
         serde_json::json!([1700000000000i64, o, h, l, c, v, close_time, "0", 0, "0", "0", "0"])
     }
 
     #[test]
     fn parses_a_kline_row() {
-        let candle = kline_row_to_candle(&row("100.5", "102.0", "99.0", "101.25", "1234.5", 1_700_003_599_999))
+        let candle = parse_one(row("100.5", "102.0", "99.0", "101.25", "1234.5", 1_700_003_599_999))
             .expect("parsed");
         assert_eq!(candle.open, 100.5);
         assert_eq!(candle.high, 102.0);
@@ -578,20 +649,20 @@ mod tests {
             serde_json::json!([1, 2, 3]),
             serde_json::json!([1700000000000i64, "not-a-number", "1", "1", "1", "1", 1700003599999i64]),
         ] {
-            assert_eq!(kline_row_to_candle(&raw), None, "should have rejected: {raw}");
+            assert_eq!(parse_one(raw.clone()), None, "should have rejected: {raw}");
         }
     }
 
     #[test]
     fn rejects_a_candle_with_impossible_geometry() {
         // high < low
-        let bad = kline_row_to_candle(&row("100", "99.0", "101.0", "100", "1", 1_700_003_599_999)).unwrap();
+        let bad = parse_one(row("100", "99.0", "101.0", "100", "1", 1_700_003_599_999)).unwrap();
         assert!(!candle_is_sane(&bad), "high < low was accepted");
         // non-positive close
-        let bad = kline_row_to_candle(&row("100", "102.0", "99.0", "0.0", "1", 1_700_003_599_999)).unwrap();
+        let bad = parse_one(row("100", "102.0", "99.0", "0.0", "1", 1_700_003_599_999)).unwrap();
         assert!(!candle_is_sane(&bad), "close <= 0 was accepted");
         // sane row passes
-        let ok = kline_row_to_candle(&row("100", "102.0", "99.0", "101.25", "1", 1_700_003_599_999)).unwrap();
+        let ok = parse_one(row("100", "102.0", "99.0", "101.25", "1", 1_700_003_599_999)).unwrap();
         assert!(candle_is_sane(&ok));
     }
 
