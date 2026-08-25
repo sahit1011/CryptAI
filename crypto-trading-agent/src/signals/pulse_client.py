@@ -29,6 +29,12 @@ SCHEMA_VERSION = 1
 # publishing looks identical to a calm market unless something checks the clock.
 DEFAULT_MAX_AGE_MS = 15_000
 
+# The global pulse aggregates one engine tick across all symbols. Its staleness
+# budget is looser than a trade gate's: it drives a status badge, and the engine
+# publishes every ~5s, so a minute of silence is worth showing as "unknown"
+# rather than flapping the badge on one slow tick.
+GLOBAL_MAX_AGE_MS = 60_000
+
 KEY_PREFIX = "market:pulse:"
 GLOBAL_KEY = "market:pulse:global"
 
@@ -182,3 +188,67 @@ class PulseClient:
             if pulse is not None:
                 out[symbol.upper()] = pulse
         return out
+
+
+@dataclass(frozen=True)
+class GlobalPulse:
+    """The whole plane's health in one object. Mirrors signal_engine::pulse::GlobalPulse.
+
+    Note what is absent, deliberately: any forward statement. `tradability_max` and
+    `tradability_median` describe THIS tick. "Conditions are active right now" is a
+    measurement; "the next hour will be hot" is a forecast this system does not make.
+    """
+
+    v: int
+    ts: int
+    symbols_scored: int
+    symbols_vetoed: int
+    tradability_max: int
+    tradability_median: int
+    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GlobalPulse":
+        return cls(
+            v=int(data["v"]),
+            ts=int(data["ts"]),
+            symbols_scored=int(data.get("symbols_scored") or 0),
+            symbols_vetoed=int(data.get("symbols_vetoed") or 0),
+            tradability_max=int(data.get("tradability_max") or 0),
+            tradability_median=int(data.get("tradability_median") or 0),
+            raw=data,
+        )
+
+    def age_ms(self, now_ms: Optional[int] = None) -> int:
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        return max(0, now - self.ts)
+
+    def is_stale(self, max_age_ms: int = GLOBAL_MAX_AGE_MS,
+                 now_ms: Optional[int] = None) -> bool:
+        return self.age_ms(now_ms) > max_age_ms
+
+
+async def read_global(redis_client, now_ms: Optional[int] = None
+                      ) -> Optional[GlobalPulse]:
+    """The global pulse, or None when it is missing/unreadable/incompatible.
+
+    Returns None rather than raising: unlike the per-symbol path (where a missing
+    pulse must block a trade), this feeds a status badge. The CALLER decides how to
+    render "unknown" — and must render it as unknown, never as calm.
+    """
+    try:
+        raw = await redis_client.get(GLOBAL_KEY)
+    except Exception as e:
+        logger.warning(f"[pulse] global read failed: {e}")
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if int(data.get("v", 0)) != SCHEMA_VERSION:
+            logger.warning(f"[pulse] global schema v{data.get('v')} != v{SCHEMA_VERSION}")
+            return None
+        return GlobalPulse.from_dict(data)
+    except (ValueError, KeyError, TypeError) as e:
+        logger.warning(f"[pulse] global pulse unparseable: {e}")
+        return None

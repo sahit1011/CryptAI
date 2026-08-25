@@ -139,3 +139,47 @@ Gates filter the fixed baseline event stream.
 
 Runs: `results/s1_ab_v2_summary.md`, `results/s1_ab_v2_trades.csv` (regenerate with
 `study_s1_ab_v2.py`; requires v1's `study_s1_ab.py` unchanged, pessimistic same-bar).
+
+---
+
+## 2026-08-25 — Intraday activity profile (measured; earns the "hot window" badge)
+
+**Setup:** all 3,153,600 1m bars (BTC/ETH/SOL, 2024-08→2026-07). For each UTC hour,
+the mean of per-symbol z-scores of (mean 1m volume, mean 1m range/price) — per-symbol
+z-scoring so a high-notional symbol cannot dominate the shape. Backward-looking
+measurement only; `study_hour_profile.py` emits no forecast and the API exposes none.
+
+**Result — top 6 UTC hours are 13,14,15,16,17,18** (18:30–23:30 IST), peaking at
+14:00 UTC (19:30 IST, z=+2.70) and 15:00 UTC (z=+2.21). Quietest: 04:00–06:00 UTC
+(09:30–11:30 IST, z≈−0.95). Per-year agreement with those six hours: **5.67 (2024),
+6.00 (2025), 5.67 (2026)** out of 6 — the shape is stable, not an artifact of one
+regime.
+
+**Findings:**
+
+1. The profile is stable enough to state publicly as a past-tense fact. A badge saying
+   "this hour has historically been the Nth most active of 24 (3.15M bars, 2024-08→
+   2026-07)" is checkable and sourced; anything about the NEXT hour is not, and is
+   not exposed by `/api/pulse`.
+2. **Independent corroboration of v2's session gate.** The v2 A/B found `G_session`
+   (13:30–16:30 UTC) the decisive environment gate; this volume/range measurement,
+   computed from a different statistic on the same bars, puts its top window at 13:00–
+   18:00 UTC. Two different analyses agreeing raises confidence that the session
+   effect is real, even though v2 showed no implementable entry captures it.
+3. **Corrects the plan's assumed window.** The 2026-08-24 product plan pencilled the
+   session-liquidity schedule at 17:30–20:30 IST. Measured, the active window is
+   18:30–23:30 IST — roughly 1–3h later than assumed, and the assumed window's first
+   hour (17:30 IST = 12:00 UTC) actually ranks 10th of 24. Free-tier session slots
+   should be steered by the measured window, not the assumed one.
+
+**What this licenses / forbids:**
+
+- ✅ Ship the measured rank as a past-tense, sourced badge (`GET /api/pulse` → `hour`).
+- ✅ Use the measured window when scheduling/nudging free-tier session slots.
+- ❌ No forward "hottest hour" claim, no "expected activity", no countdown to a hot
+  window. The artifact ships with its caveat string and the API carries it through.
+- ❌ Do not regenerate the artifact silently: it is a dated measurement. Re-run
+  `study_hour_profile.py` deliberately, and update the date range everywhere it shows.
+
+Runs: `results/hour_profile.{json,md}`; shipped artifact
+`crypto-trading-agent/src/signals/hour_profile.json`.

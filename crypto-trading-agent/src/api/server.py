@@ -1951,6 +1951,53 @@ async def set_engine(body: EngineBody, admin: str = Depends(require_admin)):
     return await sw.turn_off(disabled_by=admin)
 
 
+@app.get("/api/pulse")
+async def get_pulse():
+    """Market-activity status: what the plane says NOW + what this hour HAS been.
+
+    Two deliberately separate things, because conflating them is how a status badge
+    becomes a fabricated forecast (honesty law):
+
+    - `now`: this tick's aggregate from the Rust engine — the live tradability spread
+      and how many symbols are vetoed. `available: false` when the plane is silent or
+      stale, which the UI must render as UNKNOWN, never as "calm".
+    - `hour`: how active the current UTC hour has historically been, measured over 24
+      months of 1m bars (see src/signals/hour_profile.py), with its sample attached so
+      the claim is auditable. Past tense, always.
+
+    There is no field here that says anything about the next hour, and none should be
+    added. Shared across users (no per-user content), so unauthenticated like /api/setups.
+    """
+    from src.signals.hour_profile import describe_hour
+    from src.signals.pulse_client import read_global
+
+    now_block: Dict[str, Any] = {"available": False, "reason": "signal_plane_unavailable"}
+    if state_manager is not None and getattr(state_manager, "redis", None) is not None:
+        pulse = await read_global(state_manager.redis)
+        if pulse is None:
+            now_block = {"available": False, "reason": "no_pulse_published"}
+        elif pulse.is_stale():
+            # Honest about WHY it is unavailable: a stale plane and an absent plane
+            # need different operator responses.
+            now_block = {"available": False, "reason": "pulse_stale",
+                         "age_ms": pulse.age_ms()}
+        else:
+            now_block = {
+                "available": True,
+                "age_ms": pulse.age_ms(),
+                "symbols_scored": pulse.symbols_scored,
+                "symbols_vetoed": pulse.symbols_vetoed,
+                "tradability_max": pulse.tradability_max,
+                "tradability_median": pulse.tradability_median,
+            }
+
+    hour_block = describe_hour()
+    return {
+        "now": now_block,
+        "hour": hour_block or {"available": False, "reason": "profile_unavailable"},
+    }
+
+
 @app.get("/api/setups")
 async def get_setups():
     """Recent trade-setup suggestions (shared across users) for load-time hydration.

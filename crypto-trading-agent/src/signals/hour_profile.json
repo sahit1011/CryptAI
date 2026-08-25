@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "measured_from_ms": 1722470400000,
+  "measured_to_ms": 1785542340000,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ],
+  "total_1m_bars": 3153600,
+  "metric": "mean of per-symbol z-scores of (mean 1m volume, mean 1m range/price)",
+  "hours_utc": {
+    "0": {
+      "score": 0.056,
+      "rank": 8
+    },
+    "1": {
+      "score": 0.0384,
+      "rank": 9
+    },
+    "2": {
+      "score": -0.3241,
+      "rank": 12
+    },
+    "3": {
+      "score": -0.7227,
+      "rank": 18
+    },
+    "4": {
+      "score": -0.9445,
+      "rank": 23
+    },
+    "5": {
+      "score": -0.9567,
+      "rank": 24
+    },
+    "6": {
+      "score": -0.8496,
+      "rank": 22
+    },
+    "7": {
+      "score": -0.7267,
+      "rank": 19
+    },
+    "8": {
+      "score": -0.5677,
+      "rank": 15
+    },
+    "9": {
+      "score": -0.7152,
+      "rank": 17
+    },
+    "10": {
+      "score": -0.8134,
+      "rank": 21
+    },
+    "11": {
+      "score": -0.754,
+      "rank": 20
+    },
+    "12": {
+      "score": -0.0308,
+      "rank": 10
+    },
+    "13": {
+      "score": 1.3189,
+      "rank": 4
+    },
+    "14": {
+      "score": 2.697,
+      "rank": 1
+    },
+    "15": {
+      "score": 2.2054,
+      "rank": 2
+    },
+    "16": {
+      "score": 1.3486,
+      "rank": 3
+    },
+    "17": {
+      "score": 0.8659,
+      "rank": 5
+    },
+    "18": {
+      "score": 0.4222,
+      "rank": 6
+    },
+    "19": {
+      "score": 0.1179,
+      "rank": 7
+    },
+    "20": {
+      "score": -0.1018,
+      "rank": 11
+    },
+    "21": {
+      "score": -0.4714,
+      "rank": 14
+    },
+    "22": {
+      "score": -0.4007,
+      "rank": 13
+    },
+    "23": {
+      "score": -0.6907,
+      "rank": 16
+    }
+  },
+  "top6_hours_utc": [
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "top6_agreement_per_year": {
+    "2024": 5.67,
+    "2025": 6.0,
+    "2026": 5.67
+  },
+  "caveat": "Backward-looking measurement, not a forecast. Ranks say how active each UTC hour HAS been across these symbols over this window; they say nothing about the next hour."
+}
