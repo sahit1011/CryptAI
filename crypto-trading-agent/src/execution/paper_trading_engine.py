@@ -21,6 +21,30 @@ class OrderType(Enum):
     TAKE_PROFIT = "TAKE_PROFIT"
     TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
 
+#: Which order type closed a position -> the exit reason recorded in the ledger.
+#: `trades.exit_reason` documents TP_HIT/SL_HIT/MANUAL/INVALIDATED; a reduce-only
+#: MARKET fill is a deliberate close (user click, monitor time-stop, admin sweep),
+#: which is MANUAL — never a take-profit that happened to be green.
+_EXIT_REASON_BY_ORDER_TYPE = {
+    "STOP_MARKET": "SL_HIT",
+    "STOP_LIMIT": "SL_HIT",
+    "TAKE_PROFIT": "TP_HIT",
+    "TAKE_PROFIT_MARKET": "TP_HIT",
+    "LIMIT": "TP_HIT",       # resting reduce-only limit == a take-profit leg
+    "MARKET": "MANUAL",
+}
+
+
+def _exit_reason_for(order) -> str:
+    """The OBSERVED exit reason for the order that closed a position.
+
+    Unknown order types return "UNKNOWN" rather than a plausible guess: an honest
+    gap in the ledger can be found and fixed, a fabricated label cannot.
+    """
+    raw = getattr(getattr(order, "type", None), "value", None) or str(getattr(order, "type", ""))
+    return _EXIT_REASON_BY_ORDER_TYPE.get(str(raw).upper(), "UNKNOWN")
+
+
 class OrderSide(Enum):
     """Order sides"""
     BUY = "BUY"
@@ -534,8 +558,14 @@ class PaperTradingEngine:
                     del self.positions[symbol]
                     logger.info(f"Position closed: {symbol} | Total P&L: ${position.realized_pnl:+.2f}")
 
-                    # Feed the owner's risk tracker (set by UserSession). Best-effort:
-                    # a tracker failure must never block the fill/close hot path.
+                    # THE EXIT REASON IS OBSERVED, NOT INFERRED FROM P&L.
+                    # This used to be `"TP_HIT" if pnl > 0 else "SL_HIT"`, which is a
+                    # fabrication: a stop that fills above entry (gap, trailing stop)
+                    # was logged as a take-profit, and a TP filled at a loss as a stop.
+                    # Every outcome-attribution query in the evidence plan reads this
+                    # column, so a guess here poisons the calibration ledger (honesty
+                    # law). The filling ORDER knows the truth — use it.
+                    exit_reason = _exit_reason_for(order)
                     if self.on_position_closed is not None:
                         try:
                             await self.on_position_closed(
@@ -543,7 +573,7 @@ class PaperTradingEngine:
                                 symbol=symbol,
                                 exit_price=order.filled_price,
                                 pnl=position.realized_pnl,
-                                reason="tp_hit" if pnl > 0 else "sl_hit",
+                                reason=exit_reason.lower(),
                             )
                         except Exception as e:
                             logger.warning(f"on_position_closed hook failed for {symbol}: {e}")
@@ -565,7 +595,7 @@ class PaperTradingEngine:
                                     "trade_id": trade_id,
                                     "exit_price": order.filled_price,
                                     "exit_time": datetime.now().isoformat(),
-                                    "exit_reason": "TP_HIT" if pnl > 0 else "SL_HIT", # Simplified reason
+                                    "exit_reason": exit_reason,  # observed, see above
                                     "notes": f"Closed via {order.type.value}"
                                 },
                                 "timestamp": datetime.now().isoformat()

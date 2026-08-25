@@ -382,3 +382,46 @@ async def test_unprotected_row_restores_with_loud_warning(store, ledger):
     assert report.positions_restored == 1
     assert fresh.engine.get_open_orders() == []  # nothing to arm — and we said so
     assert any("UNPROTECTED" in w for w in report.warnings)
+
+
+# --------------------------------------------------------------------------- #
+# exit reasons are OBSERVED, not inferred from P&L (honesty law)
+# --------------------------------------------------------------------------- #
+
+def test_exit_reason_comes_from_the_filling_order():
+    from src.execution.paper_trading_engine import OrderType, _exit_reason_for
+
+    class O:
+        def __init__(self, t):
+            self.type = t
+
+    assert _exit_reason_for(O(OrderType.STOP_MARKET)) == "SL_HIT"
+    assert _exit_reason_for(O(OrderType.LIMIT)) == "TP_HIT"
+    assert _exit_reason_for(O(OrderType.TAKE_PROFIT_MARKET)) == "TP_HIT"
+    assert _exit_reason_for(O(OrderType.MARKET)) == "MANUAL"
+    assert _exit_reason_for(O("something_new")) == "UNKNOWN"  # honest gap, not a guess
+
+
+@pytest.mark.asyncio
+async def test_a_profitable_stop_is_still_recorded_as_a_stop(store, ledger):
+    """The case the old `TP_HIT if pnl > 0` heuristic got WRONG: a stop that fills
+    in profit (gap through, or a stop moved to lock gains) is a stop, not a target.
+    Every outcome-attribution query depends on this column telling the truth."""
+    bus = CaptureBus()
+    session = _session(bus=bus)
+    await _book_long(session, entry=100.0, stop=95.0, tps=[{"price": 130.0, "size": 1.0}])
+    await _pump(bus, ledger)
+    engine = session.engine
+
+    # Move the stop above entry (lock-in), then let price cross it: a WINNING stop.
+    sl = next(o for o in engine.orders.values()
+              if o.type.value == "STOP_MARKET" and o.status.value == "OPEN")
+    sl.stop_price = 110.0
+    await process_engine_tick(engine, {"BTCUSDT": 109.0})
+
+    assert "BTCUSDT" not in engine.positions
+    assert engine.balance > 100_000.0  # it closed in profit...
+    await _pump(bus, ledger)
+    row = store.get_recent_trades(user_id="rehydrate-user")[0]
+    assert row.pnl > 0
+    assert row.exit_reason == "SL_HIT"  # ...and is still, truthfully, a stop
