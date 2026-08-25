@@ -70,6 +70,9 @@ class MultiUserTradingDaemon:
         self.monitor_supervisor = None  # MonitorSupervisor, set in start()
         self.trade_manager = None  # TradeHistoryManager, set in _rehydrate_engines (R2.1)
         self.trade_ledger = None   # TradeLedgerConsumer when the memory agent is disabled
+        # Strong refs for in-flight rehydration passes: a GC'd task would leave its
+        # user booking-blocked forever, silently.
+        self._rehydrate_tasks: set = set()
         self._loop_task: Optional[asyncio.Task] = None
         self._tick_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
@@ -522,17 +525,25 @@ class MultiUserTradingDaemon:
         # Install the hook FIRST so eager materialization below flows through it and
         # every path (boot or later) is the same code.
         def _hook(session) -> None:
-            asyncio.get_running_loop().create_task(self._rehydrate_one(session))
+            # A bare create_task() keeps no strong reference, so the event loop may
+            # garbage-collect the pass mid-flight — leaving that user permanently
+            # booking-blocked with no error. Hold the reference until it finishes.
+            task = asyncio.get_running_loop().create_task(self._rehydrate_one(session))
+            self._rehydrate_tasks.add(task)
+            task.add_done_callback(self._rehydrate_tasks.discard)
         self.registry.on_session_created = _hook
 
         users = self.registry.active_user_ids()
         for uid in users:
             self.registry.session(uid)          # materialize -> hook schedules the pass
         # The boot pass must COMPLETE before start() proceeds (ordering contract in
-        # start()); drain the scheduled tasks by rehydrating directly instead of racing
-        # them — _rehydrate_one is idempotent per session via the rehydrated flag.
+        # start()). The hook's tasks for these same sessions are redundant but
+        # harmless — _rehydrate_one single-flights and is idempotent — and awaiting
+        # them here (rather than leaving them pending) keeps shutdown clean.
         for uid in users:
             await self._rehydrate_one(self.registry._sessions.get(uid))
+        if self._rehydrate_tasks:
+            await asyncio.gather(*self._rehydrate_tasks, return_exceptions=True)
 
         if self.state_manager is not None:
             try:

@@ -282,6 +282,33 @@ async def test_registry_hook_blocks_new_sessions_and_schedules_rehydration():
 
 
 @pytest.mark.asyncio
+async def test_scheduled_passes_are_strongly_referenced(store):
+    """A bare create_task can be GC'd mid-flight, stranding that user
+    booking-blocked with no error. The daemon must hold the reference."""
+    import asyncio as aio
+
+    from src.multi_user_daemon import MultiUserTradingDaemon
+
+    d = MultiUserTradingDaemon.__new__(MultiUserTradingDaemon)
+    d.registry = UserRegistry(seed_user_ids=["late-user"])
+    d.state_manager = None
+    d.trade_manager = store
+    d._rehydrate_tasks = set()
+
+    def hook(session):
+        task = aio.get_running_loop().create_task(d._rehydrate_one(session))
+        d._rehydrate_tasks.add(task)
+        task.add_done_callback(d._rehydrate_tasks.discard)
+    d.registry.on_session_created = hook
+
+    s = d.registry.session("late-user")
+    assert len(d._rehydrate_tasks) == 1  # referenced while pending
+    await aio.gather(*d._rehydrate_tasks)
+    assert s.rehydrated is True
+    assert d._rehydrate_tasks == set()   # and released when done
+
+
+@pytest.mark.asyncio
 async def test_failure_is_isolated_per_user(store, ledger, monkeypatch):
     """One tenant's broken pass leaves THEM blocked; the other tenant trades."""
     from src.multi_user_daemon import MultiUserTradingDaemon
