@@ -30,9 +30,9 @@ Legend: ✅ works · ⚠️ works with caveats · ❌ missing/broken
 | Live AI insight during a session | ⚠️ | Genuinely wired: session → worker → shared analysis → LLM synthesis → sized proposal → card → approve → **revalidate at live price** → book. Caveat: the first 1–2 cycles usually return "no qualifying setups" while `SharedSetupCache` warms, burning 3–6 of the 30 minutes |
 | Manual mode | ⚠️ | Sees setups, executes via `/api/execute-setup`. **Inconsistency:** a manual user *with keys* books to **paper** on approve but **live** via execute-setup |
 | Auto mode, no keys | ✅ | Isolated paper desk, self-managing SL/TP legs, monitored, survives restart |
-| Auto mode, with keys | ⚠️ | Real testnet orders placed. **Live positions are unmonitored and unrehydrated** — see blockers |
+| Auto mode, with keys | ⚠️ | Real testnet orders placed; positions now visible to the monitor via a venue refresh. Remaining caveat: monitor coverage depends on that refresh succeeding, and a stale cache reports *unknown* by design |
 | Real money | ✅ blocked | `LIVE_TRADING_CONFIRMED=false` forces testnet, and `/api/exchange-keys` rejects non-testnet keys. Two independent layers |
-| Monitoring | ⚠️ | Paper: time stops, profit protection, restart-durable, `/api/monitors` honest. **Live: none** |
+| Monitoring | ⚠️ | Paper: time stops, profit protection, restart-durable. Live: positions now discovered from the venue (120s cache, honest `unknown` when stale). `/api/monitors` truthful in both |
 
 ---
 
@@ -69,12 +69,23 @@ of scan time per day" until R2.2 lands, or it's a false claim.
 
 ## Blockers before real users
 
-**P0 — live positions are unmonitored and unrehydrated.**
-`LiveExecutionEngine.get_positions()` returns `[]`, and monitor discovery plus
-rehydration are both position-driven. An auto+keys position has no time stop, no
-profit protection, and vanishes from the engine's view on restart. The code already
-logs this (`monitor_worker.py:466`). Either implement `get_positions()` or refuse
-`auto` while keys are attached.
+**~~P0 — live positions are unmonitored and unrehydrated.~~ CLOSED 2026-08-25.**
+`LiveExecutionEngine.get_positions()` was a stub returning `[]` while the venue had
+the data all along (`ExchangeClient.get_open_positions`). Now `refresh_positions()`
+pulls the venue and caches it in the SAME shape the paper engine publishes, so the
+monitor and dashboard need no per-engine special case. Refreshed on the tick loop's
+slow heartbeat (not every 3s — that would be ~1,200 venue calls/hour/user for data
+that only changes on fills), and once at boot so a restart mid-position is not a blind
+window. Live rehydration now reconciles from the VENUE rather than skipping outright —
+the venue is the source of truth for a live account, exactly as our rows are for paper.
+
+The rule that keeps it honest: **a position list we cannot confirm is reported as
+nothing, never as stale truth.** Past `LIVE_POSITION_CACHE_TTL_S` (120s default)
+`get_positions()` returns `[]` and says so loudly, because managing a phantom already
+closed at the venue is worse than admitting we don't know — and `/api/monitors`
+already renders that as `monitored: false`. A transient venue error does NOT clear the
+cache (that would recreate the very silence this closes); it ages out instead.
+`tests/test_live_position_visibility.py`
 
 **~~P0 — the money path is the least-tested code.~~ CLOSED 2026-08-25.**
 Quarantining whole FILES was hiding **45 of 58 already-passing tests** on the money

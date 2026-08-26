@@ -17,12 +17,18 @@ explicit, deliberate final step). Auto/manual live trading rides on this until t
 path is validated on testnet.
 """
 import os
+import time
 from datetime import datetime
 from typing import Any, List, Optional
 
 from loguru import logger
 
 from src.execution.exchange_client import ExchangeClientFactory
+
+#: How long a cached venue position list may be trusted. Beyond this, get_positions()
+#: reports NOTHING rather than something possibly closed at the venue — the monitor
+#: showing "unknown" is safer than it managing a phantom.
+POSITION_CACHE_TTL_S = float(os.getenv("LIVE_POSITION_CACHE_TTL_S", "120"))
 
 # Exchange name the vault/settings use -> the factory's key.
 _EXCHANGE_ALIASES = {"delta_india": "delta_india", "delta": "delta_india", "bingx": "bingx"}
@@ -53,6 +59,10 @@ class LiveExecutionEngine:
         if not testnet:
             logger.warning(f"[live] LIVE_TRADING_CONFIRMED=true — {user_id} on MAINNET")
         self.testnet = testnet
+
+        # Venue positions, refreshed by refresh_positions() (see get_positions()).
+        self._positions_cache: List[dict] = []
+        self._positions_cached_at: float = 0.0
 
         self.client = ExchangeClientFactory.create_client(
             self.exchange_name, api_key, api_secret, testnet=testnet
@@ -137,6 +147,65 @@ class LiveExecutionEngine:
     async def publish_initial_state(self):
         await self.publish_portfolio_update()
 
+    async def refresh_positions(self) -> int:
+        """Pull open positions from the VENUE and cache them. Returns the count.
+
+        The venue is the source of truth for a live account — unlike the paper desk,
+        where our own rows are. This is the reconciliation read that makes live
+        positions visible to the monitor at all.
+        """
+        try:
+            positions = await self.client.get_open_positions()
+        except Exception as e:
+            # Do NOT clear the cache on a transient failure: dropping to zero would
+            # tell the monitor "nothing to watch", which is exactly the silence this
+            # method exists to end. Let it age out via POSITION_CACHE_TTL_S instead.
+            logger.warning(f"[live] position refresh failed for {self.user_id}: {e}")
+            return len(self._positions_cache)
+
+        payload: List[dict] = []
+        for p in positions or []:
+            d = p.to_dict() if hasattr(p, "to_dict") else (
+                dict(p) if isinstance(p, dict) else None)
+            if not d:
+                continue
+            # Present in the SAME shape the paper engine publishes, so the monitor and
+            # the dashboard need no per-engine special cases.
+            qty = float(d.get("quantity") or 0)
+            if qty == 0:
+                continue  # a flat position is not an open position
+            payload.append({
+                "position_id": f"LIVE_{self.exchange_name}_{d.get('symbol')}",
+                "symbol": d.get("symbol"),
+                "positionSide": str(d.get("side") or "").upper(),
+                "positionAmt": str(qty),
+                "entryPrice": str(d.get("entry_price") or 0),
+                "markPrice": str(d.get("mark_price") or d.get("entry_price") or 0),
+                "unRealizedProfit": str(d.get("unrealized_pnl") or 0),
+                "leverage": str(d.get("leverage") or 1),
+                "live": True,
+            })
+        self._positions_cache = payload
+        self._positions_cached_at = time.monotonic()
+        return len(payload)
+
     def get_positions(self):
-        """Sync stub for parity with the paper engine (live positions are async)."""
-        return []
+        """Cached venue positions, or [] when the cache is missing or STALE.
+
+        Sync because the monitor's discovery is sync (and the paper engine's positions
+        live in memory). Staleness returns [] deliberately: acting on a position list
+        we can no longer confirm risks managing a phantom — one that may already have
+        been closed at the venue. Empty means "we do not know", which is the same
+        honest signal `/api/monitors` already renders as `monitored: false`.
+        """
+        if not self._positions_cache:
+            return []
+        age = time.monotonic() - self._positions_cached_at
+        if age > POSITION_CACHE_TTL_S:
+            logger.warning(
+                f"[live] position cache for {self.user_id} is {age:.0f}s old "
+                f"(> {POSITION_CACHE_TTL_S}s) — reporting NO positions rather than "
+                "stale ones; live monitoring is blind until a refresh succeeds"
+            )
+            return []
+        return list(self._positions_cache)

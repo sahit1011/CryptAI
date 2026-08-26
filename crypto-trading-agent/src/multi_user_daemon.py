@@ -563,11 +563,24 @@ class MultiUserTradingDaemon:
 
     async def _rehydrate_one(self, session) -> None:
         """Rehydrate a single session; never raises (per-user fault isolation)."""
-        if session is None or session.rehydrated is True or getattr(session, "is_live", False):
-            # Live engines reconcile at the venue, not from paper rows; flip them
-            # straight to allowed — the paper doctrine does not apply.
-            if session is not None and getattr(session, "is_live", False):
-                session.rehydrated = True
+        if session is None or session.rehydrated is True:
+            return
+        if getattr(session, "is_live", False):
+            # A live account's source of truth is the VENUE, not our rows. Pull its
+            # open positions once at boot so the monitor sees them immediately instead
+            # of waiting for the first heartbeat — and so a restart mid-position is not
+            # a blind window. Booking is allowed either way (the venue holds the
+            # truth); a failed read is logged, not fatal.
+            engine = getattr(session, "engine", None)
+            if engine is not None and hasattr(engine, "refresh_positions"):
+                try:
+                    n = await engine.refresh_positions()
+                    plog.info(f"[rehydrate] {session.user_id}: {n} live venue "
+                              "position(s) reconciled", agent="daemon")
+                except Exception as e:
+                    plog.warning(f"[rehydrate] live venue read failed for "
+                                 f"{session.user_id}: {e}", agent="daemon")
+            session.rehydrated = True
             return
         if self.trade_manager is None:
             session.rehydrated = False
@@ -1032,8 +1045,28 @@ class MultiUserTradingDaemon:
 
                 for user_id, session in sessions.items():
                     engine = getattr(session, "engine", None)
-                    # Paper engines only — live engines have no local order book.
-                    if engine is None or not hasattr(engine, "check_limit_orders"):
+                    if engine is None:
+                        continue
+                    # LIVE engines: the venue fills their orders, so there is no local
+                    # book to tick — but their positions were INVISIBLE to the monitor
+                    # (get_positions() was a stub returning []), so an auto+keys
+                    # position had no time stop and no profit protection. Refresh the
+                    # venue cache on a slow heartbeat (not every 3s tick — that would
+                    # be ~1200 venue calls/hour/user for data that changes on fills).
+                    if hasattr(engine, "refresh_positions"):
+                        if heartbeat:
+                            try:
+                                n = await engine.refresh_positions()
+                                if n:
+                                    await engine.publish_portfolio_update()
+                            except Exception as e:
+                                plog.warning(
+                                    f"[live-tick] position refresh failed for {user_id}: {e}",
+                                    agent="daemon",
+                                )
+                        continue
+                    # Paper engines only below — live engines have no local order book.
+                    if not hasattr(engine, "check_limit_orders"):
                         continue
                     try:
                         changed = await process_engine_tick(engine, prices)
