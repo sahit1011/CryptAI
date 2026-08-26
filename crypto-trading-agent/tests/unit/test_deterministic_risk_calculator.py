@@ -557,10 +557,17 @@ class TestLosingStreak:
         assert result.checks['losing_streak'] is True
 
     @pytest.mark.asyncio
-    async def test_losing_streak_warning(self, calculator, tracker):
-        """Test warning for 2 consecutive losses"""
-        tracker.loss_streak = 2
+    async def test_one_loss_warns_and_two_losses_stop_trading(self, calculator, tracker):
+        """The consecutive-loss circuit breaker, TIGHTENED from 3 to 2.
 
+        This test previously asserted a streak of 2 was merely a warning. The code was
+        deliberately made stricter (`loss_streak >= 2` now rejects — see
+        _check_losing_streak), which is the safe direction, so the test is updated to
+        the current contract rather than the code relaxed back to match it.
+        This is the tilt control the Robbins-Cup playbook calls for; it is live on the
+        paper path via UserSession.evaluate_and_book.
+        """
+        tracker.loss_streak = 1
         result = await calculator.validate_trade_setup(
             symbol='BTCUSDT',
             direction='LONG',
@@ -571,11 +578,24 @@ class TestLosingStreak:
             risk_amount=200,
             confidence_score=0.85
         )
-
         assert result.checks['losing_streak'] is True
-        assert len(result.warnings) > 0
+        assert any('loss' in w.lower() for w in result.warnings)
 
-    @pytest.mark.asyncio
+        tracker.loss_streak = 2
+        stopped = await calculator.validate_trade_setup(
+            symbol='BTCUSDT',
+            direction='LONG',
+            entry_price=43000,
+            stop_loss=42500,
+            take_profit_levels=[44000],
+            recommended_position_size=0.5,
+            risk_amount=200,
+            confidence_score=0.85
+        )
+        assert stopped.checks['losing_streak'] is False
+        assert stopped.approved is False
+        assert any('circuit breaker' in r.lower() for r in stopped.rejection_reasons)
+
     async def test_circuit_breaker_loss_streak(self, calculator, tracker):
         """Test rejection for 3+ consecutive losses"""
         tracker.loss_streak = 3

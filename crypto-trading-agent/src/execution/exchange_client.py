@@ -33,6 +33,41 @@ class OrderType(Enum):
     TAKE_PROFIT_LIMIT = "TAKE_PROFIT_LIMIT"
 
 
+#: Venue spellings that mean one of OUR OrderType members. Venues disagree on names
+#: for the same order: Binance/BingX futures say STOP_MARKET where this enum says
+#: STOP_LOSS. The old parse did `OrderType[raw] if raw in __members__ else MARKET`,
+#: so every one of these silently became a plain MARKET order — meaning a live
+#: STOP-LOSS fill was recorded as an ordinary market order, and any exit-reason
+#: attribution built on it read "manual close" instead of "stopped out". Same class of
+#: corruption as the fabricated paper exit_reason fixed earlier; this is the live half.
+_ORDER_TYPE_ALIASES = {
+    "STOP_MARKET": "STOP_LOSS",
+    "STOP": "STOP_LOSS",
+    "STOP_LOSS_MARKET": "STOP_LOSS",
+    "TAKE_PROFIT_MARKET": "TAKE_PROFIT",
+    "STOP_LIMIT": "STOP_LOSS_LIMIT",
+}
+
+
+def parse_order_type(raw: str) -> "OrderType":
+    """Venue order-type string -> our OrderType, aliases resolved.
+
+    Falls back to MARKET *loudly*: an unrecognised type is a venue contract change we
+    need to hear about, not something to swallow. Silence here is what let STOP_MARKET
+    masquerade as MARKET.
+    """
+    key = str(raw or "").upper()
+    key = _ORDER_TYPE_ALIASES.get(key, key)
+    if key in OrderType.__members__:
+        return OrderType[key]
+    logger.warning(
+        f"unrecognised venue order type {raw!r}; recording it as MARKET. If this is a "
+        "protective leg, exit attribution for it will be wrong until an alias is added "
+        "to _ORDER_TYPE_ALIASES."
+    )
+    return OrderType.MARKET
+
+
 class OrderSide(Enum):
     """Order sides"""
     BUY = "BUY"
@@ -685,7 +720,7 @@ class BingXClient(ExchangeClient):
             client_order_id=client_order_id,
             symbol=data.get('symbol'),
             side=OrderSide.BUY if str(data.get('side')).upper() == 'BUY' else OrderSide.SELL,
-            order_type=OrderType[raw_type] if raw_type in OrderType.__members__ else OrderType.MARKET,
+            order_type=parse_order_type(raw_type),
             price=(_f('price') or None),
             quantity=_f('origQty', 'quantity'),
             status=OrderStatus[raw_status] if raw_status in OrderStatus.__members__ else OrderStatus.NEW,

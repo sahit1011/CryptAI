@@ -76,12 +76,35 @@ profit protection, and vanishes from the engine's view on restart. The code alre
 logs this (`monitor_worker.py:466`). Either implement `get_positions()` or refuse
 `auto` while keys are attached.
 
-**P0 — the money path is the least-tested code.**
-`test_deterministic_risk_calculator`, `test_exchange_client`, `test_execution_agent`
-and `test_emergency_exit` are all **quarantined**. That is the sizing gate, order
-placement, and panic exit. The session-plane tests are healthy — the coverage hole is
-precisely where money moves. Per this repo's own `test_order_manager` lesson, read
-each failure before assuming staleness.
+**~~P0 — the money path is the least-tested code.~~ CLOSED 2026-08-25.**
+Quarantining whole FILES was hiding **45 of 58 already-passing tests** on the money
+path. Un-quarantined `test_deterministic_risk_calculator` (36 pass),
+`test_exchange_client` (14) and `test_emergency_exit` (2) — 52 tests now guard the
+sizing gate, order parsing, and panic exit. Reading the failures found **three real
+bugs**, exactly as this repo's `test_order_manager` lesson predicts:
+- Two safety warnings could never fire at their own threshold, because thresholds
+  computed as products land a hair high (`0.20 * 0.75 == 0.15000000000000002`, so an
+  exactly-15% drawdown compared false). Fixed via `at_or_above()`; rejections keep
+  strict comparisons on purpose.
+- A venue returning `STOP_MARKET` was silently parsed as `OrderType.MARKET`, so a
+  **live stop-loss fill was recorded as an ordinary market order** and its exit
+  attribution read "manual close" instead of "stopped out" — the live half of the
+  fabricated-exit_reason bug fixed on the paper side the same day. Fixed with
+  `_ORDER_TYPE_ALIASES` + a loud fallback.
+- The consecutive-loss circuit breaker had been tightened 3 → 2 and its guard
+  quarantined rather than updated; the test now pins the tighter contract.
+
+`test_execution_agent` stays quarantined **deliberately** (not as a TODO): it tests
+`ExecutionAgent`, which only `src/main.py` constructs — dead on the shipped path.
+
+**P0 (NEW) — two risk caps were widened and their guards quarantined instead.**
+Needs a founder decision; nothing was silently changed. See
+`tests/conftest.py::QUARANTINED_NODEIDS`:
+- `min_risk_reward_ratio`: code **1.0** ("for more trade opportunities") vs test 2.0
+  vs plan doc 1.5. At 1.0 RR a strategy needs >55% wins to break even before fees,
+  and `backtest-lab/FINDINGS.md` shows fee drag is what killed every S1 arm.
+- `max_position_size_usd`: code **$100,000** ("increased for 10x leverage") vs test
+  $5,000 — a 20x widening. On a $10k desk a $100k cap is barely a backstop.
 
 **P1 — the docs claimed two execution gates; there is one.**
 `ENABLE_EXECUTION` is dead code on both live entrypoints and unset in production. Only

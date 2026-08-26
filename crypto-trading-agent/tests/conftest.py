@@ -20,9 +20,12 @@ QUARANTINED_FILES = {
     "test_binance_client.py",
     "test_correlation_analyzer.py",
     "test_data_agent.py",
-    "test_deterministic_risk_calculator.py",
-    "test_emergency_exit.py",
-    "test_exchange_client.py",
+    # test_execution_agent.py — stale AND testing a class that is DEAD on the shipped
+    # path: ExecutionAgent is constructed only by src/main.py (the legacy single-bot
+    # entrypoint), never by src/api/server.py or src/multi_user_daemon.py. All 5
+    # failures are constructor drift (missing message_bus/state_manager). Rewriting it
+    # would test code no user reaches; deleting it needs the single-bot path retired
+    # first. Left quarantined DELIBERATELY, not as a TODO.
     "test_execution_agent.py",
     "test_historical_fetcher.py",       # also makes live Binance calls (451 in CI)
     "test_ict_detector.py",
@@ -41,6 +44,26 @@ QUARANTINED_FILES = {
 # Individual tests quarantined inside otherwise-healthy files.
 QUARANTINED_NODEIDS = {
     "test_memory_analytics.py::test_market_regime_detector",
+    # ---- AWAITING A FOUNDER DECISION ON RISK POLICY (2026-08-25) ----------------
+    # test_deterministic_risk_calculator.py was quarantined as a whole FILE, which
+    # hid 36 passing tests guarding the gate that validates every booking. The file
+    # is now un-quarantined. These two remain because they are NOT stale tests —
+    # they are the guards on two risk caps that were WIDENED, with the guard
+    # quarantined instead of the widening being defended. Three-way disagreement:
+    #
+    #   min_risk_reward_ratio: test says 2.0 | code says 1.0
+    #     ("Changed from 2.0 to 1.0 for more trade opportunities")
+    #     | plan doc 06 / orderflow-memo says 1.5
+    #   max_position_size_usd: test says $5,000 | code says $100,000
+    #     ("increased for 10x leverage") — a 20x widening, and on a $10k desk a
+    #     $100k cap is barely a backstop at all
+    #
+    # At 1.0 RR a strategy needs >55% wins to break even BEFORE fees, and
+    # backtest-lab/FINDINGS.md shows fee drag is what killed every S1 arm. Picking
+    # a number here is a product decision, not a test fix, so nothing is silently
+    # changed. Resolve, then delete these two lines.
+    "test_deterministic_risk_calculator.py::TestRiskParameters::test_default_parameters",
+    "test_deterministic_risk_calculator.py::TestPositionSizeBounds::test_position_size_too_large",
 }
 
 _REASON = (

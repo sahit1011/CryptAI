@@ -16,6 +16,19 @@ from src.utils.pipeline_logger import PipelineLogger
 plog = PipelineLogger()
 
 
+def at_or_above(value: float, threshold: float, rel_tol: float = 1e-9) -> bool:
+    """`value >= threshold`, tolerant of float representation.
+
+    Safety WARNINGS fire on thresholds computed as products (0.20 * 0.75), which land
+    a hair above the round number they represent: 0.20 * 0.75 == 0.15000000000000002,
+    so an exactly-15% drawdown compared `0.15 >= 0.15000000000000002` and stayed
+    SILENT at precisely the moment the warning existed for. Rejections deliberately
+    keep their strict comparisons — a hard limit should err toward allowing the edge
+    case, a warning toward speaking up.
+    """
+    return value >= threshold - abs(threshold) * rel_tol
+
+
 @dataclass
 class RiskParameters:
     """Risk management parameters"""
@@ -315,8 +328,11 @@ class DeterministicRiskCalculator:
         else:
             result.checks['per_trade_risk'] = True
 
-            # Warning if close to limit
-            if risk_amount > max_risk * 0.9:
+            # Warning if close to limit. `>=` not `>`: a safety warning must fire AT
+            # its threshold, not only past it — at exactly 90% of the cap the old
+            # strict comparison stayed silent, which is the one moment the user most
+            # needs to know how little headroom is left.
+            if at_or_above(risk_amount, max_risk * 0.9):
                 result.add_warning(
                     f"Risk amount ${risk_amount:.2f} is close to limit "
                     f"${max_risk:.2f}"
@@ -404,7 +420,7 @@ class DeterministicRiskCalculator:
             result.checks['daily_loss_limit'] = True
 
             # Warning at 80% of limit
-            if daily_loss_pct >= self.risk_params.max_daily_loss * 0.8:
+            if at_or_above(daily_loss_pct, self.risk_params.max_daily_loss * 0.8):
                 result.add_warning(
                     f"Approaching daily loss limit: {daily_loss_pct*100:.2f}%"
                 )
@@ -425,8 +441,8 @@ class DeterministicRiskCalculator:
             result.checks['drawdown_limit'] = True
 
             # Warning at 75% of max drawdown
-            if (snapshot.current_drawdown >=
-                    self.risk_params.max_total_drawdown * 0.75):
+            if at_or_above(snapshot.current_drawdown,
+                           self.risk_params.max_total_drawdown * 0.75):
                 result.add_warning(
                     f"Approaching max drawdown: "
                     f"{snapshot.current_drawdown*100:.2f}%"
