@@ -94,7 +94,7 @@ export function Navbar() {
                         <div className="hidden md:flex lg:hidden items-center gap-3 z-10">
                             {isAuthenticated ? (
                                 <>
-                                    <Link href="/dashboard">
+                                    <Link href="/desk">
                                         <Button
                                             variant="ghost"
                                             className="text-sm font-medium"
@@ -195,7 +195,7 @@ export function Navbar() {
                         {isAuthenticated ? (
                             <>
                                 <Link
-                                    href="/dashboard"
+                                    href="/desk"
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
                                     <Button

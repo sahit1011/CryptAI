@@ -95,7 +95,7 @@ CryptAI/
 │   ├── docker-compose.yml       # Redis + PostgreSQL
 │   └── requirements.txt
 ├── frontend/                    # Next.js dashboard
-└── docs (SETUP.md, ARCHITECTURE_DEEP_DIVE.md, PAPER_TRADING_GUIDE.md, …)
+└── docs/ (PRD_CURRENT_STATE.md, HLD.md, ARCHITECTURE.md, plan-2026-08/, …)
 ```
 
 ---
@@ -149,7 +149,7 @@ All backend settings live in `crypto-trading-agent/.env` (see `.env.example`):
 
 > 🔐 Never commit real keys. `.env` is gitignored — only `.env.example` (placeholders) belongs in git.
 
-Detailed guides: [`SETUP.md`](SETUP.md) · [`crypto-trading-agent/ARCHITECTURE_DEEP_DIVE.md`](crypto-trading-agent/ARCHITECTURE_DEEP_DIVE.md) · [`BACKEND_STARTUP_GUIDE.md`](BACKEND_STARTUP_GUIDE.md)
+Detailed guides: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (what actually runs) · [`docs/PRD_CURRENT_STATE.md`](docs/PRD_CURRENT_STATE.md) · [`docs/plan-2026-08/`](docs/plan-2026-08/) (current plan, PDFs) · [`crypto-trading-agent/ARCHITECTURE_DEEP_DIVE.md`](crypto-trading-agent/ARCHITECTURE_DEEP_DIVE.md) · setup: root `CLAUDE.md` §Commands
 
 ---
 

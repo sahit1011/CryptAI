@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.execution.emergency_exit import EmergencyExit
 from src.execution.position_monitor import MonitoredPosition
-from src.execution.exchange_client import Order
+from src.execution.exchange_client import Order, OrderSide
 
 @pytest.fixture
 def mock_components():
@@ -44,20 +44,19 @@ async def test_panic_close_all(mock_components):
     ]
     
     await emergency.panic_close_all()
-    
-    # Should cancel orders first
-    # (Since we mocked cancel_all_orders logic inside panic_close_all, we check exchange calls)
-    # Wait, panic_close_all calls self.cancel_all_orders.
-    # We should verify exchange.place_order calls.
-    
-    assert exchange.place_order.call_count == 2
-    
-    # Check BTC close (LONG -> SELL)
-    exchange.place_order.assert_any_call(
-        symbol='BTCUSDT', side='SELL', order_type='MARKET', quantity=1.0, price=0, reduce_only=True
+
+    # Panic close goes through the UNIFIED reduce-only interface
+    # (exchange.close_position with typed OrderSide), not the old
+    # place_order(..., order_type='MARKET', reduce_only=True) string API this test
+    # was written against. Reduce-only is guaranteed by the method rather than by a
+    # keyword the caller might forget — which is why the interface changed.
+    assert exchange.close_position.call_count == 2
+
+    # LONG closes by SELLing; SHORT closes by BUYing.
+    exchange.close_position.assert_any_call(
+        symbol='BTCUSDT', side=OrderSide.SELL, quantity=1.0
     )
-    
-    # Check ETH close (SHORT -> BUY)
-    exchange.place_order.assert_any_call(
-        symbol='ETHUSDT', side='BUY', order_type='MARKET', quantity=10.0, price=0, reduce_only=True
+    exchange.close_position.assert_any_call(
+        symbol='ETHUSDT', side=OrderSide.BUY, quantity=10.0
     )
+

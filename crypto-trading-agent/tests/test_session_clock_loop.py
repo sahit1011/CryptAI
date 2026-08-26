@@ -12,7 +12,13 @@ from datetime import datetime, timedelta
 import pytest
 
 import src.api.server as server
-from src.core.session_manager import COST_CAP, ENDED, QUOTA_EXHAUSTED, SessionManager
+from src.core.session_manager import (
+    CAPACITY_LOST,
+    COST_CAP,
+    ENDED,
+    QUOTA_EXHAUSTED,
+    SessionManager,
+)
 
 ALICE = "user-alice"
 BOB = "user-bob"
@@ -70,6 +76,11 @@ async def _one_iteration(monkeypatch, mgr, conns):
     recorder = RecordingManager(conns)
     monkeypatch.setattr(server, "manager", recorder)
     monkeypatch.setattr(server, "session_manager", mgr)
+    # Analysis capacity is available, so these tests exercise METER enforcement rather
+    # than the capacity gate. Without this a test process reads as model_error (no
+    # provider key), and the loop correctly ends every scan as capacity_lost before a
+    # meter can bind. Capacity loss during the loop is covered below, deliberately.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     await server._session_tick_once()
     return recorder.sent
 
@@ -202,3 +213,63 @@ async def test_a_paused_clock_does_not_advance_over_ticks(monkeypatch, mgr, cloc
     assert tick["data"]["elapsed_seconds"] == 60
     assert tick["data"]["clock_running"] is False
     assert mgr.get(s["session_id"])["status"] == "setup_proposed", "tick ended a paused session"
+
+
+@pytest.mark.asyncio
+async def test_capacity_loss_ends_the_scan_and_refunds(monkeypatch, tmp_path):
+    """The loop is the only thing watching a live scan, so it owns the capacity check.
+    A scan against a dead engine buys nothing: end it and hand the time back, rather
+    than let the meter quietly charge for it until the quota runs out."""
+    clock = FakeClock()
+    mgr = SessionManager(
+        f"sqlite:///{tmp_path}/s.db", daily_quota_seconds=1800, now_fn=clock
+    )
+    s = mgr.start(ALICE)
+    clock.advance(60)
+    mgr.record_cycle(s["session_id"])   # proof of work
+    clock.advance(45)                   # then the engine dies
+
+    recorder = RecordingManager({FakeSocket(): ALICE})
+    monkeypatch.setattr(server, "manager", recorder)
+    monkeypatch.setattr(server, "session_manager", mgr)
+    # No provider key in the environment => capacity reads model_error, which is exactly
+    # the mid-scan loss this test is about.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    await server._session_tick_once()
+
+    got = mgr.get(s["session_id"])
+    assert got["status"] == ENDED
+    assert got["end_reason"] == CAPACITY_LOST
+    assert got["seconds_refunded"] == 45      # the dead stretch, not the whole scan
+    assert got["elapsed_seconds"] == 60       # charged only to the last proven cycle
+    assert mgr.remaining_today(ALICE) == 1800 - 60
+
+
+@pytest.mark.asyncio
+async def test_capacity_loss_leaves_a_deciding_session_alone(monkeypatch, tmp_path):
+    """A paused session is not consuming analysis, so losing capacity must not snatch
+    the plan out from under a user who is mid-decision."""
+    clock = FakeClock()
+    mgr = SessionManager(
+        f"sqlite:///{tmp_path}/s.db", daily_quota_seconds=1800, now_fn=clock
+    )
+    s = mgr.start(ALICE)
+    clock.advance(30)
+    mgr.propose(s["session_id"])
+
+    recorder = RecordingManager({FakeSocket(): ALICE})
+    monkeypatch.setattr(server, "manager", recorder)
+    monkeypatch.setattr(server, "session_manager", mgr)
+    for var in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                "GOOGLE_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    await server._session_tick_once()
+
+    got = mgr.get(s["session_id"])
+    assert got["status"] == "setup_proposed", "a deciding user lost their plan"
+    assert got["seconds_refunded"] == 0

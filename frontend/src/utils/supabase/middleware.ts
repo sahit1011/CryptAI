@@ -9,7 +9,20 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placehol
 // Routes that require an authenticated session. Server-side enforcement here is the
 // real gate — the client-side check in dashboard/layout is only UX (it hydrates after
 // JS and is bypassable on its own).
-const PROTECTED_PREFIXES = ['/dashboard', '/terminal']
+// Every signed-in route. The (app) route group is a build-time grouping only — it does
+// not appear in URLs — so each real path is listed. Missing one here means that page is
+// reachable signed-out: the client-side check in the layout hydrates after JS and is
+// bypassable on its own, so this list is the actual gate.
+// /dashboard and /terminal are retained as redirect stubs to /desk and /chart.
+const PROTECTED_PREFIXES = [
+    '/dashboard',
+    '/terminal',
+    '/desk',
+    '/chart',
+    '/portfolio',
+    '/settings',
+    '/admin',
+]
 
 export async function updateSession(request: NextRequest) {
     let response = NextResponse.next({

@@ -1,0 +1,240 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CryptAI Audit — Current State</title><link rel="stylesheet" href="deck.css"></head>
+<body>
+
+<!-- ============ SLIDE 1 · COVER ============ -->
+<section class="slide cover">
+  <div class="kicker">CRYPTAI RESCUE PLAN <span class="sep">/</span> <span class="team">01 · FULL-TEAM AUDIT</span></div>
+  <h1>State of <em>CryptAI</em></h1>
+  <p class="sub">A nine-specialist audit of the repo, the deployment, the cost model, and the quant evidence —
+  every claim file:line-verified on branch <span class="mono">fix/m1-foundation-bugs @ 8cb897e</span>, 2026-08-24.</p>
+  <div class="meta">
+    <div><b>Doc</b>01 of 06 — Audit</div>
+    <div><b>Method</b>9 parallel audit agents · 325 tool calls</div>
+    <div><b>Verdict</b>Product built · operations broken · fixable in days</div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 1</span></div>
+</section>
+
+<!-- ============ SLIDE 2 · EXECUTIVE VERDICT ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">EXECUTIVE VERDICT</span></div>
+  <h2>The product is built. The operations broke it. Both are fixable.</h2>
+  <div class="body">
+    <div class="tiles" style="grid-template-columns:repeat(5,1fr); margin-bottom:14px">
+      <div class="tile good"><div class="label">Tests green</div><div class="value">912</div><div class="note">687 backend · 99 frontend · 126 Rust — verify.sh passes in 38s</div></div>
+      <div class="tile bad"><div class="label">Backend</div><div class="value" style="font-size:22px">SUSPENDED</div><div class="note">Render bandwidth overage 5.63/5 GB, since 2026-08-10</div></div>
+      <div class="tile good"><div class="label">Frontend</div><div class="value" style="font-size:22px">LIVE</div><div class="note">cryptai-app.vercel.app · Vercel Hobby</div></div>
+      <div class="tile"><div class="label">Monthly spend</div><div class="value">$0</div><div class="note">every service on a free tier — blocked, not billed</div></div>
+      <div class="tile"><div class="label">Since last audit</div><div class="value">43</div><div class="note">commits — the session pipeline went from unwired to wired</div></div>
+    </div>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>What changed since the Aug-2 audit — the good news</h3>
+        <p>The Aug-2 verdict was "three good products that never met." <b>That gap is closed in code:</b> the session pipeline
+        (start → per-user synthesis → proposal → approve → re-validate at live price → execute → per-position monitor) is
+        genuinely wired into the one production entrypoint, with per-session LLM billing feeding a fail-closed cap.
+        The Rust engine ships inside the production Docker image. Confirmed bugs #1–4 from the old audit
+        (quota bypass, admin fail-open, unfed risk tracker, Delta crash) are <b>fixed with traced call paths</b>.</p>
+      </div>
+      <div class="card">
+        <h3>Why users see a dead product anyway</h3>
+        <ul>
+          <li><b>None of the 43 commits is deployed</b> — Render suspended the workspace before they could ship.</li>
+          <li>The suspension's root cause is only <b>half-fixed</b>: the API's market feed was gated, but the daemon's DataAgent still opens ~2.2 GB/day of streams at startup (slide 4).</li>
+          <li>Supabase has been idle 14 days — past its 7-day free-tier pause threshold; it likely needs a dashboard restore too.</li>
+          <li>A newly found bug means the signal plane <b>cannot simply be switched on</b> (slide 5).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 2</span></div>
+</section>
+
+<!-- ============ SLIDE 3 · WHAT'S REAL ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">SOFTWARE TEAM — WHAT IS ACTUALLY WIRED</span></div>
+  <h2>Subsystem truth table — construction-path verified, not test-verified</h2>
+  <div class="body">
+    <table>
+      <tr><th style="width:20%">Subsystem</th><th style="width:8%">Status</th><th style="width:47%">Evidence-backed reality</th><th style="width:25%">Caveat that matters</th></tr>
+      <tr><td><b>Session pipeline</b></td><td><span class="pill ok">WIRED</span></td><td>Pool constructed in the daemon, daemon embedded in the API process; a metered session runs real analysis and creates proposals; clock pauses on propose</td><td>—</td></tr>
+      <tr><td><b>Per-user synthesis</b></td><td><span class="pill ok">WIRED</span></td><td>LLM selects the candidate fitting <i>this</i> trader + writes the thesis; never invents prices; forecast-language lint; deterministic fallback</td><td>Candidate <i>generation</i> still shared per symbol — selection is per-user</td></tr>
+      <tr><td><b>Approve → execute</b></td><td><span class="pill ok">WIRED</span></td><td>Re-validates expiry/invalidation/price-drift at live price, books through the user's risk gate; lost-reply recovery; 30s sweeper repairs orphans</td><td>—</td></tr>
+      <tr><td><b>Position monitors</b></td><td><span class="pill ok">WIRED</span></td><td>Supervisor unconditional; 1 unmetered monitor per position: time stop, profit give-back, adverse-pulse exit, reduce-only close</td><td><b>Do not survive a daemon restart</b> — paper engines never rehydrate; Render restarts are routine</td></tr>
+      <tr><td><b>Session LLM billing</b></td><td><span class="pill ok">WIRED</span></td><td>Usage normalized + booked even on failure paths, integer micro-USD, cap ends the session fail-closed</td><td>All-:free rotation prices at $0 — the time quota is the only binding meter today</td></tr>
+      <tr><td><b>Risk limits</b></td><td><span class="pill ok">FIXED</span></td><td>PortfolioStateTracker fed by both production booking paths — free-tier caps now evaluate a real portfolio</td><td>Live (non-paper) close hook still missing — errs over-strict, the safe direction</td></tr>
+      <tr><td><b>Rust signal engine</b></td><td><span class="pill warn">DARK</span></td><td>Built into the production image, supervised child-process wiring complete, 126 tests</td><td>Never enabled: <code>RUN_SIGNAL_ENGINE_IN_API</code> unset — and see the Pulse bug (slide 5)</td></tr>
+      <tr><td><b>Hot-window surface</b></td><td><span class="pill bad">ABSENT</span></td><td>No global pulse, no tradability history: <code>pulse_snapshots</code> has a table, indexes, a parity test — and <b>zero writers</b></td><td>The founder's "hottest hour" has no data source until the writer ships</td></tr>
+      <tr><td><b>Tier/quota model</b></td><td><span class="pill bad">GAP</span></td><td>Every tier gets the same pooled 30 min/day; session count unlimited; channels not tier-gated; nothing blocks a new session while a trade is open</td><td>The 2×30-min slot model + focus lock is R2 work (doc 03/06)</td></tr>
+      <tr><td><b>Legacy single-bot stack</b></td><td><span class="pill dim">LEGACY</span></td><td>execution_agent / order_tracker / old monitor: tested but reachable only from src/main.py, which production never runs</td><td>Marked legacy; candidates for a later attic pass</td></tr>
+    </table>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 3</span></div>
+</section>
+
+<!-- ============ SLIDE 4 · BANDWIDTH POST-MORTEM ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">INFRA TEAM — WHY THE BACKEND IS DOWN</span></div>
+  <h2>The bandwidth post-mortem: streams that served nobody</h2>
+  <p class="sub">Render free allows 5 GB/month of bandwidth — ~167 MB/day. On Aug 10 the workspace hit 5.63 GB, of which
+  <b>5.61 GB was service-initiated</b> (17 MB actually served users). Two always-on Binance consumers did it — kept alive 24/7 by our own keepalive cron.</p>
+  <div class="body">
+    <table style="margin-bottom:13px">
+      <tr><th style="width:30%">Consumer</th><th class="num" style="width:14%">Cost</th><th style="width:38%">State on HEAD</th><th style="width:18%">Fix</th></tr>
+      <tr><td><b>Daemon DataAgent</b> — depth20@100ms + markprice@1s + ticker + 5 kline TFs per symbol, subscribed unconditionally at startup</td><td class="num"><b>~2.2 GB/day</b></td><td><span class="pill bad">STILL IN CODE</span> — only the LLM analysis was demand-gated, never these streams. Resume today → re-suspended in ~2–3 days</td><td>Gate to scan demand + REST snapshots <b>(R0, before resume)</b></td></tr>
+      <tr><td><b>API base market feed</b> — btcusdt ticker + depth5@100ms + kline_1m, formerly subscribed at boot streaming to nobody</td><td class="num">~216 MB/day</td><td><span class="pill ok">FIXED</span> — refcounted to live dashboard viewers, 30s linger (commit 9edada0); idle backend subscribes nothing</td><td>Deployed on resume</td></tr>
+      <tr><td><b>Engine bookTicker stream</b> — pushed on every best-bid/ask change</td><td class="num">~200 MB/day</td><td><span class="pill ok">FIXED</span> — removed from the stream URL with a regression test; replaced by one batched REST poll per 5s</td><td>Deployed when engine ships</td></tr>
+      <tr><td><b>Engine kline WS</b> — 12 streams at 3 symbols × 4 TFs</td><td class="num">~245 MB/day</td><td><span class="pill warn">OVER BUDGET IF ENABLED</span> — 7.4 GB/mo alone</td><td>REST-poll closed bars (R1) → ~2 MB/day</td></tr>
+      <tr><td><b>Idle-socket churn</b> — zero-stream socket trips its own 90s staleness check, reconnects forever</td><td class="num">~6 MB/day</td><td><span class="pill warn">NEW FINDING</span> — ~960 pointless TLS handshakes/day + log noise</td><td>Skip staleness when no subscriptions (R0)</td></tr>
+    </table>
+    <div class="tiles" style="grid-template-columns:repeat(3,1fr)">
+      <div class="tile bad"><div class="label">If resumed as-is</div><div class="value">~2.4 <span class="unit">GB/day</span></div><div class="note">14× budget — suspension #2 within days</div></div>
+      <div class="tile good"><div class="label">After R0 + R1 fixes</div><div class="value">~1.5 <span class="unit">GB/mo</span></div><div class="note">viewer-gated feed + REST polling — 3.5 GB monthly headroom</div></div>
+      <div class="tile"><div class="label">The law going forward</div><div class="value" style="font-size:17px">Name your consumer</div><div class="note">no stream or loop without a live session, viewer, or open position attached</div></div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 4</span></div>
+</section>
+
+<!-- ============ SLIDE 5 · BUGS THAT MATTER ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">RANKED — WHAT TO FIX BEFORE USERS ARRIVE</span></div>
+  <h2>The defect list that matters now</h2>
+  <div class="body">
+    <table>
+      <tr><th style="width:4%">#</th><th style="width:30%">Defect</th><th style="width:10%">Severity</th><th style="width:40%">Consequence if shipped</th><th style="width:16%">When</th></tr>
+      <tr><td class="num">1</td><td><b>Daemon DataAgent always-on streams</b></td><td><span class="pill bad">BLOCKER</span></td><td>Re-suspension within days of resuming — product dies again</td><td class="mono">R0 · pre-resume</td></tr>
+      <tr><td class="num">2</td><td><b>Pulse dataclass vs <code>.get()</code></b> — new find, reproduced</td><td><span class="pill bad">HIGH</span></td><td>Enabling the signal plane fails <b>every metered cycle</b> while the user's clock drains; tests pass only because they fake dicts</td><td class="mono">R1 · pre-enable</td></tr>
+      <tr><td class="num">3</td><td><b>Monitors + paper desks lost on restart</b> — engines never rehydrate</td><td><span class="pill bad">HIGH</span></td><td>"Your agent never sleeps" is false after any deploy/restart — the product's core promise breaks silently</td><td class="mono">R2</td></tr>
+      <tr><td class="num">4</td><td><b>Symbol-universe mismatch</b> — analysis runs BTC/ETH/<b>XAUT</b>, sessions run BTC/ETH/<b>SOL</b></td><td><span class="pill warn">MED</span></td><td>~1/3 of all LLM spend produces setups no session can use; SOL sessions scan a symbol with no candidates. One-line env fix</td><td class="mono">R1 · env</td></tr>
+      <tr><td class="num">5</td><td><b>Quota model gaps</b> — same 30 min/day for every tier, unlimited session count, no focus lock, channels not tier-gated</td><td><span class="pill warn">MED</span></td><td>The tier ladder is unenforceable; free users can start sessions against an open trade and burn clock on undeliverable setups</td><td class="mono">R2</td></tr>
+      <tr><td class="num">6</td><td><b><code>NEXT_PUBLIC_API_TOKEN</code></b> — admin-capable static token labeled "read-only", plumbed as a frontend build arg</td><td><span class="pill warn">MED</span></td><td>One operator mistake ships an admin token in the public JS bundle</td><td class="mono">R3</td></tr>
+      <tr><td class="num">7</td><td><b>Fail-open anonymous mode</b> — no SUPABASE_URL + no API_AUTH_TOKEN ⇒ everyone sees all tenants' trades, and is admin</td><td><span class="pill warn">MED</span></td><td>Tenancy rests entirely on env vars being present</td><td class="mono">R3</td></tr>
+      <tr><td class="num">8</td><td><b>WS JWT in <code>?token=</code></b> + public <code>/metrics</code></td><td><span class="pill dim">LOW</span></td><td>JWTs land in proxy access logs; internals exposed</td><td class="mono">R3</td></tr>
+      <tr><td class="num">9</td><td><b>188 quarantined tests</b> (~21% of the suite)</td><td><span class="pill dim">LOW</span></td><td>Green pytest overstates coverage; precedent shows some quarantined tests encode real regressions</td><td class="mono">ongoing</td></tr>
+    </table>
+    <p style="font-size:11px; color:var(--muted); margin-top:10px">Fixed &amp; verified since Aug 2 (for the record): session-quota clamp · admin fail-open for end-users · risk tracker fed by real bookings ·
+    Delta OrderStatus crash · session LLM billing. The uncommitted working-tree diff (analysis demand-gate completion) is <b>correct and worth keeping</b> — commit it after fixing its stale docstring and aligning CYCLE_INTERVAL=180.</p>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 5</span></div>
+</section>
+
+<!-- ============ SLIDE 6 · CLEANUP DONE ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">REPO RE-ARCHITECTURE — EXECUTED 2026-08-24</span></div>
+  <h2>Dead weight is out — reference-checked, attic'd, gate still green</h2>
+  <div class="body">
+    <div class="tiles" style="grid-template-columns:repeat(4,1fr); margin-bottom:14px">
+      <div class="tile"><div class="label">One-off scripts retired</div><div class="value">44</div><div class="note">incl. nuclear_clear_positions.py &amp; friends — <b>out of the production image</b>; scripts/admin.py is the guarded path</div></div>
+      <div class="tile"><div class="label">Dead src modules</div><div class="value">6</div><div class="note">zero importers from any entrypoint or test — incl. EventCoordinator</div></div>
+      <div class="tile"><div class="label">Superseded docs</div><div class="value">35+</div><div class="note">Jan-2026 doc generation + 12-file fix-summary citation island</div></div>
+      <div class="tile good"><div class="label">Gate after the move</div><div class="value" style="font-size:22px">GREEN</div><div class="note">verify.sh: typecheck ✓ 99 frontend ✓ import smoke ✓ 687 backend ✓</div></div>
+    </div>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>About that "300-second always-running loop"</h3>
+        <p>The founder remembered an unused 300s loop. Found it: <code>EventCoordinator</code> — a 300s cycle trigger + 30s monitor.
+        The twist: <b>it was never constructed anywhere.</b> It burned zero cycles; it was pure reading noise. The loop that actually
+        cost money was the DataAgent's stream fleet (slide 4). Both are now handled: the corpse is in <code>_attic/src-dead/</code>,
+        the live one is R0's blocker fix. <b>Lesson encoded in CLAUDE.md:</b> in this repo, "exists and passes tests" ≠ "runs" —
+        always trace a constructor from an entrypoint.</p>
+      </div>
+      <div class="card">
+        <h3>Where everything went</h3>
+        <table>
+          <tr><th>Location</th><th>Contents</th></tr>
+          <tr><td class="mono">_attic/cta-scripts/</td><td>44 one-off/destructive scripts (+ .dockerignore excludes _attic)</td></tr>
+          <tr><td class="mono">_attic/src-dead/</td><td>event_coordinator, health_monitor, cycle_state, multi_context_analyzer, dual_context_llm_builder, ict_detector_CLEAN</td></tr>
+          <tr><td class="mono">_attic/root-docs/ · docs/ · cta-docs/</td><td>superseded doc generations + websocket test HTML + debug scripts</td></tr>
+          <tr><td class="mono">_attic/README.md</td><td>what, why, and how to restore (git mv back)</td></tr>
+        </table>
+        <p style="margin-top:8px; font-size:11.5px">Every move was reference-checked first; pointers in README, PRD, admin.py, data_models.py, and eslint config were updated. Nothing deleted — git remembers, and the attic travels with the repo.</p>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 6</span></div>
+</section>
+
+<!-- ============ SLIDE 7 · LLM COST REALITY ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">COST ENGINEERING — THE LLM LEDGER</span></div>
+  <h2>LLM reality: dollars are $0 — requests are the real currency</h2>
+  <div class="body">
+    <div class="cols cols-21">
+      <div class="stack">
+        <table>
+          <tr><th style="width:26%">Call site (all → OpenRouter :free rotation)</th><th style="width:20%">Cadence</th><th class="num" style="width:16%">Prompt size</th><th style="width:38%">Note</th></tr>
+          <tr><td><b>Shared market analysis</b></td><td>per symbol per 180s cycle, demand-gated</td><td class="num"><b>~40k tokens</b></td><td><b>≈95% of all token throughput.</b> Raw JSON dumps of market data — the #1 shrink target (send the engine's pulse summary instead)</td></tr>
+          <tr><td><b>Strategy creator</b></td><td>per symbol per cycle, when opportunities exist</td><td class="num">~1–2k</td><td>Its purpose-built cache is constructed, tested, and <b>has zero callers</b> — the signature trap again; wire it or delete it</td></tr>
+          <tr><td><b>Per-session synthesis</b></td><td>once per session per cycle</td><td class="num">~0.7k in / 400 out</td><td>The only session-billed call. Per-user by design, correctly uncached</td></tr>
+          <tr><td><b>Trade monitoring</b></td><td>15s polls</td><td class="num"><b>0</b></td><td>Fully deterministic — the "never sleeps" promise costs zero LLM</td></tr>
+        </table>
+        <div class="card">
+          <h3>The free-cap math (50 users × free tier)</h3>
+          <p>One 30-min session ≈ <b>40–70 requests / 0.7–1.3M tokens</b> ($0 on :free). OpenRouter free caps ≈ 50 req/day —
+          or <b>~1,000 req/day after a one-time $10 credit</b> (verify current terms). 50 users staggered across the day ≈ 3,400 req/day = dead key.
+          <b>Clustered into hot windows ≈ 560 req/day = it fits.</b> The hot-window mechanic isn't just UX — it is the cost model.</p>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Ordered cost levers</h3>
+          <ul>
+            <li><b>Buy the one-time $10 OpenRouter credit</b> — 20× the request cap; still effectively $0/mo</li>
+            <li><b>Shrink the 40k-token analysis prompt</b> to a few k (pulse summary in, raw JSON out)</li>
+            <li><b>Fix the symbol mismatch</b> — recovers ~1/3 of spend instantly (env one-liner)</li>
+            <li><b>Hot-window clustering</b> — sessions share the demand-gated analysis cycles</li>
+            <li><b>Wire the strategy cache</b> (built, unwired) + keep analysis cache ≥2 cycles</li>
+            <li><b>Global daily request counter, fail-closed</b> — nothing tracks requests today; a dead-primary rotation day multiplies the 40k prompt by every retry</li>
+            <li>Honest floor at scale: ~$10–20/mo of paid inference once &gt;10–15 staggered sessions/day — a Lite-tier pricing input, not a launch cost</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 7</span></div>
+</section>
+
+<!-- ============ SLIDE 8 · QUANT VERDICT ============ -->
+<section class="slide">
+  <div class="kicker">AUDIT <span class="sep">/</span> <span class="team">QUANT DESK — WHAT THE EVIDENCE ALLOWS</span></div>
+  <h2>Quant verdict: a real filter, no directional edge, log everything</h2>
+  <div class="body">
+    <div class="cols cols-3">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--good)"></span>Validated — build on it</h3>
+        <ul>
+          <li><b>Tradability = a NOW-cast filter</b> for move size over the next ~4–12h (IC +0.083/+0.096 at 4×1h bars; survives vol-normalization; decays to nothing by 24 bars).</li>
+          <li><b>Hour-of-day is the strongest factor</b> (residual IC +0.093, t +7.07) and is deterministic from the clock — the only honestly <i>forward</i> piece. London–NY overlap ≈ <b>17:30–20:30 IST</b>: perfect copy for Indian evening users.</li>
+          <li><b>Intraday is the only honest channel</b>: scalp fails validation (weights flip at 12 bars) <i>and</i> TDS economics; swing IC is insignificant at 24 bars, negative at 72.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--critical)"></span>Refuted / unproven — never claim</h3>
+        <ul>
+          <li><b>Regime→direction is dead</b> (walk-forward ΔIC −0.008, a coin flip). The engine enforces this on the wire; the ban must now travel <b>up the stack</b> — the LLM synthesis layer is the only source of direction and carries <b>zero empirical validation</b>. Mirror the Rust contract test in the frontend.</li>
+          <li><b>No variant shows skill after multiple-testing correction</b> (deflated Sharpe 0.00 everywhere); no costs/slippage/funding modeled; 2 of 6 factors unmeasured.</li>
+          <li>Therefore: <b>real-money launch is indefensible.</b> Paper-first is not caution — it's the only position the data permits.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--warn)"></span>Day-one logging (falsifiability)</h3>
+        <ul>
+          <li><code>pulse_snapshots</code> writer on every publish — full factor JSON + reference price (<b>zero writers today</b>; everything downstream is blocked on this).</li>
+          <li>Forward-return backfill (15m/1h/4h + MFE/MAE) → re-run the walk-forward at +6 weeks; if temporal IC dies, the badge comes down.</li>
+          <li>Per-proposal log: pulse id → channel → LLM direction → user decision → paper outcome — builds the direction-layer evidence that doesn't exist.</li>
+          <li>Hour-of-day |return| buckets per symbol → replaces the hand-set liquidity map with learned hot hours.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card" style="margin-top:13px">
+      <h3>The honest product sentence</h3>
+      <p style="font-size:14px">"CryptAI ships <b>a validated market-conditions filter with live public calibration</b>, per-user trade construction, and unmetered position protection —
+      on paper desks first, with real money gated behind six weeks of live evidence and a compliance floor." Design consequence: intraday holds (4–12h) <b>outlive 30-minute sessions</b> — the monitor isn't a feature, it's the product's spine.</p>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · audit</span><span>01 · 8</span></div>
+</section>
+
+</body></html>

@@ -26,7 +26,7 @@ from src.analysis.indicators import TechnicalIndicators
 from src.analysis.smc_detector import SMCDetector
 from src.analysis.ict_detector import ICTDetector
 from src.analysis.pattern_recognition import PatternRecognizer
-from src.analysis.llm_context_builder import LLMContextBuilder
+from src.analysis.llm_context_builder import LLMContextBuilder, render_user_message
 from src.analysis.mtf_analyzer import MultiTimeframeAnalyzer
 from src.utils.config import get_config
 from src.utils.enhanced_logging import PhaseLogger, StepLogger, MetricsLogger
@@ -1304,38 +1304,11 @@ class MarketAnalysisAgent(BaseAgent):
         # Convert NumPy types to native Python types
         safe_context = self._make_serializable(context)
 
-        # Safe JSON encoder that handles edge cases
-        class SafeJSONEncoder(json.JSONEncoder):
-            def default(self, o):
-                if isinstance(o, (np.bool_, bool)):
-                    return str(o)
-                elif isinstance(o, (np.integer, np.floating)):
-                    return float(o)
-                return str(o)
-
-        user_message = f"""
-Analyze the following market data:
-
-## Current Market Data
-{json.dumps(safe_context['current_data'], indent=2, cls=SafeJSONEncoder)}
-
-## Technical Indicators
-{json.dumps(safe_context['indicators'], indent=2, cls=SafeJSONEncoder)}
-
-## Smart Money Concepts Analysis
-{json.dumps(safe_context['smc_analysis'], indent=2, cls=SafeJSONEncoder)}
-
-## ICT Methodology Analysis
-{json.dumps(safe_context['ict_analysis'], indent=2, cls=SafeJSONEncoder)}
-
-## Chart Patterns
-{json.dumps(safe_context['patterns'], indent=2, cls=SafeJSONEncoder)}
-
-## Historical Context
-{json.dumps(safe_context['historical_context'], indent=2, cls=SafeJSONEncoder)}
-
-{safe_context['task_instructions']}
-"""
+        # ONE compact renderer for every provider tier (R1.6b): candles as a stats
+        # line + recent CSV rows, other sections as unindented JSON. Replaced three
+        # identical inline builders that dumped the whole context as indented JSON
+        # (~40k tokens/call). See llm_context_builder.py::render_user_message.
+        user_message = render_user_message(safe_context)
 
         # Log the context being sent to LLM
         plog.debug(
@@ -1397,38 +1370,11 @@ Analyze the following market data:
         # Convert NumPy types to native Python types
         safe_context = self._make_serializable(context)
 
-        # Safe JSON encoder that handles edge cases
-        class SafeJSONEncoder(json.JSONEncoder):
-            def default(self, o):
-                if isinstance(o, (np.bool_, bool)):
-                    return str(o)
-                elif isinstance(o, (np.integer, np.floating)):
-                    return float(o)
-                return str(o)
-
-        user_message = f"""
-Analyze the following market data:
-
-## Current Market Data
-{json.dumps(safe_context['current_data'], indent=2, cls=SafeJSONEncoder)}
-
-## Technical Indicators
-{json.dumps(safe_context['indicators'], indent=2, cls=SafeJSONEncoder)}
-
-## Smart Money Concepts Analysis
-{json.dumps(safe_context['smc_analysis'], indent=2, cls=SafeJSONEncoder)}
-
-## ICT Methodology Analysis
-{json.dumps(safe_context['ict_analysis'], indent=2, cls=SafeJSONEncoder)}
-
-## Chart Patterns
-{json.dumps(safe_context['patterns'], indent=2, cls=SafeJSONEncoder)}
-
-## Historical Context
-{json.dumps(safe_context['historical_context'], indent=2, cls=SafeJSONEncoder)}
-
-{safe_context['task_instructions']}
-"""
+        # ONE compact renderer for every provider tier (R1.6b): candles as a stats
+        # line + recent CSV rows, other sections as unindented JSON. Replaced three
+        # identical inline builders that dumped the whole context as indented JSON
+        # (~40k tokens/call). See llm_context_builder.py::render_user_message.
+        user_message = render_user_message(safe_context)
 
         plog.debug(
             f"Sending context to OpenRouter DeepSeek (context_size: {len(user_message)} chars)",
@@ -1442,9 +1388,10 @@ Analyze the following market data:
             # each in order and use the first usable (JSON-shaped) reply. See
             # src/utils/openrouter_rotation.py.
             from src.utils.openrouter_rotation import complete_with_rotation, looks_like_json_object
-            # The OpenRouter client is SYNC, and this analysis context is large
-            # (~40k tokens) so the call can run 60-120s — rotating models can extend
-            # it further. Run it OFF the event loop: a blocking call this long freezes
+            # The OpenRouter client is SYNC, and even with the compact context
+            # (~5-8k tokens since R1.6b) a :free model can take 60s+ to answer —
+            # rotating models extends that further. Run it OFF the event loop: a
+            # blocking call this long freezes
             # the HTTP server and the WS reader, which makes Render's health check time
             # out and RESTART the container mid-analysis (the cycle then never
             # completes). run_in_executor keeps the loop responsive during the call.
@@ -1510,38 +1457,11 @@ Analyze the following market data:
         # Groq) into effectively 2 tiers. Use the same serializer as the other tiers.
         safe_context = self._make_serializable(context)
 
-        # Safe JSON encoder that handles edge cases
-        class SafeJSONEncoder(json.JSONEncoder):
-            def default(self, o):
-                if isinstance(o, (np.bool_, bool)):
-                    return str(o)
-                elif isinstance(o, (np.integer, np.floating)):
-                    return float(o)
-                return str(o)
-
-        user_message = f"""
-Analyze the following market data:
-
-## Current Market Data
-{json.dumps(safe_context['current_data'], indent=2, cls=SafeJSONEncoder)}
-
-## Technical Indicators
-{json.dumps(safe_context['indicators'], indent=2, cls=SafeJSONEncoder)}
-
-## Smart Money Concepts Analysis
-{json.dumps(safe_context['smc_analysis'], indent=2, cls=SafeJSONEncoder)}
-
-## ICT Methodology Analysis
-{json.dumps(safe_context['ict_analysis'], indent=2, cls=SafeJSONEncoder)}
-
-## Chart Patterns
-{json.dumps(safe_context['patterns'], indent=2, cls=SafeJSONEncoder)}
-
-## Historical Context
-{json.dumps(safe_context['historical_context'], indent=2, cls=SafeJSONEncoder)}
-
-{safe_context['task_instructions']}
-"""
+        # ONE compact renderer for every provider tier (R1.6b): candles as a stats
+        # line + recent CSV rows, other sections as unindented JSON. Replaced three
+        # identical inline builders that dumped the whole context as indented JSON
+        # (~40k tokens/call). See llm_context_builder.py::render_user_message.
+        user_message = render_user_message(safe_context)
 
         plog.debug(
             f"Sending context to Groq Llama (context_size: {len(user_message)} chars)",

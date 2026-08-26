@@ -328,9 +328,8 @@ risk_params = RiskParameters(
 4. Review error messages
 
 ### Questions?
-- Review architecture docs: `docs/architecture_workflow_guide.md`
-- Check PRD: `docs/prd.md`
-- See 24-hour workflow: `TYPICAL_24HR_WORKFLOW.md`
+- What actually runs: repo-root `docs/ARCHITECTURE.md`
+- Ground truth + target design: `docs/PRD_CURRENT_STATE.md` · `docs/HLD.md`
 
 ---
 

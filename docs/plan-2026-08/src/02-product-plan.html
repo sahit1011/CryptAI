@@ -1,0 +1,272 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CryptAI Product Plan</title><link rel="stylesheet" href="deck.css"></head>
+<body>
+
+<!-- ============ SLIDE 1 · COVER ============ -->
+<section class="slide cover">
+  <div class="kicker">CRYPTAI RESCUE PLAN <span class="sep">/</span> <span class="team">02 · PRODUCT TEAM</span></div>
+  <h1>The product, <em>refocused</em></h1>
+  <p class="sub">One clear promise for 50 waitlist users: metered AI trading sessions that find a trade,
+  and an always-on agent that manages it after entry. Free to run, honest about its edge, shippable now.</p>
+  <div class="meta">
+    <div><b>Doc</b>02 of 06 — Product plan</div>
+    <div><b>Date</b>2026-08-24</div>
+    <div><b>Status</b>Adopted direction</div>
+    <div><b>Supersedes</b>Tier table in docs/HLD.md §5</div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 1</span></div>
+</section>
+
+<!-- ============ SLIDE 2 · WHAT IT IS ============ -->
+<section class="slide">
+  <div class="kicker">PRODUCT <span class="sep">/</span> <span class="team">POSITIONING</span></div>
+  <h2>What CryptAI is — and the three promises it can keep</h2>
+  <p class="sub">An AI trading co-pilot for crypto perpetual futures. The user brings an exchange account (or a paper desk);
+  CryptAI brings a validated market-condition engine, a metered session where AI agents propose trades, and an
+  unmetered monitor that manages every open position.</p>
+  <div class="body">
+    <div class="cols cols-3">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s1)"></span>Promise 1 · Timing</h3>
+        <p><b>"Is now a good time to trade?"</b></p>
+        <p style="margin-top:8px">Answered by the Rust signal engine's <b>tradability score</b> — empirically validated
+        as a short-horizon filter (IC +0.08–0.10), not vibes. Surfaced as a <b>hot-window banner</b>: spend your
+        session slots when the market is actually tradable.</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s3)"></span>Promise 2 · Personal</h3>
+        <p><b>"A trade team working your book."</b></p>
+        <p style="margin-top:8px">Setups are synthesized <b>per user</b> — same chart, different trade — sized against
+        your capital, risk appetite, monthly goal, and open positions. Every trade arrives as a proposal with entry,
+        stop, targets, size, and a plain-language rationale. <b>You approve; it executes.</b></p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s7)"></span>Promise 3 · Vigilance</h3>
+        <p><b>"It doesn't fall asleep after entry."</b></p>
+        <p style="margin-top:8px">On fill, a per-position <b>monitor agent</b> takes over — unmetered, outliving the
+        session and every restart. It re-checks the thesis as conditions drift and decides: hold, tighten stop,
+        take partial, or exit. <b>Finding trades is metered; protecting them never is.</b></p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>The one-line pitch</h3>
+      <p style="font-size:15px"><b>"Up to two 30-minute sessions a day with a professional AI trade desk — a slot is only spent
+      when it delivers you a trade, and an agent watches every position you take, around the clock, for free."</b></p>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 2</span></div>
+</section>
+
+<!-- ============ SLIDE 3 · FREE TIER MECHANIC ============ -->
+<section class="slide">
+  <div class="kicker">PRODUCT <span class="sep">/</span> <span class="team">THE FREE-TIER MECHANIC</span></div>
+  <h2>Free tier: 2 × 30-minute sessions, one trade in focus</h2>
+  <div class="body">
+    <div class="flow" style="margin-bottom:14px">
+      <div class="step"><span class="n">1</span><h4>Hot window</h4><p>The global engine scores market tradability continuously.
+        Dashboard shows <b>“market is hot / quiet”</b> so users spend slots at the best time — no session needed to see it.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">2</span><h4>Start a session</h4><p>One of <b>2 daily slots</b>, 30 min each, server-clocked.
+        Agents scan and synthesize setups personalized to the user's capital, risk, and goal.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">3</span><h4>Proposal</h4><p>A setup card arrives: entry / stop / targets / size / leverage /
+        R:R + rationale, with a shelf life. <b>The clock pauses</b> while the user decides.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">4</span><h4>Trade focus</h4><p>On approval the trade executes and the session goes
+        <b>synchronous</b>: no new setups. The user's whole window pivots to the one running trade.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">5</span><h4>Managed exit</h4><p>The monitor manages the position to profit-book or stop —
+        even after the session ends. Portfolio and history update; the next session unlocks when the trade closes.</p></div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>Why sessions, not always-on</h3>
+        <ul>
+          <li><b>Scarcity is the product:</b> session slots make the free tier generous but bounded, and the upgrade path obvious.</li>
+          <li><b>Cost follows sessions:</b> LLM spend only happens inside a metered window — the $0 infra budget holds structurally.</li>
+          <li><b>Focus beats noise:</b> a 30-min window with a hot-market banner beats a firehose of all-day signals.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Why synchronous on free</h3>
+        <ul>
+          <li>One open trade at a time = <b>capital protection by design</b> for beginners.</li>
+          <li>Monitoring one trade is <b>cheap and unmetered</b> — the "never sleeps" promise costs us almost nothing.</li>
+          <li>Async multi-trade becomes a <b>real, felt upgrade</b> at Lite/Pro instead of an arbitrary paywall.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Session rules (free) — v2 after red-team review</h3>
+        <ul>
+          <li>Up to 2 slots/day · 30 min each · server-authoritative clock · daily reset at midnight (stored UTC, always shown in the user's local time).</li>
+          <li><b>A slot is spent when a proposal is delivered — not when scanning starts.</b> A session that finds no qualifying setup auto-ends after a bounded scan (~10 min) and <b>returns the slot</b>; scan attempts cap at 3/day to protect the request budget.</li>
+          <li>Clock <b>pauses</b> while a proposal awaits a decision.</li>
+          <li>While a trade is open, new sessions are <b>held</b>; a slot held by an open trade survives <b>one</b> midnight reset (intraday holds run 4–12h — the lock routinely spans midnight).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 3</span></div>
+</section>
+
+<!-- ============ SLIDE 4 · TIERS ============ -->
+<section class="slide">
+  <div class="kicker">PRODUCT <span class="sep">/</span> <span class="team">TIER LADDER</span></div>
+  <h2>Four tiers — only Free ships now, the rest is roadmap</h2>
+  <p class="sub">No purchasable pricing until a real payment rail exists (Razorpay/Stripe — roadmap M4). The landing page presents
+  Free as a beta and the paid tiers as "coming soon". Env-var tier grants are replaced by a subscriptions table before any money moves.</p>
+  <div class="body">
+    <table>
+      <tr>
+        <th style="width:16%">Capability</th>
+        <th style="width:21%">Free — ships now</th>
+        <th style="width:21%">Lite</th>
+        <th style="width:21%">Pro</th>
+        <th style="width:21%">Pro Max</th>
+      </tr>
+      <tr><td><b>Sessions / day</b></td><td class="mono"><b>2 × 30 min</b></td><td class="mono">4 × 45 min</td><td class="mono">8 × 60 min</td><td class="mono">Unlimited windows</td></tr>
+      <tr><td><b>Trade mode</b></td><td><b>Synchronous</b> — 1 open trade, session pivots to it</td><td>Async-lite — 2 concurrent trades</td><td>Async — 5 concurrent trades</td><td>Async — 10 concurrent trades</td></tr>
+      <tr><td><b>Channels</b></td><td>Intraday</td><td>Intraday</td><td>+ Swing — <b>only after it passes live validation</b> (the +6-week walk-forward gate)</td><td>+ validated channels as they clear the gate</td></tr>
+      <tr><td><b>Execution</b></td><td>Paper desk; exchange connect in testnet beta</td><td>+ Live (Delta India), consent-gated</td><td>+ BingX · auto-mode within consent caps</td><td>+ Multi-exchange, API access</td></tr>
+      <tr><td><b>Monitoring</b></td><td colspan="4" style="text-align:center"><b>Unmetered on every tier — position protection is never paywalled</b></td></tr>
+      <tr><td><b>Assistant</b></td><td>—</td><td>Ask about your positions</td><td>Full market + book Q&amp;A</td><td>Full + strategy tuning</td></tr>
+      <tr><td><b>Price</b></td><td class="mono"><b>$0</b></td><td class="mono">TBD · after payments ship</td><td class="mono">TBD</td><td class="mono">TBD</td></tr>
+    </table>
+    <p style="font-size:11px; color:var(--muted); margin-top:10px">Red-team correction (own honesty law): <b>scalp is not on the ladder at all</b> — it failed
+    validation (weights flip at 12 bars) <i>and</i> India's 1% TDS kills its economics; swing IC is currently insignificant, so it is a validation-gated unlock, never
+    marketed "coming soon". The honest paid axes are sessions, concurrency, live execution, and the assistant — never unvalidated channels.</p>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 4</span></div>
+</section>
+
+<!-- ============ SLIDE 5 · HONEST EDGE ============ -->
+<section class="slide">
+  <div class="kicker">PRODUCT <span class="sep">/</span> <span class="team">QUANT DESK — WHAT WE CLAIM, WHAT WE NEVER CLAIM</span></div>
+  <h2>The honest edge — claims the data supports</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="stack">
+        <div class="card">
+          <h3><span class="dot" style="background:var(--good)"></span>We claim — and can defend</h3>
+          <ul>
+            <li><b>"Now is / isn't a good time to trade."</b> Tradability score validated out-of-sample as a short-horizon filter
+            (IC +0.083–0.096 at 4 bars; survives volatility normalization; re-validated on six held-out symbols).</li>
+            <li><b>"This setup fits your book."</b> Sizing and gating are deterministic against the user's real capital, risk %, and open positions.</li>
+            <li><b>"Your position is being watched."</b> Monitor re-evaluates on regime flip, pulse veto, and invalidation breach — mechanical, auditable triggers.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3><span class="dot" style="background:var(--critical)"></span>We never claim</h3>
+          <ul>
+            <li><b>Direction from regime.</b> Killed out-of-sample (walk-forward IC −0.008). No consumer may map regime → long/short. Contract-tested.</li>
+            <li><b>"3 PM will be the best hour."</b> The score is a <b>now-cast</b>, not a forecast. The hot-window banner says "market is hot now" and
+            "typically active hours" — never a predicted golden hour, until logged calibration data earns it.</li>
+            <li><b>Guaranteed returns.</b> Monthly range is the user's <b>goal input</b> for risk shaping — never a promise in UI copy.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3><span class="dot" style="background:var(--warn)"></span>Launch posture: paper-first</h3>
+          <p><b>Waitlist launch runs on paper desks (real fills simulation) + Delta India testnet connect.</b>
+          Real-money mainnet stays double-gated off until the compliance floor exists (ToS, risk disclosure,
+          automated-execution consent, API-key scope verification, KYC). Rationale:</p>
+          <ul style="margin-top:8px">
+            <li>50 strangers × leveraged perps × an engine with a <b>brand-new wiring layer</b> = uninsurable risk on day one.</li>
+            <li>Paper mode exercises 100% of the product loop — sessions, proposals, focus mode, monitoring, history.</li>
+            <li>India: FIU-IND / VDA / advisory-licensing questions are open; paper keeps them dormant while we learn.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Falsifiability from day one</h3>
+          <ul>
+            <li>Every published pulse is appended to the <code>pulse_snapshots</code> calibration log — the score stays testable against forward returns.</li>
+            <li>Every proposal → outcome pair is recorded, so "did our setups make money" is a query, not a belief.</li>
+            <li>Hot-window hours are learned from our own logged data before we ever present them as advice.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 5</span></div>
+</section>
+
+<!-- ============ SLIDE 6 · SCOPE ============ -->
+<section class="slide">
+  <div class="kicker">PRODUCT <span class="sep">/</span> <span class="team">LAUNCH SCOPE</span></div>
+  <h2>Waitlist launch: must / should / won't</h2>
+  <div class="body">
+    <div class="cols cols-3">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--good)"></span>Must — launch blocks on these</h3>
+        <ul>
+          <li>Google sign-in + 4-step onboarding (mode → capital → risk appetite → <b>monthly risk budget</b> — never a return expectation)</li>
+          <li>Hot-window banner + per-symbol pulse on dashboard</li>
+          <li>2×30-min session flow: start → setups → proposal card → approve → trade focus</li>
+          <li>Paper execution + portfolio/history that survives restarts</li>
+          <li>Per-position monitor + visible monitor window ("what my agent is doing")</li>
+          <li>Quota integrity: server-clamped sessions, per-session LLM budget fed &amp; enforced</li>
+          <li>Security floor: admin fail-closed, no fail-open anon mode, destructive scripts out of the image</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--warn)"></span>Should — first weeks after</h3>
+        <ul>
+          <li>Delta India <b>testnet</b> live-connect beta (real order path, fake money)</li>
+          <li>Learned "typically hot hours" from calibration log</li>
+          <li>Session summary recap ("your 30 minutes: 3 setups, 1 trade, +$142")</li>
+          <li>Email/push nudge when the market turns hot and slots remain</li>
+          <li>Waitlist referral loop ("skip the queue")</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--critical)"></span>Won't — deliberately not now</h3>
+        <ul>
+          <li>Payments, paid tiers, checkout — Free beta only</li>
+          <li>Real-money mainnet execution — gated until compliance floor</li>
+          <li>Scalp channel — TDS honesty + validation gap</li>
+          <li>AI chat assistant — Lite/Pro roadmap</li>
+          <li>CoinDCX — no testnet exists; unvalidatable without real money</li>
+          <li>Mobile app — responsive web only</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 6</span></div>
+</section>
+
+<!-- ============ SLIDE 7 · METRICS & DECISIONS ============ -->
+<section class="slide">
+  <div class="kicker">PRODUCT <span class="sep">/</span> <span class="team">SUCCESS METRICS · OPEN DECISIONS</span></div>
+  <h2>How we'll know it worked — and what only the founder can decide</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Success metrics — first 30 days</h3>
+        <table>
+          <tr><th>Metric</th><th>Target</th><th>Why it matters</th></tr>
+          <tr><td><b>Waitlist activation</b></td><td class="num">≥ 60%</td><td>50 invited → 30 complete onboarding + first session</td></tr>
+          <tr><td><b>Active days</b></td><td class="num">≥ 60%</td><td>Days with a session started <b>or</b> a slot held by an open trade — a good trade held 8h must not read as disengagement</td></tr>
+          <tr><td><b>Proposal delivery</b></td><td class="num">≥ 50%</td><td>% of hot-window sessions receiving ≥1 proposal — the denominator that makes approval rate meaningful</td></tr>
+          <tr><td><b>Proposal approval rate</b></td><td class="num">25–60%</td><td>Below = setups aren't credible; above = users rubber-stamp</td></tr>
+          <tr><td><b>D7 retention</b></td><td class="num">≥ 40%</td><td>Sessions are a daily mechanic — this is the product verdict</td></tr>
+          <tr><td><b>Monitor saves</b></td><td class="num">count &gt; 0</td><td>Exits triggered by thesis-break before SL — the differentiator, demo-able</td></tr>
+          <tr><td><b>Request budget</b></td><td class="num">&lt; cap · 0 outages</td><td>OpenRouter requests/day vs key budget + sessions ended by capacity loss = 0 — dollars are $0 by construction; <b>requests</b> are the real meter</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Founder decisions needed (blocking none of the build)</h3>
+        <ul>
+          <li><b>Waitlist geography:</b> India-only or global? Decides whether hot-window copy may say IST — internally everything is stored UTC and rendered in the viewer's local time.</li>
+          <li><b>Paper capital:</b> user-declared (capped $1k–$100k), with <b>desk epochs</b>: capital edits blocked while a position is open; an edit closes the desk epoch and opens a new logged one, so the proposal→outcome ledger can't be laundered by resets. All cross-user analysis in R-multiples and %.</li>
+          <li><b>Waitlist rollout:</b> all 50 at once vs 10/day cohorts. Plan assumes <b>cohorts of 10</b>.</li>
+          <li><b>Tier pricing:</b> deferred until payments ship — no number needed now.</li>
+          <li><b>Brand voice on hot windows:</b> "market is hot" vs "conditions favorable" — copy choice, compliance-relevant.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · product plan</span><span>02 · 7</span></div>
+</section>
+
+</body></html>

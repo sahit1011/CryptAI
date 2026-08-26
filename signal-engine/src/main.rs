@@ -21,11 +21,21 @@ use tokio::sync::{watch, RwLock};
 use tracing::{error, info, warn};
 
 use signal_engine::feature_store::{FeatureStore, TIMEFRAMES};
-use signal_engine::ingest::{bootstrap_history, now_ms, run_feed};
+use signal_engine::ingest::{bootstrap_history, now_ms};
+use signal_engine::venue::Venue;
 use signal_engine::publish;
+use signal_engine::pulse::GlobalPulse;
 use signal_engine::scoring::{score, MarketSnapshot, ScoringConfig, TimeframeData};
 
 const DEFAULT_SYMBOLS: &str = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT";
+
+/// The staleness budget both planes enforce: `scoring::Weights::max_feed_age_ms` raises
+/// `Veto::StaleFeed` past this, and the Python `PulseClient` rejects the pulse outright.
+const BOOK_STALENESS_BUDGET_MS: u64 = 15_000;
+/// Worst-case time for one book request, so the schedule leaves room for it. Matches the
+/// HTTP client timeout in `ingest::poll_book_tops`; a stamp is taken only after a
+/// response is parsed, so interval + request is the real stamp-to-stamp gap.
+const BOOK_REQUEST_BUDGET_MS: u64 = 10_000;
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -68,20 +78,72 @@ async fn main() {
     // Backfill first. Without it the 4h timeframe would need weeks of uptime before the
     // engine could score anything, and every pulse until then would be an
     // InsufficientHistory veto — correct, but useless.
+    // Bootstrap MUST eventually succeed: the score loop cannot warm the 1h/4h
+    // timeframes from forward polling alone (that would take days), so an aborted
+    // bootstrap — e.g. the host's shared egress IP is rate-limit banned at the venue,
+    // seen live on first deploy — retries after the ban lifts instead of giving up.
+    // Until it succeeds the engine publishes nothing, consumers' staleness gates hold,
+    // and sessions fail closed: cold and honest beats warm and wrong.
     info!("bootstrapping history over REST...");
-    let loaded = bootstrap_history(&store, &symbols, 500).await;
-    info!("bootstrapped {loaded} bars");
+    let mut bootstrap_shutdown = shutdown_rx.clone();
+    let (loaded, active_venue) = loop {
+        let (loaded, ban_until, venue) = bootstrap_history(&store, &symbols, 500).await;
+        if loaded > 0 {
+            // The venue that answered owns this process's history. Mixing venues within
+            // one symbol's window silently shifts every volume/range factor, so this
+            // choice is sticky until the next restart (see signal_engine::venue).
+            break (loaded, venue.unwrap_or(Venue::Binance));
+        }
+        let wait_ms = ban_until
+            .map(|until| (until - now_ms()).clamp(60_000, 3_600_000))
+            .unwrap_or(300_000);
+        warn!(
+            "bootstrap loaded nothing — retrying in {}s (venue ban or outage)",
+            wait_ms / 1000
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(wait_ms as u64)) => {}
+            _ = bootstrap_shutdown.changed() => {
+                info!("shutdown during bootstrap wait");
+                return;
+            }
+        }
+    };
+    info!("bootstrapped {loaded} bars from {}", active_venue.name());
 
-    let feed = tokio::spawn(run_feed(
+    // Closed bars by REST at each timeframe boundary (R1.4) — the kline websocket
+    // fleet is gone: it pushed intra-bar updates the scorer discarded, at ~0.6GB/mo
+    // per stream. The boundary poll carries the identical scored information.
+    let feed = tokio::spawn(signal_engine::ingest::poll_klines(
         Arc::clone(&store),
         symbols.clone(),
         shutdown_rx.clone(),
+        active_venue,
     ));
 
     let perp = tokio::spawn(signal_engine::ingest::poll_perp_state(
         Arc::clone(&store),
         symbols.clone(),
         shutdown_rx.clone(),
+    ));
+
+    // Top-of-book by REST on the scoring cadence rather than the @bookTicker stream.
+    // It also carries the feed heartbeat, so the gap between two STAMPS must stay inside
+    // the 15s staleness budget both planes enforce.
+    //
+    // The schedule alone does not bound that gap: a stamp is taken after the response is
+    // parsed, so the worst case is one interval plus one request. With a 10s interval and
+    // the 10s client timeout, a fast poll followed by a slow-but-successful one is ~19.5s
+    // apart — a StaleFeed veto on healthy data. Budget for the request explicitly instead
+    // of assuming the cadence covers it.
+    let book_interval_ms = tick_ms
+        .clamp(1_000, BOOK_STALENESS_BUDGET_MS.saturating_sub(BOOK_REQUEST_BUDGET_MS));
+    let book = tokio::spawn(signal_engine::ingest::poll_book_tops(
+        Arc::clone(&store),
+        symbols.clone(),
+        Duration::from_millis(book_interval_ms),
+        shutdown_rx.clone(),
+        active_venue,
     ));
 
     let scorer = tokio::spawn(score_loop(
@@ -91,6 +153,7 @@ async fn main() {
         tick_ms,
         warmup_bars,
         shutdown_rx,
+        active_venue,
     ));
 
     // Handle both SIGINT and SIGTERM: containers are stopped with SIGTERM, and only
@@ -112,6 +175,7 @@ async fn main() {
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         let _ = feed.await;
         let _ = perp.await;
+        let _ = book.await;
         let _ = scorer.await;
     })
     .await;
@@ -125,6 +189,8 @@ async fn score_loop(
     tick_ms: u64,
     warmup_bars: usize,
     mut shutdown: watch::Receiver<bool>,
+    // Stamped onto every pulse: which venue's candles these scores were computed from.
+    venue: Venue,
 ) {
     let mut conn = loop {
         match publish::connect(&redis_url).await {
@@ -156,6 +222,8 @@ async fn score_loop(
         let now = now_ms();
         let mut published = 0usize;
         let mut cold = 0usize;
+        // (tradability, vetoed) per published pulse — feeds the cross-market aggregate.
+        let mut tick_scores: Vec<(u8, bool)> = Vec::new();
 
         // BTC is the market's common factor: when everything moves with it, several
         // "diversified" positions are one position, and the per-user risk layer needs to
@@ -209,13 +277,21 @@ async fn score_loop(
                     } else {
                         btc_closes.clone()
                     },
+                    venue: venue.name().to_string(),
                 }
             };
 
             let scored = score(&snapshot, &cfg);
             if publish::publish(&mut conn, &scored.pulse).await {
                 published += 1;
+                tick_scores.push((scored.pulse.tradability, !scored.pulse.vetoes.is_empty()));
             }
+        }
+
+        // The cross-market "is the market hot" aggregate (FR-SIGNAL-2) — published on
+        // the same tick from the same pulses, so it can never disagree with them.
+        if let Some(global) = GlobalPulse::aggregate(now, &tick_scores) {
+            publish::publish_global(&mut conn, &global).await;
         }
 
         if cold > 0 {

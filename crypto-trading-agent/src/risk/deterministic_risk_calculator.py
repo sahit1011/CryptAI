@@ -16,6 +16,19 @@ from src.utils.pipeline_logger import PipelineLogger
 plog = PipelineLogger()
 
 
+def at_or_above(value: float, threshold: float, rel_tol: float = 1e-9) -> bool:
+    """`value >= threshold`, tolerant of float representation.
+
+    Safety WARNINGS fire on thresholds computed as products (0.20 * 0.75), which land
+    a hair above the round number they represent: 0.20 * 0.75 == 0.15000000000000002,
+    so an exactly-15% drawdown compared `0.15 >= 0.15000000000000002` and stayed
+    SILENT at precisely the moment the warning existed for. Rejections deliberately
+    keep their strict comparisons — a hard limit should err toward allowing the edge
+    case, a warning toward speaking up.
+    """
+    return value >= threshold - abs(threshold) * rel_tol
+
+
 @dataclass
 class RiskParameters:
     """Risk management parameters"""
@@ -315,8 +328,11 @@ class DeterministicRiskCalculator:
         else:
             result.checks['per_trade_risk'] = True
 
-            # Warning if close to limit
-            if risk_amount > max_risk * 0.9:
+            # Warning if close to limit. `>=` not `>`: a safety warning must fire AT
+            # its threshold, not only past it — at exactly 90% of the cap the old
+            # strict comparison stayed silent, which is the one moment the user most
+            # needs to know how little headroom is left.
+            if at_or_above(risk_amount, max_risk * 0.9):
                 result.add_warning(
                     f"Risk amount ${risk_amount:.2f} is close to limit "
                     f"${max_risk:.2f}"
@@ -363,26 +379,14 @@ class DeterministicRiskCalculator:
 
     async def _check_daily_trade_count(self, result: RiskValidationResult):
         """Check if daily trade limit reached"""
-        
+
         snapshot = await self.portfolio_tracker.get_current_snapshot()
-        
-        # NOTE: This assumes snapshot has daily_trades_count or we need to fetch it
-        # Since PortfolioSnapshot might not have it, we might need to rely on PortfolioStateTracker
-        # For now, let's assume PortfolioStateTracker tracks it or we can get it from snapshot if we add it
-        # If not available, we skip or implement tracking in PortfolioStateTracker
-        
-        # Let's check PortfolioSnapshot definition in another file if needed, but for now
-        # we'll assume we can get it from tracker or snapshot.
-        # Actually, let's implement a method in PortfolioStateTracker to get daily trade count
-        # But since we can't edit that file right now, let's assume we can access it via snapshot
-        # or we'll skip if not available.
-        
-        # Wait, I should have checked PortfolioStateTracker.
-        # Let's assume we can get it. If not, I'll need to add it to PortfolioStateTracker later.
-        # For this edit, I'll add the check logic assuming the data is available or will be.
-        
-        daily_trades = getattr(snapshot, 'daily_trades_count', 0)
-        
+
+        # PortfolioSnapshot's field is `daily_trades` (incremented by the tracker's
+        # close_position). The old name here, `daily_trades_count`, doesn't exist on the
+        # snapshot, so getattr silently returned 0 and the cap never rejected a trade.
+        daily_trades = getattr(snapshot, 'daily_trades', 0)
+
         if daily_trades >= self.risk_params.max_daily_trades:
             result.add_rejection(
                 f"Daily trade limit reached: {daily_trades}/{self.risk_params.max_daily_trades}"
@@ -416,7 +420,7 @@ class DeterministicRiskCalculator:
             result.checks['daily_loss_limit'] = True
 
             # Warning at 80% of limit
-            if daily_loss_pct >= self.risk_params.max_daily_loss * 0.8:
+            if at_or_above(daily_loss_pct, self.risk_params.max_daily_loss * 0.8):
                 result.add_warning(
                     f"Approaching daily loss limit: {daily_loss_pct*100:.2f}%"
                 )
@@ -437,8 +441,8 @@ class DeterministicRiskCalculator:
             result.checks['drawdown_limit'] = True
 
             # Warning at 75% of max drawdown
-            if (snapshot.current_drawdown >=
-                    self.risk_params.max_total_drawdown * 0.75):
+            if at_or_above(snapshot.current_drawdown,
+                           self.risk_params.max_total_drawdown * 0.75):
                 result.add_warning(
                     f"Approaching max drawdown: "
                     f"{snapshot.current_drawdown*100:.2f}%"

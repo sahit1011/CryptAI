@@ -13,7 +13,6 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     // Standalone Node dev/verification scripts (CommonJS, not part of the app).
-    "test-websocket.js",
     "verify-oauth-setup.js",
   ]),
 ]);

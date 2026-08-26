@@ -1,0 +1,288 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CryptAI UX &amp; User Flows</title><link rel="stylesheet" href="deck.css">
+<style>
+/* wireframe primitives */
+.wire { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.wf { border: 1px dashed var(--baseline); border-radius: 7px; padding: 8px 10px; background: rgba(255,255,255,0.02); }
+.wf .t { font: 600 9px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--brand-300); margin-bottom: 5px; display:block; }
+.wf p { font-size: 10.5px; line-height: 1.4; color: var(--ink-2); }
+.wf.hero { background: var(--brand-dim); border-color: rgba(232,101,95,0.4); }
+.wf.dimmed .t { color: var(--muted); }
+.phone-note { font: 500 10px/1.5 var(--mono); color: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- ============ SLIDE 1 · COVER ============ -->
+<section class="slide cover">
+  <div class="kicker">CRYPTAI RESCUE PLAN <span class="sep">/</span> <span class="team">04 · FRONTEND &amp; UI/UX TEAM</span></div>
+  <h1>UX &amp; <em>user flows</em></h1>
+  <p class="sub">First-run onboarding, the daily session loop, the trade-focus pivot, and the dashboard information
+  architecture — designed around one habit: open the app, check if the market is hot, spend a session well.</p>
+  <div class="meta">
+    <div><b>Doc</b>04 of 06 — UX &amp; flows</div>
+    <div><b>Date</b>2026-08-24</div>
+    <div><b>Design language</b>Trading terminal · dark-only · emerald</div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 1</span></div>
+</section>
+
+<!-- ============ SLIDE 2 · DESIGN LANGUAGE ============ -->
+<section class="slide">
+  <div class="kicker">UI/UX <span class="sep">/</span> <span class="team">DESIGN LANGUAGE &amp; PRINCIPLES</span></div>
+  <h2>The terminal aesthetic stays — the rules get written down</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Visual system of record (frontend/DESIGN.md — shipped, keep)</h3>
+        <ul>
+          <li><b>"Terminal-grade restraint":</b> near-black neutral canvas, <b>crimson as the single brand hue</b> (deep maroon fills, never full-bright red buttons), depth via hairlines — no shadows or glows as structure.</li>
+          <li><b>Emerald and red are reserved for P&amp;L semantics only</b> — untouchable by branding. Amber = warning, blue = info.</li>
+          <li><b>Geist for UI, Geist Mono for every number</b> (tabular, slashed zero); Instrument Serif italic for hero-scale accent words only.</li>
+          <li><b>Dark-only</b>, radii strictly 4/6/8px, motion restrained (150ms color transitions; bounce/shine/gradient-text banned).</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Non-negotiable UX rules</h3>
+        <ul>
+          <li><b>No fabricated numbers.</b> Every value traces to the backend or shows an honest empty/loading/error state. A dash is better than a guess.</li>
+          <li><b>Every wait is explained.</b> Session synthesis in progress, engine warming up, proposal expiring — each has visible state, never a dead spinner.</li>
+          <li><b>Money actions confirm once, clearly</b> — amount, worst-case loss, venue — then execute without ceremony.</li>
+          <li><b>The agent is visible.</b> Users see what the system is doing (scanning, gating, watching) — trust comes from legibility, not claims.</li>
+          <li><b>Paper mode is labeled everywhere</b> — a persistent chip, so nobody mistakes simulation for money.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="cols cols-4" style="grid-template-columns:repeat(4,1fr); display:grid; gap:12px; margin-top:14px">
+      <div class="tile"><div class="label">Canvas ladder</div><div class="value mono" style="font-size:16px">oklch .135 → .2</div><div class="note">background → surface → elevated, neutral</div></div>
+      <div class="tile"><div class="label">Brand</div><div class="value mono" style="font-size:16px; color:var(--brand)">crimson · hue 26</div><div class="note">accent ramp 50–700; fills use deep maroon</div></div>
+      <div class="tile"><div class="label">P&amp;L only</div><div class="value mono" style="font-size:16px"><span style="color:var(--emerald)">profit</span> / <span style="color:var(--s8)">loss</span></div><div class="note">emerald + red — untouchable by branding</div></div>
+      <div class="tile"><div class="label">Numerals</div><div class="value" style="font-size:16px; font-family:var(--mono)">0123.45</div><div class="note">Geist Mono via .num — every number, tabular</div></div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 2</span></div>
+</section>
+
+<!-- ============ SLIDE 3 · ONBOARDING FLOW ============ -->
+<section class="slide">
+  <div class="kicker">UI/UX <span class="sep">/</span> <span class="team">FLOW A — FIRST RUN</span></div>
+  <h2>Onboarding: Google in, five questions, trading in under two minutes</h2>
+  <div class="body">
+    <div class="flow" style="margin-bottom:14px">
+      <div class="step"><span class="n">1</span><h4>Sign in with Google</h4><p>One button. Email/password stays available but Google leads. No email verification detour on the happy path.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">2</span><h4>Trading mode</h4><p><b>Paper</b> (recommended, instant desk) or <b>Real</b> — real routes through exchange connect (Delta India / BingX, testnet-first) with key verification.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">3</span><h4>Capital</h4><p>"How much are you trading with?" Seeds the paper desk and anchors all sizing. Slider + input, sensible bounds.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">4</span><h4>Risk appetite</h4><p>Conservative / Balanced / Aggressive cards — each shows what it concretely means: risk per trade, max leverage, min R:R.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">5</span><h4>Risk budget</h4><p>"How much are you willing to risk per month?" (e.g. 2–10% max drawdown). Shapes pacing and per-trade risk. <b>Never a return expectation</b> — an asked-for +5% is a promise no evidence supports.</p></div>
+      <div class="arrow">→</div>
+      <div class="step done"><span class="n">✓</span><h4>Dashboard</h4><p>Lands on the hot-window banner + 2 session slots ready. First-run coach marks point at the session button.</p></div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>Design intents</h3>
+        <ul>
+          <li>Every answer shows its <b>consequence</b> ("Balanced = risking ~₹800 of your ₹80,000 per trade") — settings feel like decisions, not forms.</li>
+          <li>All five answers editable later in Preferences — onboarding is a default-setter, not a contract.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Real-mode branch</h3>
+        <ul>
+          <li>Exchange connect asks for <b>trade-only API keys</b>, links the how-to per exchange, verifies before storing (encrypted vault).</li>
+          <li>Mainnet keys accepted but <b>execution stays testnet/paper</b> until the compliance gate ships — copy says so plainly.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Edge states</h3>
+        <ul>
+          <li>Key verification fails → inline reason (wrong scope, IP allowlist, expired) + retry; never a dead end.</li>
+          <li>Abandoned mid-onboarding → resume at the same step on next login.</li>
+          <li>Skipped risk budget → conservative default (5% max monthly drawdown), flagged in Preferences — never a return number.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 3</span></div>
+</section>
+
+<!-- ============ SLIDE 4 · DAILY LOOP ============ -->
+<section class="slide">
+  <div class="kicker">UI/UX <span class="sep">/</span> <span class="team">FLOW B — THE DAILY LOOP</span></div>
+  <h2>The daily loop: check heat → spend a session → let the monitor work</h2>
+  <div class="body">
+    <div class="flow" style="margin-bottom:14px">
+      <div class="step"><span class="n">1</span><h4>Open app</h4><p>Hot-window banner answers "worth trading now?" — market heat, per-symbol pulse, slots remaining (2/2). No session cost to look.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">2</span><h4>Start session</h4><p>One tap. 30:00 server clock starts. Agent activity feed goes live: scanning symbols, reading pulse, gating risk — visible work.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">3</span><h4>Proposal arrives</h4><p>Setup card slides in: side, entry, stop, targets, size, leverage, R:R, rationale, shelf-life countdown. <b>Clock pauses.</b> Approve / Reject.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">4</span><h4>Trade focus</h4><p>On approve: re-validated at live price, executed, and the whole surface pivots to the running trade. No more setups this session.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">5</span><h4>Walk away</h4><p>Session ends (or user leaves) — the monitor keeps working. Exit books P&amp;L, updates portfolio + history, frees the next slot.</p></div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>Session states the user sees</h3>
+        <ul>
+          <li><b>Scanning</b> — timer runs, feed narrates agent work</li>
+          <li><b>Proposal</b> — timer paused, decision card front and center</li>
+          <li><b>Trade focus</b> — position header, monitor verdicts</li>
+          <li><b>Held</b> — "trade open — slots preserved" when a new session can't start</li>
+          <li><b>Done</b> — session recap: setups seen, action taken, P&amp;L</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>A no-trade scan costs nothing</h3>
+        <p>Qualifying conditions cluster in 1–2 windows a day — so most scans outside them <i>should</i> find nothing. The UI says
+        <b>"no qualifying setup — capital preserved, slot returned"</b> (a slot is only spent when a proposal is delivered; scans cap at 3/day),
+        shows what was evaluated and rejected, and steers to the hot window. First-run lands on the banner with "come back at the active hours" —
+        never coach-marks Start at a random hour.</p>
+      </div>
+      <div class="card">
+        <h3>Re-engagement</h3>
+        <ul>
+          <li>Market turns hot + slots unused → one nudge (push/email), max one per day.</li>
+          <li>Trade closed while away → "your agent exited BTC +1.4R" notification linking to the trade recap.</li>
+          <li>00:00 IST → slots reset quietly; no nagging.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 4</span></div>
+</section>
+
+<!-- ============ SLIDE 5 · DASHBOARD IA ============ -->
+<section class="slide">
+  <div class="kicker">UI/UX <span class="sep">/</span> <span class="team">DASHBOARD INFORMATION ARCHITECTURE</span></div>
+  <h2>Dashboard: heat up top, session in the center, agent always visible</h2>
+  <div class="body">
+    <div class="cols cols-21">
+      <div class="wire">
+        <div class="wf hero" style="display:flex; justify-content:space-between; align-items:center">
+          <div><span class="t">Hot-window banner</span><p>MARKET IS HOT · global tradability 74/100 · BTC trending · 2/2 sessions left</p></div>
+          <div style="background:var(--brand-deep); border:1px solid rgba(232,101,95,0.55); border-radius:6px; padding:6px 12px; font:600 10px var(--mono); color:#fff">START SESSION ▸</div>
+        </div>
+        <div style="display:grid; grid-template-columns: 1.1fr 1.5fr 1.1fr; gap:8px; flex:1">
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <div class="wf"><span class="t">Portfolio</span><p>Equity · day/week/month P&amp;L · win rate · exposure — mono numerals, sparkline</p></div>
+            <div class="wf"><span class="t">Active trades</span><p>Position rows: side, size, uP&amp;L, SL/TP — each with a <b>monitor status chip</b> (watching · tightened · exiting)</p></div>
+            <div class="wf dimmed"><span class="t">Recent trades</span><p>Last 5 closed, R-multiple + link to full history</p></div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <div class="wf" style="flex:1"><span class="t">Session panel (center stage)</span><p>Idle: slot count + hot-window guidance.<br>Scanning: 27:14 clock + live agent narration.<br>Proposal: the decision card (below).<br>Trade focus: position hero + monitor verdict log.</p></div>
+            <div class="wf"><span class="t">Market pulse strip</span><p>BTC · ETH · SOL chips: regime label + tradability 0–100 + spark — from the Rust engine, not the LLM</p></div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <div class="wf" style="flex:1"><span class="t">Agent monitor window</span><p>Live feed: "12:41 pulse read BTC 71 · 12:41 risk gate passed 2.1% heat · 12:42 synthesizing long setup…" — the trust surface</p></div>
+            <div class="wf dimmed"><span class="t">Account chip</span><p>PAPER badge · tier · settings</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Why this layout</h3>
+          <ul>
+            <li><b>Banner owns the top</b> — the daily question ("trade now?") is answered before any click.</li>
+            <li><b>Session panel is the stage:</b> its state drives the page; everything else is periphery.</li>
+            <li><b>Agent window is always on</b> — even outside sessions it shows monitor heartbeats, so the product never looks dead.</li>
+            <li><b>Terminal stays a separate page</b> for chart-first users; dashboard is decision-first.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>The proposal card (the product's face)</h3>
+          <ul>
+            <li>LONG BTC · entry / stop / 2 targets · size &amp; leverage · <b>R:R 2.4</b> · risk ₹812</li>
+            <li>Two-line rationale in plain language + "what invalidates this"</li>
+            <li>Shelf-life ring counting down · <b>Approve</b> (success-tinted, per DESIGN.md) / Pass (ghost)</li>
+            <li>Approve = one confirm with worst-case loss, then execution state inline</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 5</span></div>
+</section>
+
+<!-- ============ SLIDE 6 · TRADE FOCUS ============ -->
+<section class="slide">
+  <div class="kicker">UI/UX <span class="sep">/</span> <span class="team">TRADE FOCUS — THE SYNCHRONOUS PIVOT</span></div>
+  <h2>Trade focus: when money is on the line, the UI has one subject</h2>
+  <div class="body">
+    <div class="cols cols-21">
+      <div class="wire">
+        <div class="wf hero"><span class="t">Position hero</span><p>LONG BTC-PERP · +₹1,204 (+1.1R) · entry 67,240 · mark 67,912 · SL 66,800 → <b>tightened to 67,350</b> · TP1 hit ✓ · TP2 69,100 · elapsed 00:47</p></div>
+        <div style="display:grid; grid-template-columns:1.6fr 1fr; gap:8px; flex:1">
+          <div class="wf"><span class="t">Chart with trade levels</span><p>Entry/SL/TP drawn on the live chart; monitor's invalidation level shown as a labeled line — the user sees exactly what the agent watches</p></div>
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <div class="wf"><span class="t">Monitor verdict log</span><p>"13:02 thesis intact — structure holding · 13:17 TP1 filled, stop → breakeven · 13:29 pulse cooling, watching invalidation"</p></div>
+            <div class="wf"><span class="t">Manual controls</span><p>Close now · Move stop (tighten-only on free) — user always outranks the agent</p></div>
+          </div>
+        </div>
+        <div class="wf dimmed"><span class="t">Status footer</span><p>"Session complete — slot spent well · monitor on duty" · next-slot status (held while the trade runs)</p></div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Interaction rules</h3>
+          <ul>
+            <li>Trade focus is a <b>derived state</b> — open position + monitor status. The session <i>ended</i> the moment the trade opened (slot spent well); there is no session clock here to expire.</li>
+            <li>Monitor actions (tighten, partial, exit) appear as <b>verdicts with reasons</b>, timestamped, read from the append-only <code>monitor_events</code> trail — persisted, so the story survives restarts and feeds the exit recap.</li>
+            <li>Manual close always available, one confirm, shows realized P&amp;L instantly.</li>
+            <li>The one banner: <b>"session complete — your monitor is on duty."</b></li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Exit recap (the retention moment)</h3>
+          <p>On close, a recap card: outcome in R and ₹, what the monitor did and why, updated equity curve, and — when slots
+          remain and the market is still hot — <b>"1 session left today"</b>. Every exit hands the user a reason to come back.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 6</span></div>
+</section>
+
+<!-- ============ SLIDE 7 · BUILD MAP ============ -->
+<section class="slide">
+  <div class="kicker">UI/UX <span class="sep">/</span> <span class="team">EXISTS VS BUILD</span></div>
+  <h2>Frontend build map — most of the skeleton already exists</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Exists on HEAD (verified: tsc clean, 99/99 vitest)</h3>
+        <ul id="fe-exists">
+          <li><b>Full session phase machine</b> — idle / blocked / exhausted / scanning / proposal / executing, live countdown + quota bar, heartbeat-staleness honesty, persistent SessionBar on every route</li>
+          <li><b>ProposalCard with approve/reject</b> — shelf-life countdown, derived (never asserted) order destination</li>
+          <li>Auth incl. Google OAuth (currently placed <i>below</i> the email form)</li>
+          <li>2-step onboarding: trading mode + exchange connect (BingX VST, Delta India testnet, verified-before-store vault)</li>
+          <li>Desk: KPI band, equity curve, AI signals, recent trades · full Portfolio page · /chart terminal</li>
+          <li>AgentFeed on the live agent_activity stream (renders only inside a scanning session)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>To build / fix (ordered — see roadmap, doc 06)</h3>
+        <ul id="fe-build">
+          <li><b>Hot-window banner + pulse strip</b> — net-new; needs the new <code>/api/pulse</code></li>
+          <li><b>Trade-focus pivot</b> — add a "watching" phase (today: approve → "Placing your trade…" → falls back to idle); re-mount the orphaned, feature-complete <code>ActiveTrades</code> widget as the focus surface + monitor verdict log</li>
+          <li><b>Onboarding steps 3–5</b> (capital · risk · monthly goal) — <code>trading_capital</code> has no UI anywhere; reuse TradingPersona's form model</li>
+          <li><b>Session slots UI</b> (2 × 30 min) replacing the minutes bar</li>
+          <li><b>Google-first reorder</b> on login + signup</li>
+          <li><b>Session + exit recap</b> cards</li>
+          <li>Fixes: forgot-password 404 · stale "Agents tab" copy (×2) · standing agent window on Desk (mount AgentFeed outside sessions)</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>Quality bar (every new component)</h3>
+      <p>Loading, empty, and error states designed before the happy path · mobile-responsive (session + trade focus must work one-handed
+      on a phone) · mono numerals for money · no value rendered without a backend source · Vitest coverage for state logic, Playwright for the session happy path.</p>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · ux &amp; flows</span><span>04 · 7</span></div>
+</section>
+
+</body></html>

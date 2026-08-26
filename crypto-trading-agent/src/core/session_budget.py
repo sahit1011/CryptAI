@@ -106,6 +106,14 @@ def pricing_for(model: str) -> Pricing:
         if key.startswith(prefix):
             return price
 
+    # OpenRouter marks its free catalogue with a `:free` suffix, and those calls cost
+    # exactly nothing. Charging them the conservative unknown-model rate ($10/$50 per
+    # Mtok) would end a session on the cost cap for spend that never happened — the cap
+    # would fire hardest on the deployment paying least. An override can still price one
+    # explicitly, since overrides are consulted before this.
+    if key.endswith(":free"):
+        return Pricing(0.0, 0.0)
+
     logger.warning(
         f"no pricing for model {key!r}; charging the conservative fallback "
         f"(${UNKNOWN_MODEL_PRICING.input_per_mtok}/${UNKNOWN_MODEL_PRICING.output_per_mtok} "

@@ -1,0 +1,173 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CryptAI Infra — Free-Tier Operations</title><link rel="stylesheet" href="deck.css"></head>
+<body>
+
+<!-- ============ SLIDE 1 · COVER ============ -->
+<section class="slide cover">
+  <div class="kicker">CRYPTAI RESCUE PLAN <span class="sep">/</span> <span class="team">05 · INFRA / DEVOPS TEAM</span></div>
+  <h1>Running it <em>free</em></h1>
+  <p class="sub">The stack decision, the $0 budget ledger with real numbers, the exact un-suspend runbook,
+  and the guardrails that keep a free-tier trading system from suspending itself again.</p>
+  <div class="meta">
+    <div><b>Doc</b>05 of 06 — Infra &amp; operations</div>
+    <div><b>Date</b>2026-08-24</div>
+    <div><b>Target</b>$0/month · 2.3 GB bandwidth headroom</div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · infra</span><span>05 · 1</span></div>
+</section>
+
+<!-- ============ SLIDE 2 · STACK DECISION ============ -->
+<section class="slide">
+  <div class="kicker">INFRA <span class="sep">/</span> <span class="team">STACK DECISION</span></div>
+  <h2>Keep the stack. Fix the behavior. Don't migrate.</h2>
+  <p class="sub">Everything already runs on services with workable free tiers, hand-configured secrets, and working auth.
+  A migration buys new failure modes, not savings — the outage was caused by <b>our streams</b>, not the host.</p>
+  <div class="body">
+    <table>
+      <tr><th style="width:14%">Service</th><th style="width:30%">Role</th><th style="width:34%">Why it stays</th><th style="width:22%">Watch-outs</th></tr>
+      <tr><td><b>Render</b> (free web service + Key Value)</td><td>The one backend process: API + daemon + Rust engine child · Redis (bus, hot state, pulse plane)</td><td>Already configured by hand with 8 dashboard secrets incl. <code>VAULT_ENC_KEY</code>; docker image builds Rust+Python; resume is one dashboard action</td><td>5 GB/mo bandwidth · 750 h/mo per <b>workspace</b> (CryptAI must be its only always-on service) · sleeps without keepalive · <b>never recreate from Blueprint</b></td></tr>
+      <tr><td><b>Supabase</b> (free)</td><td>Google OAuth + JWT · Postgres (sessions, proposals, trades, prefs)</td><td>Auth the product needs is already built against it; JWKS verification means the backend holds no service key</td><td><b>ACTIVE_HEALTHY (verified 2026-08-24)</b> — the live frontend's auth traffic keeps it awake; watch the 7-day pause rule after any frontend outage · 500 MB DB · transaction pooler :6543 only</td></tr>
+      <tr><td><b>Vercel</b> (Hobby)</td><td>Next.js frontend — already live</td><td>Zero-config deploys, already wired to Supabase + backend</td><td>Hobby is licensed <b>non-commercial</b> — fine for a free beta; budget Pro ($20/mo) the day payments ship</td></tr>
+      <tr><td><b>OpenRouter</b> (:free rotation)</td><td>All three LLM call sites</td><td>6-model free rotation wired with skip-on-dead + loud total-failure; $0</td><td>Request caps are the real limit: ~50/day uncredited, ~1,000/day after a <b>one-time $10 credit — buy it</b></td></tr>
+      <tr><td><b>GitHub Actions</b></td><td>CI + the 10-min keepalive that keeps monitors alive</td><td>Public repo = free minutes</td><td>Scheduled workflows run from the <b>default branch (still v2!)</b> and auto-disable after 60 idle days</td></tr>
+      <tr><td><b>Binance</b> (public data)</td><td>Market data — no key, no billing</td><td>Free; limits are IP rate weights, not money</td><td>Bytes are the budget: REST-poll everywhere except the viewer-gated dashboard feed</td></tr>
+    </table>
+    <p style="font-size:11px; color:var(--muted); margin-top:9px">Contingency (only if Render bites twice): Oracle Cloud Always-Free ARM VM (4 OCPU/24 GB, 10 TB egress) can host the whole compose stack — real ops burden, keep it as plan B, not plan A. Dormant configs to delete: Pinecone keys (zero call sites). Optional later: Sentry free tier (SDK already ships).</p>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · infra</span><span>05 · 2</span></div>
+</section>
+
+<!-- ============ SLIDE 3 · BUDGET LEDGER ============ -->
+<section class="slide">
+  <div class="kicker">INFRA <span class="sep">/</span> <span class="team">THE $0 BUDGET LEDGER</span></div>
+  <h2>The bandwidth ledger: ~2.8 GB against a 5 GB cap</h2>
+  <p class="sub">Render's 5 GB meter counts <b>all</b> egress plus ingress on service-opened connections — service-initiated traffic is simply where ours went
+  (5.61 of 5.63 GB on Aug 10). Red-team correction: the original ledger missed its biggest post-fix line — <b>LLM request bodies are egress too</b>.</p>
+  <div class="body">
+    <div class="cols cols-21">
+      <div class="card">
+        <h3>Monthly plan of record (after R0 + R1)</h3>
+        <div class="hbar" style="grid-template-columns: 2.6in 1fr 0.9in">
+          <span class="name"><b>LLM egress</b> — 40k-token prompts ≈ 160KB/call × ~560 calls/day (hot-window model)</span><span class="track"><span class="fill" style="width:67%; background:var(--s1)"></span></span><span class="val">~1.00 GB</span>
+          <span class="name">Viewer-gated dashboard feed (~2 h/day viewing)</span><span class="track"><span class="fill" style="width:37%; background:var(--s1)"></span></span><span class="val">0.55 GB</span>
+          <span class="name">Engine book poll (1 batched req / 5s — the staleness heartbeat)</span><span class="track"><span class="fill" style="width:33%; background:var(--s1)"></span></span><span class="val">0.50 GB</span>
+          <span class="name">Engine funding/OI poll (2 req/symbol/60s)</span><span class="track"><span class="fill" style="width:27%; background:var(--s1)"></span></span><span class="val">0.40 GB</span>
+          <span class="name">Position-mode price streams + klines by REST + Supabase pooler</span><span class="track"><span class="fill" style="width:13%; background:var(--s1)"></span></span><span class="val">~0.20 GB</span>
+          <span class="name">JWKS (cached per process) + keepalive</span><span class="track"><span class="fill" style="width:2%; background:var(--s1)"></span></span><span class="val">0.02 GB</span>
+        </div>
+        <div style="border-top:1px solid var(--baseline); margin-top:10px; padding-top:8px; display:flex; justify-content:space-between">
+          <span style="font:600 11px var(--mono); color:var(--ink)">TOTAL ≈ 2.7 GB / mo</span>
+          <span style="font:600 11px var(--mono); color:var(--emerald)">HEADROOM ≈ 2.3 GB (46%)</span>
+        </div>
+        <p style="margin-top:9px; font-size:11px; color:var(--muted)">The LLM line is why the <b>prompt shrink moved from R2.8 into R1</b> (40k → ≤5k tokens cuts it ~8×) and why
+        <code>ANALYSIS_KEEP_WARM</code> must stay <b>false</b> on free tier — keep-warm at 24/7 cadence is ~6.9 GB/mo of prompts alone: re-suspension by LLM egress.
+        Unit economics: one always-on kline WS ≈ 0.6 GB/mo; depth20@100ms ≈ 0.7 GB/day/symbol — never always-on.</p>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Other free-tier meters</h3>
+          <table>
+            <tr><th>Meter</th><th>Position</th></tr>
+            <tr><td>Render hours</td><td>~730/750 — CryptAI must be the workspace's <b>only</b> always-on service</td></tr>
+            <tr><td>Render KV</td><td>25 MB <b>allkeys-lru, no persistence</b> — eviction can hit <code>engine:on</code> (silent 503 outage), <code>cmd_reply</code> (approval 504s), desk state. R1.7 hardens: candle bus <code>persist=False</code>, <code>engine:on</code> re-asserted, watch <code>evicted_keys</code>; Postgres is the only rehydration truth</td></tr>
+            <tr><td>Supabase DB</td><td>500 MB — years of headroom at this scale</td></tr>
+            <tr><td>Supabase MAU</td><td>50k — waitlist is 50</td></tr>
+            <tr><td>Vercel</td><td>100 GB/mo — ample</td></tr>
+            <tr><td>OpenRouter</td><td>~1,000 req/day with $10 credit; hot-window clustering keeps 50 users ≈ 560/day</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · infra</span><span>05 · 3</span></div>
+</section>
+
+<!-- ============ SLIDE 4 · UN-SUSPEND RUNBOOK ============ -->
+<section class="slide">
+  <div class="kicker">INFRA <span class="sep">/</span> <span class="team">THE UN-SUSPEND RUNBOOK — ORDER MATTERS</span></div>
+  <h2>Bringing production back, in the only safe order</h2>
+  <div class="body">
+    <div class="flow" style="margin-bottom:14px">
+      <div class="step"><span class="n">1</span><h4>Land R0 first</h4><p><b>Do not resume before the DataAgent stream fix merges.</b> Resuming HEAD as-is re-suspends the workspace in ~2–3 days (autoDeploy is on — resume deploys HEAD immediately).</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">2</span><h4>Env deltas first</h4><p>On the still-suspended service: <code>TRADING_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT</code> · <code>DAEMON_DISABLE_AGENTS=memory</code> (512MB!) · verify <code>ADMIN_USER_IDS</code> · <b><code>ANALYSIS_KEEP_WARM</code> stays false — keep-warm is ~6.9 GB/mo of LLM egress.</b> Supabase is <b>ACTIVE_HEALTHY</b> (verified 2026-08-24) — just confirm, don't restore.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">3</span><h4>Resume — ONLY two things</h4><p>Billing → settle the overage → <b>Resume ONLY cryptai-backend + cryptai-redis; klaro + SlackBot stay suspended</b> — three always-on services ≈ 2,232 h/mo vs the 750 h cap: a second suspension, on hours.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">4</span><h4>Schema truth</h4><p>Prod tables exist only via boot-time <code>checkfirst</code> self-heal. Verify <code>sessions</code>/<code>proposals</code>/<code>pulse_snapshots</code> exist (information_schema or endpoints), then <code>alembic stamp head</code> once so future migrations run clean.</p></div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="n">5</span><h4>Verify + watch</h4><p><code>/health/ready</code> → redis+db true · session endpoints → 401 · CORS → 200 · "Daemon started" + monitors online · <b>exactly one</b> web service deployed · bandwidth graph ≈ flat over 48h · steady-state <b>RSS &lt; ~400 MB</b> · Redis <code>evicted_keys = 0</code>.</p></div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>⚠️ Never recreate the service</h3>
+        <p>cryptai-backend was configured <b>by hand</b>, not from the Blueprint. Recreating mints a new URL and silently drops the 8 dashboard-only
+        secrets — including <code>VAULT_ENC_KEY</code>, which encrypts every user's exchange keys. <b>Losing it orphans every stored credential, unrecoverably.</b> Resume; never delete-and-recreate.</p>
+      </div>
+      <div class="card">
+        <h3>Enabling the signal engine (R1, separate step)</h3>
+        <ul>
+          <li>Precondition: the Pulse-dataclass fix + klines-to-REST are merged.</li>
+          <li>Set <code>RUN_SIGNAL_ENGINE_IN_API=true</code> + explicit <code>SYMBOLS</code> (binary defaults to 5 symbols — more bandwidth than planned).</li>
+          <li>Watch logs for pulse publishes, <b>then</b> flip <code>SIGNAL_PLANE_ENABLED=true</code>. Never both blind — a dead plane silently drains user clocks (skipped_stale).</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Branch &amp; keepalive truth</h3>
+        <ul>
+          <li>GitHub default branch is <b>still v2</b> — scheduled workflows run from it, so the live keepalive is the old always-green version. Make the m1 line the default (R1) to activate the fail-loud keepalive.</li>
+          <li>GitHub auto-disables cron workflows after 60 idle days — the keepalive is load-bearing (its death sleeps the daemon and kills monitors). Commit at least every 2 months or re-enable manually.</li>
+          <li>Rotate the Render API key (it was pasted into a chat on 2026-08-03).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · infra</span><span>05 · 4</span></div>
+</section>
+
+<!-- ============ SLIDE 5 · SECRETS & CONFIG ============ -->
+<section class="slide">
+  <div class="kicker">INFRA <span class="sep">/</span> <span class="team">SECRETS &amp; CONFIG MAP</span></div>
+  <h2>Secrets and config: what lives where, and what must never move</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>The 8 dashboard secrets (sync:false — names only)</h3>
+        <table>
+          <tr><th>Name</th><th>Role · criticality</th></tr>
+          <tr><td class="mono">VAULT_ENC_KEY</td><td><b>Fernet master key for user exchange credentials — loss is unrecoverable.</b> Back it up to a password manager today; a key-rotation path is roadmap debt</td></tr>
+          <tr><td class="mono">POSTGRES_URL</td><td>Supabase <b>transaction pooler :6543</b> + statement_cache_size=0 — never revert either half alone</td></tr>
+          <tr><td class="mono">SUPABASE_URL</td><td>JWKS verification base — backend holds no service key by design</td></tr>
+          <tr><td class="mono">OPENROUTER_API_KEY</td><td>Without it, session start correctly 503s (capacity gate)</td></tr>
+          <tr><td class="mono">API_AUTH_TOKEN</td><td>Service/admin token — admin-capable; slated for replacement (audit #6)</td></tr>
+          <tr><td class="mono">ADMIN_USER_IDS</td><td>Fail-closed: empty = nobody is admin</td></tr>
+          <tr><td class="mono">API_CORS_ORIGINS</td><td>Must include cryptai-app.vercel.app</td></tr>
+          <tr><td class="mono">MULTI_USER_SEED_IDS</td><td>Optional demo accounts</td></tr>
+        </table>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Config truths</h3>
+          <ul>
+            <li><code>render.yaml</code> is <b>documentation, not the control plane</b> — the live service was hand-configured; dashboard edits change production, blueprint edits don't. Keep them in parity by review.</li>
+            <li>Frontend env: <code>NEXT_PUBLIC_API_TOKEN</code> must stay <b>unset forever</b> — anything NEXT_PUBLIC_* ships in public JS, and this one is admin-capable.</li>
+            <li>Money gates stay untouched: <code>USE_TESTNET=true</code>, <code>LIVE_TRADING_CONFIRMED=false</code>, <code>ENABLE_EXECUTION</code> unset — never flipped to make anything "work".</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Ops rhythm (10 min/week)</h3>
+          <ul>
+            <li>Render bandwidth graph — the one chart that predicts suspension; alarm bell at &gt;100 MB/day sustained</li>
+            <li>Keepalive workflow green + not auto-disabled</li>
+            <li>Supabase DB size + project not paused</li>
+            <li>OpenRouter request usage vs daily cap</li>
+            <li>After any deploy: <code>/health/ready</code> + monitors-online log line</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · infra</span><span>05 · 5</span></div>
+</section>
+
+</body></html>

@@ -35,8 +35,12 @@ class StateManager:
 
         # PostgreSQL for persistent state
         self.postgres_url = config.database.postgres_url.replace('postgresql://', 'postgresql+asyncpg://')
-        from src.utils.db import pool_kwargs
-        self.engine = create_async_engine(self.postgres_url, echo=False, **pool_kwargs())
+        # Also disable SQLAlchemy's asyncpg-dialect prepared-statement cache — the other
+        # half of pgbouncer transaction-mode safety, paired with statement_cache_size=0.
+        _sep = '&' if '?' in self.postgres_url else '?'
+        self.postgres_url = f"{self.postgres_url}{_sep}prepared_statement_cache_size=0"
+        from src.utils.db import async_pool_kwargs
+        self.engine = create_async_engine(self.postgres_url, echo=False, **async_pool_kwargs())
         self.async_session = sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False
         )
@@ -560,7 +564,9 @@ class StateManager:
                     "exit_reason": trade.exit_reason,
                     "is_winner": trade.is_winner,
                     "confidence_score": trade.confidence_score,
-                    "leverage": trade.leverage if hasattr(trade, 'leverage') else 10,
+                    # Real column since R2.1. NULL on legacy rows stays None — an
+                    # unrecorded leverage is unknown, never a fabricated 10.
+                    "leverage": trade.leverage,
                     "created_at": trade.created_at
                 }
                 for trade in trades

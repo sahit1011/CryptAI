@@ -32,7 +32,7 @@ class Trade(Base):
     # Multi-tenancy: the Supabase auth user (auth.users.id UUID) that owns this trade.
     # Nullable for backward compatibility with single-tenant/legacy rows; queries scope
     # by this when a user context is supplied. Enforcement (RLS / per-user isolation) is
-    # layered on top — see docs/MULTI_TENANCY.md.
+    # layered on top — see the repo-root docs/MULTI_TENANCY.md (the live contract).
     user_id = Column(String(64), index=True, nullable=True)
 
     # Trade details
@@ -54,6 +54,11 @@ class Trade(Base):
 
     # Risk management (runtime TradeRecord path)
     risk_amount = Column(Float)
+    # Leverage the position was opened at. Nullable: legacy rows predate the column
+    # and a NULL is honest ("not recorded") where a fabricated default is not — two
+    # API paths used to invent `10` for every trade (R2.1 G1). Readers must surface
+    # NULL as unknown, never substitute a number.
+    leverage = Column(Float)
 
     # Performance
     pnl = Column(Float)
@@ -349,6 +354,11 @@ class Session(Base):
     #                executing | ended
     status = Column(String(24), nullable=False, default='scanning', index=True)
 
+    # The trading style chosen for THIS session (scalp | intraday | swing | position),
+    # overriding the persistent goal_horizon persona for synthesis. Nullable: a legacy or
+    # unspecified session falls back to the user's default goal_horizon.
+    channel = Column(String(16))
+
     # Durable metered clock
     quota_seconds_granted = Column(Integer, nullable=False, default=1800)  # free tier: 30 min
     metered_seconds_accrued = Column(Integer, nullable=False, default=0)
@@ -364,6 +374,16 @@ class Session(Base):
     trading_day = Column(DateTime, nullable=False, index=True)
 
     cycles_completed = Column(Integer, nullable=False, default=0)
+    # When a scan cycle last reported. NULL means nothing has reported yet this session,
+    # which is different from "reported a while ago" — the UI must not claim the agents
+    # are working on the strength of a session merely existing.
+    last_cycle_at = Column(DateTime)
+
+    # Metered seconds handed back after the fact — currently only when analysis capacity
+    # died mid-scan and the user would otherwise have been charged for a dead engine.
+    # Already deducted from metered_seconds_accrued; this is the audit trail, not a
+    # second balance, so the receipt can say WHY the numbers moved.
+    seconds_refunded = Column(Integer, nullable=False, default=0)
     started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     ended_at = Column(DateTime)
     end_reason = Column(String(40))   # quota_exhausted | user_ended | cost_cap | error | trade_opened
@@ -480,6 +500,12 @@ class PulseSnapshot(Base):
     context = Column(JSON)         # {atr_pct: .., funding_rate: .., spread_bps: .., ...}
 
     reference_price = Column(Float, nullable=False)   # price at pulse_ts, for fwd returns
+    # WHICH VENUE's candles produced this score. Load-bearing for the evidence base:
+    # the engine falls back from Binance to Bybit when a shared-IP ban blocks the
+    # primary, and pooling two venues' rows without a label would be an unmeasured
+    # variable in every calibration conclusion. Nullable for rows written before the
+    # fallback existed — those are Binance, but NULL says "unlabelled", not "assumed".
+    venue = Column(String(20), index=True)
 
     # Backfilled by the calibration job — null until the window has elapsed.
     fwd_return_15m = Column(Float)

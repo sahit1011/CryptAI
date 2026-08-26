@@ -21,6 +21,30 @@ class OrderType(Enum):
     TAKE_PROFIT = "TAKE_PROFIT"
     TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
 
+#: Which order type closed a position -> the exit reason recorded in the ledger.
+#: `trades.exit_reason` documents TP_HIT/SL_HIT/MANUAL/INVALIDATED; a reduce-only
+#: MARKET fill is a deliberate close (user click, monitor time-stop, admin sweep),
+#: which is MANUAL — never a take-profit that happened to be green.
+_EXIT_REASON_BY_ORDER_TYPE = {
+    "STOP_MARKET": "SL_HIT",
+    "STOP_LIMIT": "SL_HIT",
+    "TAKE_PROFIT": "TP_HIT",
+    "TAKE_PROFIT_MARKET": "TP_HIT",
+    "LIMIT": "TP_HIT",       # resting reduce-only limit == a take-profit leg
+    "MARKET": "MANUAL",
+}
+
+
+def _exit_reason_for(order) -> str:
+    """The OBSERVED exit reason for the order that closed a position.
+
+    Unknown order types return "UNKNOWN" rather than a plausible guess: an honest
+    gap in the ledger can be found and fixed, a fabricated label cannot.
+    """
+    raw = getattr(getattr(order, "type", None), "value", None) or str(getattr(order, "type", ""))
+    return _EXIT_REASON_BY_ORDER_TYPE.get(str(raw).upper(), "UNKNOWN")
+
+
 class OrderSide(Enum):
     """Order sides"""
     BUY = "BUY"
@@ -144,16 +168,29 @@ class PaperPosition:
 
 class PaperTradingEngine:
     """
-    Realistic paper trading engine that mimics BingX exchange behavior
-    
-    Features:
-    - Realistic order fills with slippage
-    - Market impact simulation
-    - Commission fees (0.04% maker, 0.06% taker)
-    - Position tracking
-    - Stop-loss and take-profit triggers
-    - Order book depth simulation
+    Paper trading engine with a BingX-shaped API.
+
+    What it actually models:
+    - Order fills with a RANDOM slippage draw from `slippage_range` (see below)
+    - Commission fees (maker/taker, charged on every fill)
+    - Netted position tracking, one position per symbol
+    - Resting stop-loss / take-profit legs triggered by fed prices
     - Real-time event publishing to MessageBus
+
+    What it does NOT model, despite an earlier docstring claiming otherwise:
+    **no market-impact simulation and no order-book-depth simulation.** Slippage is
+    a uniform random draw unrelated to order size or book depth, so fills for a
+    $100 and a $100,000 order are statistically identical. Treat paper fill prices
+    as optimistic for anything but small size (honesty law — the false claim was
+    flagged in docs/plan-2026-08/nautilus-memo.md and removed here).
+
+    Margin is also checked only at entry and never reserved across positions; the
+    binding controls on aggregate exposure are the risk layer's portfolio-heat and
+    position-count gates, not this engine.
+
+    Randomness is per-engine and seedable (`rng_seed`) so replays and tests are
+    reproducible; module-level `random` was previously used, which made two
+    identical runs disagree.
     """
     
     def __init__(
@@ -167,11 +204,21 @@ class PaperTradingEngine:
         state_manager: Optional[Any] = None,  # CRITICAL FIX: Add StateManager
         leverage: int = 10,  # Default leverage
         user_id: Optional[str] = None,  # owning tenant (multi-user); falls back to env
+        rng_seed: Optional[int] = None,  # slippage RNG seed; None = system entropy
     ):
+        # Per-engine RNG so slippage draws are reproducible when seeded (offline
+        # replays, deterministic tests) and independent between tenants. Module-level
+        # `random` made two identical runs disagree and let any other caller's
+        # random.seed() perturb fill prices.
+        self._rng = random.Random(rng_seed)
         # Owning tenant: published updates + persisted state are namespaced to this user
         # so multiple per-user engines never share state. Falls back to BOT_USER_ID for
         # the single-bot deployment.
         self.user_id = user_id or os.getenv("BOT_USER_ID")
+        # Async hook fired when a position fully closes (position_id, symbol, exit_price,
+        # pnl, reason). UserSession points this at its PortfolioStateTracker so per-user
+        # risk limits (heat, daily loss, trade count) see real closes.
+        self.on_position_closed: Optional[Any] = None
         self.initial_balance = initial_balance
         self.balance = initial_balance
         self.maker_fee = maker_fee
@@ -234,9 +281,9 @@ class PaperTradingEngine:
         
         # Market orders have more slippage
         if order_type == OrderType.MARKET:
-            base_slippage = random.uniform(self.slippage_range[0] * 2, self.slippage_range[1] * 2)
+            base_slippage = self._rng.uniform(self.slippage_range[0] * 2, self.slippage_range[1] * 2)
         else:
-            base_slippage = random.uniform(self.slippage_range[0], self.slippage_range[1])
+            base_slippage = self._rng.uniform(self.slippage_range[0], self.slippage_range[1])
         
         # Slippage direction depends on side
         return base_slippage if side == OrderSide.BUY else -base_slippage
@@ -309,12 +356,34 @@ class PaperTradingEngine:
             logger.error(f"STOP order requires stop_price")
             return order.to_dict()
         
+        # REFUSE SAME-DIRECTION ADD-ONS instead of silently swallowing them.
+        # _update_position only handles the CLOSING case for an existing position, so
+        # an add-on used to fall through every branch: the position stayed unchanged,
+        # the commission was still charged, and the order was still booked FILLED —
+        # a phantom fill the user paid for. Averaging in is not the fix either: the
+        # existing SL/TP legs are sized for the ORIGINAL quantity, so a bigger
+        # position would be partly unprotected. Fail closed and say why.
+        existing = self.positions.get(symbol)
+        if not reduce_only and existing is not None:
+            adds_to_position = (
+                (existing.side == "LONG" and side == OrderSide.BUY)
+                or (existing.side == "SHORT" and side == OrderSide.SELL)
+            )
+            if adds_to_position:
+                order.status = OrderStatus.REJECTED
+                logger.error(
+                    f"Rejected {side.value} {quantity} {symbol}: would add to the open "
+                    f"{existing.side} position ({existing.quantity}) whose bracket is "
+                    f"sized for the original quantity. Close or scale out first."
+                )
+                return order.to_dict()
+
         # Check balance for new positions
         if not reduce_only:
             # Calculate required margin using leverage
             notional_value = quantity * (price or self.current_prices.get(symbol, 0))
             required_margin = notional_value / self.leverage
-            
+
             if required_margin > self.balance:
                 order.status = OrderStatus.REJECTED
                 logger.error(f"Insufficient balance: ${self.balance:.2f} < ${required_margin:.2f} (Margin for ${notional_value:.2f} @ {self.leverage}x)")
@@ -406,8 +475,8 @@ class PaperTradingEngine:
         fill_price = order.price
         
         # Small chance of price improvement
-        if random.random() < 0.1:  # 10% chance
-            improvement = random.uniform(0, 0.0002)  # Up to 0.02%
+        if self._rng.random() < 0.1:  # 10% chance
+            improvement = self._rng.uniform(0, 0.0002)  # Up to 0.02%
             if order.side == OrderSide.BUY:
                 fill_price *= (1 - improvement)
             else:
@@ -529,7 +598,27 @@ class PaperTradingEngine:
                 if position.quantity <= 0.001:  # Account for floating point
                     del self.positions[symbol]
                     logger.info(f"Position closed: {symbol} | Total P&L: ${position.realized_pnl:+.2f}")
-                    
+
+                    # THE EXIT REASON IS OBSERVED, NOT INFERRED FROM P&L.
+                    # This used to be `"TP_HIT" if pnl > 0 else "SL_HIT"`, which is a
+                    # fabrication: a stop that fills above entry (gap, trailing stop)
+                    # was logged as a take-profit, and a TP filled at a loss as a stop.
+                    # Every outcome-attribution query in the evidence plan reads this
+                    # column, so a guess here poisons the calibration ledger (honesty
+                    # law). The filling ORDER knows the truth — use it.
+                    exit_reason = _exit_reason_for(order)
+                    if self.on_position_closed is not None:
+                        try:
+                            await self.on_position_closed(
+                                position_id=position.position_id,
+                                symbol=symbol,
+                                exit_price=order.filled_price,
+                                pnl=position.realized_pnl,
+                                reason=exit_reason.lower(),
+                            )
+                        except Exception as e:
+                            logger.warning(f"on_position_closed hook failed for {symbol}: {e}")
+
                     # CRITICAL FIX: Notify Memory Agent to update DB with exit details
                     if self.message_bus:
                         # Extract trade ID from position ID (POS_PT_...) -> PT_...
@@ -547,7 +636,7 @@ class PaperTradingEngine:
                                     "trade_id": trade_id,
                                     "exit_price": order.filled_price,
                                     "exit_time": datetime.now().isoformat(),
-                                    "exit_reason": "TP_HIT" if pnl > 0 else "SL_HIT", # Simplified reason
+                                    "exit_reason": exit_reason,  # observed, see above
                                     "notes": f"Closed via {order.type.value}"
                                 },
                                 "timestamp": datetime.now().isoformat()
@@ -705,107 +794,31 @@ class PaperTradingEngine:
         }
     
     async def restore_from_historical_trades(self, database_url: str):
-        """
-        Restore portfolio state from historical trades in PostgreSQL.
-        This allows the engine to continue from where it left off instead of resetting.
-        
-        CRITICAL: This method now properly calculates the current portfolio balance
-        from all historical trades, ensuring continuity across system restarts.
+        """Legacy single-bot restore — now a thin delegate to src.core.rehydration.
+
+        Kept for src/main.py, the standalone single-process entrypoint. The
+        multi-user daemon does NOT call this: UserSession.rehydrate() runs the
+        same core per tenant with a scoped query. This path stays UNSCOPED only
+        when the engine has no user_id (true single-bot deployments, where all
+        rows belong to the bot); with a user_id it scopes like everyone else.
         """
         try:
+            from src.core.rehydration import load_trades, rehydrate_engine
             from src.memory.trade_history_manager import TradeHistoryManager
-            
-            logger.info("🔄 Restoring portfolio state from historical trades in PostgreSQL...")
-            
-            # Load trade history from database
-            trade_manager = TradeHistoryManager(database_url)
-            all_trades = trade_manager.get_recent_trades(limit=10000)  # Get all trades
-            
-            if not all_trades:
-                logger.info("✅ No historical trades found - starting with initial balance")
-                # Keep the initial balance as-is
-                return
-            
-            # Calculate metrics from ALL closed trades
-            total_realized_pnl = 0.0
-            total_commission_paid = 0.0
-            winning_count = 0
-            losing_count = 0
-            total_closed_trades = 0
-            
-            logger.info(f"📊 Processing {len(all_trades)} historical trades...")
-            
-            for trade in all_trades:
-                # Handle CLOSED trades
-                if trade.exit_price and trade.pnl is not None:
-                    total_closed_trades += 1
-                    pnl = float(trade.pnl)
-                    total_realized_pnl += pnl
-                    
-                    if pnl > 0:
-                        winning_count += 1
-                    elif pnl < 0:
-                        losing_count += 1
-                    
-                    # Calculate actual commission (entry + exit)
-                    # Entry commission
-                    entry_notional = float(trade.position_size) * float(trade.entry_price)
-                    entry_commission = entry_notional * self.taker_fee
-                    
-                    # Exit commission
-                    exit_notional = float(trade.position_size) * float(trade.exit_price)
-                    exit_commission = exit_notional * self.taker_fee
-                    
-                    total_commission_paid += (entry_commission + exit_commission)
-                
-                # Handle OPEN trades (Active Positions)
-                elif trade.exit_time is None:
-                    logger.info(f"🔓 Found active trade: {trade.trade_id} ({trade.symbol})")
-                    
-                    # Create PaperPosition
-                    position = PaperPosition(
-                        symbol=trade.symbol,
-                        side=trade.direction,
-                        quantity=float(trade.position_size),
-                        entry_price=float(trade.entry_price),
-                        current_price=float(trade.entry_price), # Will be updated by price loop
-                        leverage=1, # Default or fetch if available
-                        position_id=trade.trade_id
-                    )
-                    self.positions[trade.symbol] = position
-                    
-                    # Calculate entry commission only
-                    entry_notional = float(trade.position_size) * float(trade.entry_price)
-                    total_commission_paid += (entry_notional * self.taker_fee)
-            
-            # CRITICAL: Calculate current balance from initial balance + realized P&L - commissions
-            self.balance = self.initial_balance + total_realized_pnl - total_commission_paid
-            self.total_trades = total_closed_trades
-            self.winning_trades = winning_count
-            self.total_commission = total_commission_paid
-            self.peak_balance = max(self.balance, self.initial_balance)
-            
-            # Calculate max drawdown
-            if self.peak_balance > 0:
-                current_drawdown = (self.peak_balance - self.balance) / self.peak_balance
-                self.max_drawdown = max(self.max_drawdown, current_drawdown)
-            
-            logger.info(
-                f"✅ Portfolio state restored from PostgreSQL:\n"
-                f"   📈 Total Trades: {total_closed_trades}\n"
-                f"   💰 Realized P&L: ${total_realized_pnl:+,.2f}\n"
-                f"   💸 Total Commission: ${total_commission_paid:,.2f}\n"
-                f"   💵 Current Balance: ${self.balance:,.2f}\n"
-                f"   🏆 Win Rate: {(winning_count/max(total_closed_trades,1)*100):.1f}%\n"
-                f"   📉 Max Drawdown: {self.max_drawdown*100:.2f}%"
+
+            logger.info("🔄 Restoring portfolio state from historical trades...")
+            manager = TradeHistoryManager(database_url)
+            open_rows, closed_rows = load_trades(
+                manager, self.user_id, allow_unscoped=self.user_id is None
             )
-            
+            if not open_rows and not closed_rows:
+                logger.info("✅ No historical trades found - starting with initial balance")
+                return
+            await rehydrate_engine(self, open_rows, closed_rows)
         except Exception as e:
             logger.warning(f"⚠️ Could not restore from historical trades: {e}")
             logger.info("Starting with initial balance")
-            import traceback
-            traceback.print_exc()
-    
+
     async def publish_initial_state(self):
         """
         Publish initial portfolio state immediately on startup.

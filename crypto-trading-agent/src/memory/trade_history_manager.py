@@ -210,15 +210,34 @@ class TradeHistoryManager:
         market_regime: str = "",
         atr_at_entry: float = 0.0,
         smc_patterns: Optional[List[str]] = None,
-        ict_setups: Optional[List[str]] = None
+        ict_setups: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        leverage: Optional[float] = None,
+        entry_order_id: Optional[str] = None,
+        sl_order_id: Optional[str] = None,
+        tp_order_ids: Optional[List[Dict[str, Any]]] = None,
     ) -> TradeRecord:
-        """Store a new trade record"""
-        
+        """Store a new trade record.
+
+        `user_id` attributes the row to its owning tenant. Without it the row is
+        invisible to the owner's scoped reads (/api/trades filters by user_id) and
+        pools into unscoped service reads — a tenancy attribution bug, not cosmetics.
+        None is allowed only for the single-bot path.
+
+        `leverage` + the bracket-leg identity (`entry_order_id`, `sl_order_id`,
+        `tp_order_ids` as ``[{order_id, price, size}]`` with `size` a FRACTION of
+        the position) exist so a restart can rebuild the position AND its
+        protective legs from this row alone (R2.1). A row without them still
+        rehydrates — stop_loss/take_profit_levels are the fallback — but with
+        engine-default leverage and evenly-split TP quantities.
+        """
+
         session = self.SessionLocal()
-        
+
         try:
             trade = TradeRecord(
                 trade_id=trade_id,
+                user_id=user_id,
                 symbol=symbol,
                 direction=direction,
                 strategy_type=strategy_type,
@@ -233,7 +252,14 @@ class TradeHistoryManager:
                 market_regime=market_regime,
                 atr_at_entry=atr_at_entry,
                 smc_patterns=smc_patterns or [],
-                ict_setups=ict_setups or []
+                ict_setups=ict_setups or [],
+                leverage=leverage,
+                entry_order_id=entry_order_id,
+                sl_order_id=sl_order_id,
+                tp_order_ids=tp_order_ids,
+                # Written EXPLICITLY: the column default made every row read OPEN
+                # forever because nothing ever wrote the exit transition (R2.1 G2).
+                status='OPEN',
             )
             
             session.add(trade)
@@ -307,6 +333,7 @@ class TradeHistoryManager:
             trade.exit_price = exit_price
             trade.exit_time = exit_time
             trade.exit_reason = exit_reason
+            trade.status = 'CLOSED'  # the row is the source of truth for liveness (R2.1)
             
             # Calculate P&L
             if trade.direction == 'LONG':

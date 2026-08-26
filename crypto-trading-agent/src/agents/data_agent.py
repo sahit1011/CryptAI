@@ -6,7 +6,7 @@ Responsible for fetching and distributing live market data
 """
 import asyncio
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from loguru import logger
 
 from src.agents.base_agent import BaseAgent
@@ -54,6 +54,11 @@ class DataCollectionAgent(BaseAgent):
         
         # Track if initial data is loaded
         self.initial_data_loaded = False
+
+        # Demand-gated stream state (see set_stream_profile)
+        self._stream_profile: Optional[str] = None
+        self._scan_streams_until: float = 0.0   # loop-clock time scan streams last ran
+        self._depth_snapshot_at: Dict[str, float] = {}  # per-symbol REST snapshot age
         
         # CRITICAL FIX #1: Add locks for thread-safe buffer access
         self.buffer_locks: Dict[str, Dict[str, asyncio.Lock]] = {}
@@ -111,17 +116,22 @@ class DataCollectionAgent(BaseAgent):
                 
                 await self._fetch_initial_data()
                 self.initial_data_loaded = True
-                
+                # Buffers are fresh AS OF NOW: stamp it so the scan-gap refill logic
+                # doesn't depend on the magnitude of the monotonic clock (which is
+                # seconds-small on a freshly booted container — CI caught exactly that).
+                self._scan_streams_until = asyncio.get_event_loop().time()
+
                 step.complete(success=True, details="Initial data loaded")
 
-                # Step 3: Subscribe to live streams
-                step = StepLogger("1.3", f"Subscribing to {len(self.config.trading.symbols)} symbols", agent="data_agent")
+                # Step 3: streams are DEMAND-GATED — nothing is subscribed here.
+                # Subscribing every stream at startup is what suspended the Render
+                # workspace on 2026-08-10 (~2.2GB/day flowing to nobody, kept alive
+                # 24/7 by our own keepalive cron). The daemon's stream gate calls
+                # set_stream_profile() when there is a live consumer: a scanning
+                # session (full analysis feed) or an open position (price feed).
+                step = StepLogger("1.3", "Market streams demand-gated (none subscribed)", agent="data_agent")
                 step.start()
-                
-                for symbol in self.config.trading.symbols:
-                    await self._subscribe_symbol(symbol)
-                
-                step.complete(success=True, details=f"Subscribed to all {len(self.config.trading.symbols)} symbols")
+                step.complete(success=True, details="streams follow scan/position demand via set_stream_profile()")
 
                 # Step 4: DISABLED - Auto-publish loop removed for sequential execution
                 # PHASE 1 FIX: Data Agent now works on-demand only, triggered by orchestrator
@@ -149,41 +159,143 @@ class DataCollectionAgent(BaseAgent):
         except Exception as e:
             plog.error(f"Data Agent error during stop: {e}", exception=e, agent="data_agent", phase="shutdown")
 
-    async def _subscribe_symbol(self, symbol: str):
-        """Subscribe to all data streams for a symbol"""
+    # ------------------------------------------------------------------ #
+    # Demand-gated stream profiles (the cost law: every stream names its
+    # live consumer, or it does not run).
+    #
+    #   "scan"   — the full analysis feed: klines for every configured
+    #              timeframe + mark-price (funding) per configured symbol.
+    #              No depth stream (the analysis plane reads the book once
+    #              per cycle, so _refresh_depth_snapshot fetches one REST
+    #              snapshot at request time) and no ticker (every kline push
+    #              already carries the current close into update_price).
+    #   "prices" — kline_1m only, per symbol with exposure: enough to mark
+    #              paper positions, fill resting SL/TP, and feed monitors,
+    #              at ~one stream per held symbol instead of seven.
+    #   None     — nothing subscribed. An idle backend costs nothing.
+    #
+    # Callbacks are bound methods (stable identity), so re-applying a profile
+    # is idempotent: the ws client dedupes both the stream and the handler.
+    # ------------------------------------------------------------------ #
+
+    #: Re-run the candle backfill when entering scan mode after streams were
+    #: quiet longer than this — buffers stop updating the moment klines
+    #: unsubscribe, and analysis on gap-toothed buffers is worse than a few
+    #: cached REST calls.
+    SCAN_GAP_REFILL_S = 300.0
+
+    async def set_stream_profile(self, profile: Optional[str], price_symbols: Optional[List[str]] = None):
+        """Reconcile upstream subscriptions to the demanded profile. Never raises."""
+        if profile not in (None, "prices", "scan"):
+            plog.warning(f"Unknown stream profile {profile!r}; treating as None", agent="data_agent")
+            profile = None
+
+        desired: set = set()
+        scan_symbols: List[str] = []
+        light_symbols: List[str] = []
+        if profile == "scan":
+            for symbol in self.config.trading.symbols:
+                b = symbol.replace('/', '').lower()
+                scan_symbols.append(b)
+                for tf in self.normalized_timeframes:
+                    desired.add(f"{b}@kline_{tf}")
+                desired.add(f"{b}@markprice@1s")
+        elif profile == "prices":
+            for symbol in (price_symbols or self.config.trading.symbols):
+                sym = symbol.replace('/', '').upper()
+                # Only feed symbols this agent actually tracks.
+                if sym not in self.binance_to_symbol:
+                    continue
+                b = sym.lower()
+                light_symbols.append(b)
+                desired.add(f"{b}@kline_1m")
+
         try:
-            # Convert symbol format: BTCUSDT -> btcusdt
-            binance_symbol = symbol.replace('/', '').lower()
+            current = set(self.ws_client.subscriptions)
+            if desired == current and profile == self._stream_profile:
+                return
 
-            # Subscribe to klines (candlesticks)
-            await self.ws_client.subscribe_kline(
-                symbol=binance_symbol,
-                intervals=self.normalized_timeframes,
-                callback=lambda data: asyncio.create_task(self._on_kline_update(data))
+            doomed = sorted(current - desired)
+            if doomed:
+                await self.ws_client.unsubscribe(doomed)
+
+            for b in scan_symbols:
+                await self.ws_client.subscribe_kline(b, self.normalized_timeframes, self._on_kline_update)
+                await self.ws_client.subscribe_funding_rate(b, self._on_funding_update)
+            for b in light_symbols:
+                await self.ws_client.subscribe_kline(b, ["1m"], self._on_price_kline)
+
+            # Entering scan mode after a quiet spell: the buffers have a hole where
+            # the streams were off. Refill from REST (cached; ~15 calls) so the next
+            # analysis cycle reads a continuous series, not a gap it can't see.
+            now = asyncio.get_event_loop().time()
+            if profile == "scan" and self._stream_profile != "scan":
+                if (now - self._scan_streams_until) > self.SCAN_GAP_REFILL_S:
+                    plog.info("Backfilling candle buffers after idle gap", agent="data_agent")
+                    await self._fetch_initial_data()
+            if self._stream_profile == "scan" and profile != "scan":
+                self._scan_streams_until = now
+
+            previous, self._stream_profile = self._stream_profile, profile
+            plog.info(
+                f"Stream profile {previous!r} → {profile!r} "
+                f"({len(self.ws_client.subscriptions)} streams: "
+                f"{', '.join(sorted(self.ws_client.subscriptions)) or 'none'})",
+                agent="data_agent", phase="data_collection",
             )
-
-            # Subscribe to order book
-            await self.ws_client.subscribe_depth(
-                symbol=binance_symbol,
-                levels=20,
-                callback=lambda data: asyncio.create_task(self._on_depth_update(data))
-            )
-
-            # Subscribe to funding rate (via mark price stream)
-            await self.ws_client.subscribe_funding_rate(
-                symbol=binance_symbol,
-                callback=lambda data: asyncio.create_task(self._on_funding_update(data))
-            )
-
-            # Subscribe to live ticker for real-time price updates
-            await self.ws_client.subscribe_ticker(
-                symbol=binance_symbol,
-                callback=lambda data: asyncio.create_task(self._on_ticker_update(data))
-            )
-
-            plog.debug(f"Subscribed to {symbol} streams", agent="data_agent", phase="data_collection")
         except Exception as e:
-            plog.error(f"Error subscribing to {symbol}: {e}", exception=e, agent="data_agent", phase="data_collection")
+            plog.error(f"Stream profile change to {profile!r} failed: {e}",
+                       exception=e, agent="data_agent", phase="data_collection")
+
+    async def _on_price_kline(self, data: Dict[str, Any]):
+        """kline_1m handler for the 'prices' profile: price only, no buffers.
+
+        The 1m interval is deliberately NOT in the configured analysis timeframes,
+        so this must never touch candle_buffers/buffer_locks (keyed by configured
+        timeframes — a 1m write would KeyError). Its one job is keeping
+        state_manager prices fresh so paper SL/TP fills and monitors stay honest
+        while no session is scanning.
+        """
+        try:
+            validated = validate_kline_message(data)
+            if not validated:
+                return
+            symbol = self.binance_to_symbol.get(data['s'].upper())
+            if not symbol:
+                return
+            await self.state_manager.update_price(symbol, validated.close)
+        except Exception as e:
+            plog.error(f"Error processing price kline: {e}", exception=e, agent="data_agent")
+
+    async def _refresh_depth_snapshot(self, symbol: str):
+        """Refresh the order book from REST, at most once per snapshot TTL.
+
+        Replaces the depth20@100ms stream: the only consumer reads the book once
+        per analysis cycle, so a snapshot at request time is equally fresh where
+        it matters and ~50,000x cheaper. On failure the previous snapshot is kept
+        (better a stamped stale book than none — consumers can read the timestamp).
+        """
+        try:
+            now = asyncio.get_event_loop().time()
+            last = self._depth_snapshot_at.get(symbol)
+            if last is not None and (now - last) < 5.0:
+                return  # a snapshot this fresh is indistinguishable from a stream's
+            book = await self.historical_fetcher.fetch_order_book(symbol, limit=20)
+            if not book or not book.get('bids') or not book.get('asks'):
+                return
+            self._depth_snapshot_at[symbol] = now
+            ts = book.get('timestamp')
+            self.order_book_data[symbol] = {
+                'timestamp': (datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                              if ts else datetime.now(timezone.utc)),
+                'bids': book['bids'][:10],
+                'asks': book['asks'][:10],
+                'best_bid': book['bids'][0][0],
+                'best_ask': book['asks'][0][0],
+            }
+            await self.state_manager.set(f"order_book:{symbol}", self.order_book_data[symbol])
+        except Exception as e:
+            plog.warning(f"Depth snapshot for {symbol} failed: {e}", agent="data_agent")
 
     async def _fetch_initial_data(self):
         """Fetch initial historical data to populate buffers with exactly 500 candles"""
@@ -1001,6 +1113,12 @@ class DataCollectionAgent(BaseAgent):
                         'last': last_ts_str
                     }
             
+            # The book comes from a REST snapshot taken now — the depth stream is gone
+            # (10 msg/s feeding a consumer that looks once per cycle was most of the
+            # bandwidth bill). Failure keeps the previous snapshot; consumers see its
+            # timestamp.
+            await self._refresh_depth_snapshot(matched_symbol)
+
             # Build complete market data response
             market_data = {
                 'symbol': matched_symbol,

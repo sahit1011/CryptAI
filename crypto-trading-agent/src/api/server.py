@@ -382,6 +382,7 @@ user_settings_store = None
 # Metered analysis sessions and per-user trading persona (M2 control plane).
 session_manager = None
 preferences_store = None
+proposal_service = None
 # Handle for the session clock loop, so shutdown can cancel it rather than leaking a
 # task that keeps ticking against a closing event loop.
 _session_tick_task = None
@@ -398,10 +399,15 @@ _session_tick_task = None
 BASE_CHANNELS = {"ticker.BTCUSDT", "depth.BTCUSDT", "kline.1m.BTCUSDT"}
 _ALLOWED_KLINE_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 _allowed_symbols = {s.upper() for s in get_config().trading.symbols}
-# Streams already requested from Binance this process-lifetime. Add-only: with a
-# handful of symbols the upstream cost is tiny, and per-connection filtering
-# controls who actually receives frames.
+# Streams currently requested from Binance for client-driven channels. This used
+# to be add-only "for process lifetime" — but one depth.<SYM> request is a
+# permanent ~10 msg/s stream (~216MB/day-rate) that only a restart could stop.
+# Channels are now refcounted against live sockets: when the last watcher of a
+# channel leaves, its upstream stream is released after the same linger the base
+# feed uses (see _schedule_upstream_release).
 _upstream_channels: set = set()
+_upstream_release_pending: set = set()
+_upstream_release_task: Optional[asyncio.Task] = None
 
 
 def _parse_channel(channel: str) -> Optional[Dict[str, str]]:
@@ -458,6 +464,67 @@ async def _ensure_upstream(channels: set) -> None:
             logger.info(f"[ws] upstream subscribed: {channel}")
         except Exception as e:
             logger.error(f"[ws] upstream subscribe failed for {channel}: {e}")
+
+
+def _channel_stream(channel: str) -> Optional[str]:
+    """The upstream Binance stream a client channel maps to (None when malformed)."""
+    parsed = _parse_channel(channel)
+    if parsed is None:
+        return None
+    sym = parsed["symbol"].lower()
+    if parsed["kind"] == "ticker":
+        return f"{sym}@ticker"
+    if parsed["kind"] == "depth":
+        return f"{sym}@depth5@100ms"
+    return f"{sym}@kline_{parsed['interval']}"
+
+
+def _channel_watchers(channel: str) -> int:
+    """How many live sockets are subscribed to this channel."""
+    return sum(1 for subs in manager.channel_subs.values() if channel in subs)
+
+
+def _schedule_upstream_release(channels: set) -> None:
+    """Queue channels for upstream release once nobody watches them.
+
+    Cheap and idempotent — the actual watcher re-check happens after the linger,
+    so a client that unsubscribes and immediately re-subscribes (or a reconnecting
+    dashboard) never churns Binance control frames.
+    """
+    global _upstream_release_task
+    candidates = {c for c in channels if c in _upstream_channels and c not in BASE_CHANNELS}
+    if not candidates:
+        return
+    _upstream_release_pending.update(candidates)
+    if _upstream_release_task is None or _upstream_release_task.done():
+        _upstream_release_task = asyncio.create_task(_release_upstream_after_linger())
+
+
+async def _release_upstream_after_linger() -> None:
+    global _upstream_release_task
+    try:
+        while _upstream_release_pending:
+            await asyncio.sleep(MARKET_FEED_LINGER_S)
+            batch, doomed = sorted(_upstream_release_pending), []
+            _upstream_release_pending.clear()
+            for channel in batch:
+                if channel not in _upstream_channels or _channel_watchers(channel) > 0:
+                    continue
+                stream = _channel_stream(channel)
+                if stream is None:
+                    continue
+                _upstream_channels.discard(channel)
+                doomed.append(stream)
+            if doomed:
+                try:
+                    await binance_client.unsubscribe(doomed)
+                    logger.info(f"[ws] upstream released (unwatched): {', '.join(doomed)}")
+                except Exception as e:
+                    # Channels are already off the books — a future re-request
+                    # simply re-subscribes them.
+                    logger.error(f"[ws] upstream release failed: {e}")
+    finally:
+        _upstream_release_task = None
 
 
 async def handle_binance_update(data: Dict[str, Any]):
@@ -524,6 +591,84 @@ async def handle_agent_message(data: Dict[str, Any]):
     await manager.broadcast(payload)
 
 
+# --- the base market feed, held only while somebody is watching -----------------------
+#
+# These are the streams the dashboard renders (the untargeted BTCUSDT broadcast that
+# predates the channel protocol). `depth5@100ms` is TEN messages a second, and this used
+# to be subscribed in startup_event — so it ran 24/7 whether or not a single browser was
+# open, with the keepalive cron guaranteeing the process never slept to stop it. At
+# ~250 bytes a message that is ~216MB/day inbound, and the same again fanned back out to
+# every connected socket. It exhausted a 5GB free-tier bandwidth allowance in ten days
+# and suspended the whole Render workspace on 2026-08-10.
+#
+# Resolution is unchanged — 100ms depth is still there for anyone actually looking at a
+# trading terminal. What changed is that an idle backend now costs nothing.
+BASE_MARKET_STREAMS = ("btcusdt@ticker", "btcusdt@depth5@100ms", "btcusdt@kline_1m")
+
+#: Grace period before dropping the streams after the last socket leaves. A reload would
+#: otherwise unsubscribe and resubscribe within a second, and Binance rate-limits inbound
+#: control frames — a refresh loop could get the connection dropped.
+MARKET_FEED_LINGER_S = 30
+
+_market_feed_lock = asyncio.Lock()
+_market_feed_on = False
+_market_feed_release_task: Optional[asyncio.Task] = None
+
+
+async def acquire_market_feed() -> None:
+    """Subscribe the base streams, if they are not already up. Never raises."""
+    global _market_feed_on, _market_feed_release_task
+    async with _market_feed_lock:
+        # A viewer arrived during the grace period: cancel the pending teardown rather
+        # than let it fire and strand this connection with a dead feed.
+        if _market_feed_release_task is not None:
+            _market_feed_release_task.cancel()
+            _market_feed_release_task = None
+        if _market_feed_on:
+            return
+        try:
+            await binance_client.subscribe_ticker("btcusdt", handle_binance_update)
+            await binance_client.subscribe_depth(
+                "btcusdt", levels=5, update_speed="100ms", callback=handle_binance_update
+            )
+            await binance_client.subscribe_kline("btcusdt", ["1m"], handle_binance_update)
+            _market_feed_on = True
+            logger.info("market feed ON — a dashboard is connected")
+        except Exception as e:
+            # Same policy as at startup: a missing market feed degrades the dashboard,
+            # it must never fail the socket handshake.
+            logger.error(f"could not start the base market feed: {e}")
+
+
+async def _release_market_feed_after_linger() -> None:
+    global _market_feed_on, _market_feed_release_task
+    try:
+        await asyncio.sleep(MARKET_FEED_LINGER_S)
+    except asyncio.CancelledError:
+        return
+    async with _market_feed_lock:
+        _market_feed_release_task = None
+        # Re-check under the lock: someone may have connected while we slept.
+        if manager.active_connections or not _market_feed_on:
+            return
+        try:
+            await binance_client.unsubscribe(list(BASE_MARKET_STREAMS))
+            _market_feed_on = False
+            logger.info("market feed OFF — no dashboard connected")
+        except Exception as e:
+            logger.error(f"could not stop the base market feed: {e}")
+
+
+def release_market_feed_when_idle() -> None:
+    """Schedule teardown if that was the last viewer. Cheap and idempotent."""
+    global _market_feed_release_task
+    if not _market_feed_on or _market_feed_release_task is not None:
+        return
+    if manager.active_connections:
+        return
+    _market_feed_release_task = asyncio.create_task(_release_market_feed_after_linger())
+
+
 @app.on_event("startup")
 async def startup_event():
     # Structured logging (LOG_JSON=true → JSON lines) + request-ID on every line.
@@ -540,10 +685,10 @@ async def startup_event():
     # Redis WS bridge, REST endpoints, and agent feed keep working — the market feed
     # simply stays offline until connectivity returns.
     try:
+        # Connect the socket, but subscribe NOTHING yet. The base streams are acquired
+        # by the first dashboard that connects (see acquire_market_feed) so an idle
+        # backend does not stream 10 messages a second to nobody.
         await asyncio.wait_for(binance_client.connect(), timeout=10)
-        await binance_client.subscribe_ticker("btcusdt", handle_binance_update)
-        await binance_client.subscribe_depth("btcusdt", levels=5, update_speed="100ms", callback=handle_binance_update)
-        await binance_client.subscribe_kline("btcusdt", ["1m"], handle_binance_update)
     except Exception as e:
         logger.error(f"Binance market feed unavailable at startup (continuing without it): {e}")
 
@@ -615,6 +760,14 @@ async def startup_event():
             )
         except Exception as e:
             logger.error(f"Failed to initialize PreferencesStore: {e}")
+        global proposal_service
+        try:
+            from src.core.proposals import ProposalService
+            proposal_service = await asyncio.to_thread(
+                ProposalService, config.database.postgres_url
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize ProposalService: {e}")
 
         # The session clock. Started even if SessionManager failed above — the loop
         # no-ops until the manager exists, and a later hot-fix does not need a restart.
@@ -650,6 +803,21 @@ async def startup_event():
     # service but no free background workers, and it's all asyncio anyway. A keep-alive
     # ping (see .github/workflows/keepalive.yml) prevents the idle spin-down. Failure
     # is isolated: a daemon that can't start must never take the API down.
+    # Shared signal plane as a child process. Free-tier deployments cannot afford a
+    # second always-on service, so the engine ships in this image and runs here; see
+    # src/core/signal_engine_process.py. Supervised and non-fatal — a dead engine means
+    # sessions run ungated (documented no-op), never a down API.
+    if os.getenv("RUN_SIGNAL_ENGINE_IN_API", "false").lower() == "true":
+        global _signal_engine_task
+        try:
+            from src.core.signal_engine_process import run_signal_engine
+            _signal_engine_task = asyncio.get_running_loop().create_task(
+                run_signal_engine(_signal_engine_shutdown)
+            )
+            logger.info("signal engine supervisor started in the API process")
+        except Exception as e:
+            logger.error(f"signal engine setup failed (API continues without it): {e}")
+
     if os.getenv("RUN_DAEMON_IN_API", "false").lower() == "true":
         global embedded_daemon
         try:
@@ -678,10 +846,23 @@ async def startup_event():
 # In-process daemon instance when RUN_DAEMON_IN_API=true (else None).
 embedded_daemon = None
 
+# Signal-engine child-process supervisor when RUN_SIGNAL_ENGINE_IN_API=true.
+_signal_engine_task = None
+_signal_engine_shutdown = asyncio.Event()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down...")
+    global _signal_engine_task
+    if _signal_engine_task is not None:
+        _signal_engine_shutdown.set()   # lets the supervisor terminate the child cleanly
+        _signal_engine_task.cancel()
+        try:
+            await _signal_engine_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _signal_engine_task = None
     global _session_tick_task
     if _session_tick_task is not None:
         _session_tick_task.cancel()
@@ -743,6 +924,8 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     await manager.connect(websocket, user_id)
+    # Somebody is watching now — bring the base streams up if they are down.
+    await acquire_market_feed()
     try:
         while True:
             raw = await websocket.receive_text()
@@ -766,6 +949,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await _ensure_upstream(requested)
             else:
                 current = manager.remove_channels(websocket, requested)
+                _schedule_upstream_release(requested)
             # Ack with the connection's full channel set so the client can verify.
             try:
                 await websocket.send_text(json.dumps(
@@ -774,10 +958,16 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 pass
     except WebSocketDisconnect:
+        had = set(manager.channel_subs.get(websocket, ()))
         manager.disconnect(websocket)
+        release_market_feed_when_idle()
+        _schedule_upstream_release(had)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        had = set(manager.channel_subs.get(websocket, ()))
         manager.disconnect(websocket)
+        release_market_feed_when_idle()
+        _schedule_upstream_release(had)
 
 @app.get("/api/trades")
 async def get_trades(
@@ -819,7 +1009,8 @@ async def get_trades(
                 "exitTime": trade.exit_time.isoformat() if trade.exit_time else None,
                 "exitReason": trade.exit_reason,
                 "strategy": trade.strategy_type,
-                "leverage": trade.leverage if hasattr(trade, 'leverage') else 10,
+                # Real column since R2.1; None on legacy rows (unknown ≠ 10).
+                "leverage": trade.leverage,
                 "confidence": float(trade.confidence_score) if trade.confidence_score else 0.0,
                 "isWinner": trade.is_winner
             })
@@ -944,16 +1135,18 @@ ADMIN_USER_IDS = {u.strip() for u in os.getenv("ADMIN_USER_IDS", "").split(",") 
 
 
 def require_admin(principal: Dict[str, Any] = Depends(current_principal)) -> str:
-    """Require an admin. The service token is always admin; end-users must be allow-listed."""
-    # Service token (no user_id, authenticated via API_AUTH_TOKEN) is trusted. In local
-    # dev with no auth configured, the anonymous principal is also allowed through.
+    """Require an admin. The service token is always admin; end-users must be allow-listed.
+
+    Fail-closed: when ADMIN_USER_IDS is empty in a deployment where auth IS configured,
+    NO end-user is an admin — the owner must add their Supabase UUID to ADMIN_USER_IDS.
+    The `anonymous` principal only exists when no auth is configured at all (local dev),
+    so it stays admin there without opening a hole in production. Mirrors get_engine's
+    `is_admin`.
+    """
+    # Service token (API_AUTH_TOKEN) is trusted; anonymous exists only in no-auth dev.
     if principal.get("kind") in ("service", "anonymous"):
         return principal.get("kind")
     user_id = principal.get("user_id")
-    # If no allow-list is configured, admin control is open (dev). Once ADMIN_USER_IDS
-    # is set (prod), only those UUIDs pass — mirrors get_engine's `is_admin`.
-    if not ADMIN_USER_IDS and user_id:
-        return user_id
     if user_id and user_id in ADMIN_USER_IDS:
         return user_id
     raise HTTPException(
@@ -1052,6 +1245,24 @@ async def set_settings(body: SettingsBody, user_id: str = Depends(require_user))
     """Update the caller's trading mode / active exchange."""
     if user_settings_store is None:
         raise HTTPException(status_code=503, detail="Settings store is not configured")
+    # ENFORCE plan.allow_live. It was defined and unit-tested but read NOWHERE in src/,
+    # so any free-tier user could set themselves to `auto` and have the daemon place
+    # orders on connected keys — the exact capability the tier is meant to withhold.
+    # Fails CLOSED: if the plan cannot be resolved, `auto` is refused rather than
+    # granted (the money law — never widen a gate to get past an error).
+    if (body.trading_mode or "").strip().lower() == "auto":
+        try:
+            from src.billing import plan_for_user
+            allowed = bool((await asyncio.to_thread(plan_for_user, user_id)).allow_live)
+            reason = "your plan does not include automated trading"
+        except Exception as e:
+            logger.warning(f"plan lookup failed for {user_id}: {e}; refusing auto")
+            allowed, reason = False, "plan could not be verified"
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "auto_not_permitted", "message": reason},
+            )
     try:
         return await asyncio.to_thread(
             user_settings_store.set, user_id, body.trading_mode, body.active_exchange,
@@ -1108,14 +1319,29 @@ async def _session_tick_once():
     if session_manager is None:
         return
 
+    from src.core.session_manager import SCANNING
+
     user_ids = {uid for uid in manager.connections.values() if uid}
+    # One capacity read per pass, not per tenant: it is a global property, and the gate
+    # must not turn into N Redis round-trips as tenants scale.
+    capacity_down = not (await _analysis_capacity())["available"]
+
     for user_id in user_ids:
         try:
             active = await asyncio.to_thread(session_manager.get_active, user_id)
             if active is None:
                 continue
-            # tick() enforces both meters and may end the session.
-            state = await asyncio.to_thread(session_manager.tick, active["session_id"])
+            # Capacity outranks the meters: a scan against a dead engine buys nothing,
+            # so end it and hand back the unproven time rather than letting tick()
+            # quietly charge for it. Only SCANNING is affected — a paused session
+            # deciding on a plan needs no capacity and must not be disturbed.
+            if capacity_down and active.get("status") == SCANNING:
+                state = await asyncio.to_thread(
+                    session_manager.end_for_capacity_loss, active["session_id"]
+                )
+            else:
+                # tick() enforces both meters and may end the session.
+                state = await asyncio.to_thread(session_manager.tick, active["session_id"])
             remaining_today = await asyncio.to_thread(
                 session_manager.remaining_today, user_id
             )
@@ -1144,6 +1370,17 @@ class SessionStartBody(BaseModel):
     # Lets a caller request less than their full remaining quota (e.g. a 10-minute
     # session). Never more: the manager clamps to what is actually left today.
     quota_seconds: Optional[int] = Field(default=None, ge=60, le=24 * 3600)
+    # Trading style for this session (scalp | intraday | swing | position), overriding
+    # the persistent goal_horizon persona. None keeps the persona default; an unknown
+    # value is rejected by the session manager.
+    channel: Optional[str] = Field(default=None, max_length=16)
+    # Strategy profile for this session ("s1" | "s2"). None means the default (S2,
+    # today's swing behavior — absent field == pre-S1 behavior, byte for byte).
+    # Resolved via src.strategy.profiles.resolve_profile: S1 is paper-only
+    # scaffolding behind the default-off S1_ENABLED flag, and asking for it on a
+    # deployment that does not offer it is refused honestly (403) rather than
+    # silently downgraded to S2.
+    strategy: Optional[str] = Field(default=None, max_length=32)
 
 
 def _require_sessions():
@@ -1161,6 +1398,138 @@ async def _owned_session(user_id: str) -> Dict[str, Any]:
     return active
 
 
+#: `detail.code` on the start gate's 503. The client branches on this rather than
+#: pattern-matching prose, so copy edits cannot break the handling.
+CAPACITY_UNAVAILABLE = "capacity_unavailable"
+
+#: `detail.code` on the start gate's 403 when the requested strategy profile is real
+#: but not enabled on this deployment (S1 behind its default-off flag). Structured
+#: like CAPACITY_UNAVAILABLE so the client branches on `code`, not prose.
+STRATEGY_UNAVAILABLE = "strategy_unavailable"
+
+# Internal vocabulary for why analysis is down. Never rendered — the UI maps these to
+# its own copy, so renaming user-facing text does not touch the API.
+CAPACITY_PAUSED = "paused"
+CAPACITY_DEGRADED = "degraded"
+CAPACITY_MODEL_ERROR = "model_error"
+CAPACITY_SIGNAL_STALE = "signal_stale"
+CAPACITY_LLM_BUDGET = "llm_budget"
+
+# Lazy probe for the shared signal plane. Only consulted when SIGNAL_PLANE_ENABLED=true:
+# with the plane demanded, every metered cycle is pulse-gated fail-closed, so a dead or
+# stale plane means sessions meter time while producing nothing (skipped_stale) — the
+# capacity gate must refuse new scans and the tick loop must refund running ones (R1.3).
+_pulse_probe = None
+
+
+def _pulse_probe_client():
+    global _pulse_probe
+    if _pulse_probe is None and state_manager is not None and getattr(state_manager, "redis", None) is not None:
+        from src.signals.pulse_client import PulseClient
+        _pulse_probe = PulseClient(state_manager.redis)
+    return _pulse_probe
+
+
+def _signal_plane_demanded() -> bool:
+    return (os.getenv("SIGNAL_PLANE_ENABLED") or "").strip().lower() == "true"
+
+
+async def _analysis_capacity() -> Dict[str, Any]:
+    """Whether new scans can be produced at all: `{available, reason, eta_seconds}`.
+
+    Folded into the session poll so the client never reconciles two independent switches
+    against each other — that reconciliation was the bug this replaces.
+
+    **This fails CLOSED, and that is the whole point.** A session started while analysis
+    is down still starts its clock, so the user spends scarce metered minutes on cycles
+    that produce nothing. Refusing to start costs a blocked tap; allowing it costs quota
+    the user cannot get back until UTC midnight. Between those, refuse.
+
+    The one deliberate exception is a *missing* kill switch, which reads as available.
+    `SessionWorkerPool` treats an unconfigured switch as permission to work (no emergency
+    stop configured is not the same as one that is engaged), and these two must agree —
+    if they disagree, either the pool works while the gate blocks, or the gate admits
+    sessions the pool refuses to serve.
+    """
+    available: Dict[str, Any] = {"available": True, "reason": None, "eta_seconds": None}
+
+    def down(reason: str) -> Dict[str, Any]:
+        # No eta_seconds is ever invented: nobody knows when an owner flips the switch
+        # back on, and a fabricated countdown that expires with nothing changed is worse
+        # than admitting we do not know.
+        return {"available": False, "reason": reason, "eta_seconds": None}
+
+    # Checked first: with no provider key, flipping the switch on still produces nothing,
+    # so "paused" would send the owner to the wrong lever.
+    #
+    # Read from the environment rather than the parsed config, because that is what
+    # actually decides whether a provider is reachable — a cached Config built before a
+    # key was set would report a capability the engine does not have.
+    if not any(
+        (os.getenv(var) or "").strip()
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "GROQ_API_KEY",
+        )
+    ):
+        return down(CAPACITY_MODEL_ERROR)
+
+    # Daily LLM request budget (R1.6): once the free-tier request cap is spent, a new
+    # scan meters minutes into cycles the provider will refuse — refuse at the door and
+    # let the tick loop refund running scans. Reads fail toward available (the budget
+    # is a protective rail; its failure mode must never be a second outage).
+    if state_manager is not None and getattr(state_manager, "redis", None) is not None:
+        from src.utils.llm_request_budget import LlmRequestBudget
+        try:
+            if await LlmRequestBudget(state_manager.redis).exhausted():
+                return down(CAPACITY_LLM_BUDGET)
+        except Exception:
+            pass
+
+    # With the signal plane demanded, sessions are pulse-gated fail-closed — a stale or
+    # absent plane makes every metered cycle a skipped_stale no-op. Refuse at the door
+    # instead, and let the tick loop's capacity check refund sessions already running.
+    # Checked BEFORE the switch: pulse liveness is orthogonal to the emergency stop, and
+    # the switch-less deployment must still refuse to meter time against a dead plane.
+    if _signal_plane_demanded():
+        probe = _pulse_probe_client()
+        if probe is None:
+            return down(CAPACITY_SIGNAL_STALE)
+        symbols = [
+            s.strip().upper()
+            for s in (os.getenv("PLATFORM_SYMBOLS") or "BTCUSDT,ETHUSDT,SOLUSDT").split(",")
+            if s.strip()
+        ]
+        try:
+            fresh = await probe.get_many(symbols)
+        except Exception as e:
+            logger.warning(f"capacity: pulse probe failed ({e})")
+            return down(CAPACITY_SIGNAL_STALE)
+        if not fresh:
+            return down(CAPACITY_SIGNAL_STALE)
+
+    switch = _engine_switch()
+    if switch is None:
+        # No Redis, therefore no emergency stop exists. Matches the pool's fail-open.
+        return available
+
+    try:
+        status_obj = await switch.status()
+    except Exception as e:
+        # The switch exists but cannot be read. The pool halts work in exactly this
+        # case, so a session started now would meter time against a stopped engine.
+        logger.warning(f"capacity: engine switch unreadable ({e})")
+        return down(CAPACITY_DEGRADED)
+
+    if not status_obj.get("enabled"):
+        return down(CAPACITY_PAUSED)
+    return available
+
+
 @app.get("/api/session")
 async def get_session(user_id: str = Depends(require_user)):
     """The caller's active session plus today's remaining quota.
@@ -1174,6 +1543,7 @@ async def get_session(user_id: str = Depends(require_user)):
     used = await asyncio.to_thread(mgr.used_today, user_id)
     return {
         "session": active,
+        "capacity": await _analysis_capacity(),
         "daily_quota_seconds": mgr.daily_quota_seconds,
         "used_today_seconds": used,
         "remaining_today_seconds": remaining,
@@ -1185,18 +1555,96 @@ async def start_session(
     body: SessionStartBody = SessionStartBody(),
     user_id: str = Depends(require_user),
 ):
-    """Begin a metered session. 429 when the daily quota is spent."""
+    """Begin a metered session. 429 when the daily quota is spent, 503 when analysis is down.
+
+    The capacity check runs BEFORE `mgr.start`, so a refused start creates no session
+    row, no clock, and no event — there is nothing to roll back and nothing that has to
+    be refunded. Starting first and compensating afterwards would leave a window in which
+    the clock is live against an engine that cannot serve it.
+    """
     from src.core.session_manager import QuotaExhausted, SessionError
+    from src.strategy.profiles import (
+        DEFAULT_PROFILE,
+        STRATEGY_KEY_TTL_SECONDS,
+        ProfileError,
+        ProfileUnavailable,
+        resolve_profile,
+        session_strategy_key,
+    )
 
     mgr = _require_sessions()
+
+    # Resolved BEFORE the capacity probe: this is pure validation, and a request
+    # naming a profile this deployment cannot serve deserves its specific answer
+    # rather than whatever the capacity gate happens to say today. Nothing has been
+    # created yet, so a refusal here has nothing to roll back — same reasoning as
+    # the capacity-before-start ordering below.
     try:
-        return await asyncio.to_thread(mgr.start, user_id, body.quota_seconds)
+        profile = resolve_profile(body.strategy)
+    except ProfileUnavailable as e:
+        # 403 rather than 409/422: the value is well-formed and names a real
+        # profile, but this deployment does not offer it (S1_ENABLED is off).
+        # Honest and structured — never a silent downgrade to the default.
+        raise HTTPException(
+            status_code=403,
+            detail={"code": STRATEGY_UNAVAILABLE, "message": str(e)},
+        )
+    except ProfileError as e:
+        # Unknown value — a caller bug, same class as a malformed field: 422.
+        raise HTTPException(status_code=422, detail=str(e))
+
+    capacity = await _analysis_capacity()
+    if not capacity["available"]:
+        # 503 rather than 409: this is the service being unable to serve, not the
+        # caller's state being wrong. A structured body so the client branches on
+        # `code` instead of prose.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": CAPACITY_UNAVAILABLE,
+                "reason": capacity["reason"],
+                "eta_seconds": capacity["eta_seconds"],
+                "message": "Market analysis is unavailable; no session was started.",
+            },
+        )
+
+    try:
+        started = await asyncio.to_thread(mgr.start, user_id, body.quota_seconds, body.channel)
     except QuotaExhausted as e:
         # 429 rather than 403: this is a rate limit that resets, not a permission
         # problem the user can do anything about.
         raise HTTPException(status_code=429, detail=str(e))
     except SessionError as e:
+        # Covers both "already have a session" and "unknown channel"; both are 409.
         raise HTTPException(status_code=409, detail=str(e))
+
+    # Carry the resolved profile where the daemon's session worker can read it
+    # later (via session_strategy_key — one shared key builder, so the shape cannot
+    # drift between processes).
+    #
+    # PERSISTENCE GAP (deliberate, documented): `sessions` has no strategy column
+    # and this scaffolding ships without a schema change, so a NON-DEFAULT profile
+    # lives only in Redis (state:session:{id}:strategy, TTL-bounded). A Redis flush
+    # or restart mid-session loses the marker and every reader must fall back to
+    # S2 — today's behavior, i.e. the fail-safe direction for a paper-only
+    # experiment. The default path writes nothing at all, so S2 sessions behave
+    # identically to before this field existed (and GET /api/session does not yet
+    # surface the profile — that lands with the daemon-side consumer). A real
+    # column follows when S1 leaves scaffolding.
+    if profile is not DEFAULT_PROFILE and state_manager is not None:
+        try:
+            await state_manager.set(
+                session_strategy_key(started["session_id"]),
+                profile.value,
+                ttl=STRATEGY_KEY_TTL_SECONDS,
+            )
+        except Exception as e:
+            # Scaffolding, paper-only: losing the marker degrades the session to
+            # S2 rather than blocking it. Logged so a dead Redis stays visible.
+            logger.warning(f"could not record strategy profile for session: {e}")
+    # Echoed so the caller knows which profile actually governs this session.
+    started["strategy"] = profile.value
+    return started
 
 
 @app.post("/api/session/end")
@@ -1206,6 +1654,16 @@ async def end_session(user_id: str = Depends(require_user)):
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    # Ending with a proposal still on the table decides it: an orphaned PROPOSED row
+    # would hold the one-pending-per-user slot and haunt the next session's UI.
+    if proposal_service is not None:
+        from src.core.proposals import REJECTED
+
+        pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+        if pending is not None and pending.get("status") == "proposed":
+            await asyncio.to_thread(
+                proposal_service.mark, pending["proposal_id"], REJECTED
+            )
     try:
         return await asyncio.to_thread(mgr.end, active["session_id"], USER_ENDED, "ended by user")
     except SessionError as e:
@@ -1214,33 +1672,169 @@ async def end_session(user_id: str = Depends(require_user)):
 
 @app.post("/api/session/approve")
 async def approve_proposal(user_id: str = Depends(require_user)):
-    """Manual mode: accept the pending proposal and move to execution.
+    """Manual mode: approve the pending proposal; the daemon re-validates and executes.
 
-    Re-validation of price, spread, and risk limits happens in the execution path, not
-    here — a proposal approved minutes later is not the same trade, and this endpoint
-    must not be the thing that decides it still is.
+    Re-validation (shelf life, price drift, invalidation breach, re-size) and the
+    booking itself happen in the daemon — the process that owns live prices and the
+    user's engine. Ordering is deliberate: the command is dispatched while the session
+    is still SETUP_PROPOSED, because EXECUTING has no legal path back to SCANNING — if
+    re-validation refuses the fill, the session must resume scanning, not strand.
+
+    On success the session ENDS with reason `trade_opened` (free-tier v1: one executed
+    trade per session; the position's monitoring is unmetered and continues regardless).
     """
-    from src.core.session_manager import IllegalTransition
+    from src.core.session_manager import (
+        SETUP_PROPOSED,
+        TRADE_OPENED,
+        IllegalTransition,
+        SessionError,
+    )
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    session_id = active["session_id"]
+    if active.get("status") != SETUP_PROPOSED:
+        raise HTTPException(status_code=409, detail="No proposal is awaiting approval")
+    # Checked only once we actually need it: "no session" (404) and "nothing proposed"
+    # (409) are the specific, user-actionable answers and don't involve the service.
+    # With the service down, the honest answer is 503 with the clock left paused —
+    # NOT the old path that misreported it as an expired proposal.
+    if proposal_service is None:
+        raise HTTPException(
+            status_code=503, detail="Proposal service is not configured"
+        )
+
+    async def _close_as_trade_opened(message: str) -> dict:
+        try:
+            await asyncio.to_thread(mgr.approve, session_id, "proposal approved")
+            return await asyncio.to_thread(mgr.end, session_id, TRADE_OPENED, message)
+        except (IllegalTransition, SessionError) as e:
+            logger.warning(f"session {session_id} state race after execution: {e}")
+            return await asyncio.to_thread(mgr.get, session_id)
+
+    pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+    # get_pending returns a lapsed proposal WITH status "expired" (so callers can see
+    # why); only a still-proposed row may be dispatched for execution.
+    if pending is not None and pending.get("status") != "proposed":
+        pending = None
+    if pending is None:
+        # Paused session, no live proposal. Two very different causes: the proposal
+        # EXECUTED but the approve reply was lost (their money is in the market — the
+        # session must close as trade_opened, never resume and book a second trade),
+        # or it genuinely lapsed (resume scanning honestly).
+        latest = await asyncio.to_thread(
+            proposal_service.latest_for_session, user_id, session_id
+        )
+        if latest is not None and latest.get("status") == "executed":
+            session = await _close_as_trade_opened(
+                "trade executed — recovered after a lost approve reply"
+            )
+            return {
+                "session": session,
+                "execution": {"approved": True, "recovered": True,
+                              "execution_id": latest.get("trade_id")},
+                "proposal_id": latest["proposal_id"],
+            }
+        try:
+            await asyncio.to_thread(
+                mgr.reject, session_id, "proposal expired — resuming scan"
+            )
+        except (IllegalTransition, SessionError):
+            pass
+        raise HTTPException(status_code=409, detail="The proposal has expired")
+
+    result = await _dispatch_user_command({
+        "type": "approve_proposal",
+        "user_id": user_id,
+        "proposal_id": pending["proposal_id"],
+    })
+    if result is None:
+        # Daemon unreachable OR the reply outran the timeout. Change nothing: the
+        # clock stays paused and a retry lands in the recovery branch above if the
+        # booking actually went through.
+        raise HTTPException(
+            status_code=504, detail="Trading engine did not respond; try again"
+        )
+
+    if result.get("approved"):
+        session = await _close_as_trade_opened(
+            "trade executed — position monitoring continues"
+        )
+        return {"session": session, "execution": result, "proposal_id": pending["proposal_id"]}
+
+    reason = result.get("reason", "revalidation_failed")
+    if result.get("retryable"):
+        # The proposal is still live (price drifted, feed hiccup). Keep the clock
+        # paused and the proposal on the table: the user retries or rejects, and the
+        # sweeper resumes the session if the shelf life lapses. Resuming here instead
+        # created a dead zone — metering, unable to propose, unable to approve.
+        raise HTTPException(
+            status_code=409, detail=f"Not executed: {reason} — you can retry or reject"
+        )
     try:
-        return await asyncio.to_thread(mgr.approve, active["session_id"])
-    except IllegalTransition as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        await asyncio.to_thread(mgr.reject, session_id, f"approval declined: {reason}")
+    except (IllegalTransition, SessionError):
+        pass
+    raise HTTPException(status_code=409, detail=f"Not executed: {reason}")
 
 
 @app.post("/api/session/reject")
 async def reject_proposal(user_id: str = Depends(require_user)):
-    """Decline the pending proposal and resume scanning. Restarts the meter."""
-    from src.core.session_manager import IllegalTransition
+    """Decline the pending proposal and resume scanning. Restarts the meter.
+
+    Carries the same executed-recovery check as approve: after a lost approve reply
+    the proposal is EXECUTED while the UI still shows its card, and "reject" is at
+    least as likely a click as "retry". Resuming the scan there would let the session
+    book a SECOND trade — instead the session closes honestly as trade_opened.
+    """
+    from src.core.session_manager import (
+        SETUP_PROPOSED,
+        TRADE_OPENED,
+        IllegalTransition,
+        SessionError,
+    )
 
     mgr = _require_sessions()
     active = await _owned_session(user_id)
+    session_id = active["session_id"]
+    if proposal_service is not None:
+        from src.core.proposals import REJECTED
+
+        pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+        if pending is not None and pending.get("status") == "proposed":
+            await asyncio.to_thread(
+                proposal_service.mark, pending["proposal_id"], REJECTED
+            )
+        elif active.get("status") == SETUP_PROPOSED:
+            latest = await asyncio.to_thread(
+                proposal_service.latest_for_session, user_id, session_id
+            )
+            if latest is not None and latest.get("status") == "executed":
+                try:
+                    await asyncio.to_thread(mgr.approve, session_id, "proposal approved")
+                    return await asyncio.to_thread(
+                        mgr.end, session_id, TRADE_OPENED,
+                        "trade executed — recovered on reject after a lost approve reply",
+                    )
+                except (IllegalTransition, SessionError) as e:
+                    logger.warning(f"session {session_id} recovery race on reject: {e}")
+                    return await asyncio.to_thread(mgr.get, session_id)
     try:
-        return await asyncio.to_thread(mgr.reject, active["session_id"])
+        return await asyncio.to_thread(mgr.reject, session_id)
     except IllegalTransition as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/proposals/pending")
+async def get_pending_proposal(user_id: str = Depends(require_user)):
+    """The caller's newest pending proposal, or `proposal: null` when there is none.
+
+    Null is a normal state the UI renders (no card), not an error.
+    """
+    if proposal_service is None:
+        raise HTTPException(status_code=503, detail="Proposal service is not configured")
+    pending = await asyncio.to_thread(proposal_service.get_pending, user_id)
+    return {"proposal": pending}
 
 
 @app.get("/api/session/events")
@@ -1354,10 +1948,11 @@ async def get_engine(principal: Dict[str, Any] = Depends(current_principal)):
     sw = _engine_switch()
     status_obj = await sw.status() if sw else {"enabled": False, "expires_in_seconds": None, "enabled_by": None}
     uid = principal.get("user_id")
-    # Admin if: service/anonymous principal, allow-list unset (dev), or listed owner.
+    # Admin if: service/anonymous principal (anonymous exists only in no-auth dev), or a
+    # listed owner UUID. Fail-closed: an empty ADMIN_USER_IDS grants no end-user admin —
+    # must stay in lockstep with require_admin above, or the toggle shows but 403s.
     status_obj["is_admin"] = (
         principal.get("kind") in ("service", "anonymous")
-        or not ADMIN_USER_IDS
         or (uid is not None and uid in ADMIN_USER_IDS)
     )
     return status_obj
@@ -1372,6 +1967,53 @@ async def set_engine(body: EngineBody, admin: str = Depends(require_admin)):
     if body.enabled:
         return await sw.turn_on(duration_seconds=body.duration_seconds, enabled_by=admin)
     return await sw.turn_off(disabled_by=admin)
+
+
+@app.get("/api/pulse")
+async def get_pulse():
+    """Market-activity status: what the plane says NOW + what this hour HAS been.
+
+    Two deliberately separate things, because conflating them is how a status badge
+    becomes a fabricated forecast (honesty law):
+
+    - `now`: this tick's aggregate from the Rust engine — the live tradability spread
+      and how many symbols are vetoed. `available: false` when the plane is silent or
+      stale, which the UI must render as UNKNOWN, never as "calm".
+    - `hour`: how active the current UTC hour has historically been, measured over 24
+      months of 1m bars (see src/signals/hour_profile.py), with its sample attached so
+      the claim is auditable. Past tense, always.
+
+    There is no field here that says anything about the next hour, and none should be
+    added. Shared across users (no per-user content), so unauthenticated like /api/setups.
+    """
+    from src.signals.hour_profile import describe_hour
+    from src.signals.pulse_client import read_global
+
+    now_block: Dict[str, Any] = {"available": False, "reason": "signal_plane_unavailable"}
+    if state_manager is not None and getattr(state_manager, "redis", None) is not None:
+        pulse = await read_global(state_manager.redis)
+        if pulse is None:
+            now_block = {"available": False, "reason": "no_pulse_published"}
+        elif pulse.is_stale():
+            # Honest about WHY it is unavailable: a stale plane and an absent plane
+            # need different operator responses.
+            now_block = {"available": False, "reason": "pulse_stale",
+                         "age_ms": pulse.age_ms()}
+        else:
+            now_block = {
+                "available": True,
+                "age_ms": pulse.age_ms(),
+                "symbols_scored": pulse.symbols_scored,
+                "symbols_vetoed": pulse.symbols_vetoed,
+                "tradability_max": pulse.tradability_max,
+                "tradability_median": pulse.tradability_median,
+            }
+
+    hour_block = describe_hour()
+    return {
+        "now": now_block,
+        "hour": hour_block or {"available": False, "reason": "profile_unavailable"},
+    }
 
 
 @app.get("/api/setups")
@@ -1426,6 +2068,24 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
 
     Uses the caller's connected exchange (testnet-gated) if present, else a paper engine.
     """
+    # TRADING MODE IS HONORED HERE TOO. This endpoint used to ignore it entirely,
+    # so `off` meant "the daemon won't auto-trade you" rather than "don't trade my
+    # account" — a user who switched everything off could still place a bracket, and
+    # any UI bug or stale tab could do it for them. Checked before ANY engine is
+    # built so nothing is constructed for a user who has opted out.
+    if user_settings_store is not None:
+        try:
+            mode = (await asyncio.to_thread(user_settings_store.get, user_id)).get(
+                "trading_mode", "paper")
+        except Exception:
+            mode = "paper"  # store unreadable: fall back to the safe default, not to live
+        if mode == "off":
+            raise HTTPException(
+                status_code=409,
+                detail="Trading is switched off for your account. Enable paper, manual, "
+                       "or auto mode in settings first.",
+            )
+
     try:
         from src.core.multi_user import UserSession, UserRiskConfig
         try:
@@ -1466,6 +2126,11 @@ async def execute_setup(body: ExecuteSetupBody, user_id: str = Depends(require_u
             if params and recommended * body.entry_price > params.max_position_size_usd:
                 recommended = params.max_position_size_usd / body.entry_price
                 risk_amount = recommended * abs(body.entry_price - body.stop_loss)
+        else:
+            # Client-supplied size: derive the dollar risk from the bracket geometry.
+            # Leaving it 0 made the per-trade-risk and heat checks trivially pass and
+            # crashed the tracker's close-side R-multiple math.
+            risk_amount = recommended * abs(body.entry_price - body.stop_loss)
 
         setup = {
             "symbol": body.symbol,
@@ -1562,7 +2227,39 @@ async def get_user_positions(user_id: str = Depends(require_user)):
     if state_manager is None:
         raise HTTPException(status_code=503, detail="State manager unavailable")
     positions = await state_manager.get_positions(user_id=user_id)
-    return {"positions": positions, "source": "state"}
+    # While the boot rehydration pass runs (R2.1), this mirror is the thing being
+    # reconciled — tell the client so it renders "reattaching", not a position
+    # whose close button would race the pass. TTL-bounded key; absent == false.
+    rehydrating = False
+    try:
+        rehydrating = bool(await state_manager.get("rehydration:in_progress"))
+    except Exception:
+        pass
+    return {"positions": positions, "source": "state", "rehydrating": rehydrating}
+
+
+@app.get("/api/monitors")
+async def get_user_monitors(user_id: str = Depends(require_user)):
+    """Live monitor status for each of the caller's open positions.
+
+    Joins their open symbols with the per-position status the monitor publishes
+    (`monitor:{user_id}:{symbol}`). A symbol with no fresh status reads as
+    `monitored: false` — honest when the monitor is down or the engine is undeployed,
+    rather than implying protection that isn't running.
+    """
+    if state_manager is None:
+        raise HTTPException(status_code=503, detail="State manager unavailable")
+    from src.core.monitor_worker import monitor_status_key
+
+    positions = await state_manager.get_positions(user_id=user_id)
+    symbols = {str(p.get("symbol", "")).upper() for p in positions if p.get("symbol")}
+    monitors = []
+    for symbol in sorted(symbols):
+        status = await state_manager.get(monitor_status_key(user_id, symbol))
+        monitors.append(
+            {"symbol": symbol, "monitored": status is not None, "status": status}
+        )
+    return {"monitors": monitors}
 
 
 class ClosePositionBody(BaseModel):

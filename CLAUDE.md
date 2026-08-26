@@ -5,19 +5,68 @@ Multi-agent crypto futures trading engine. Going 0→1 to public paying users.
 See `AGENTS.md` for the backend architecture map (agents, message bus, DB layout) —
 it is accurate and worth reading before touching `crypto-trading-agent/src`.
 
-## ⚠️ Work on `v2`, not `main`
+**Start here (2026-08-24):** the doc hierarchy, newest first —
+1. **`docs/plan-2026-08/`** — the current rescue plan: 6 PDFs (audit → product → system
+   design → UX → infra → roadmap) + editable HTML sources in `src/`. **The roadmap
+   (doc 06, task IDs R0.x–R4.x) is the work queue — pick ONE task ID per session.**
+2. `docs/ARCHITECTURE.md` — what the code actually does today (verified 2026-08-11).
+3. `docs/PRD_CURRENT_STATE.md` + `docs/HLD.md` — the 2026-08-02 baseline + FR-* target
+   design. Still authoritative for anything the plan docs don't cover.
+4. **`docs/LAUNCH_READINESS.md`** — can a real user actually use this? Journey-by-journey
+   status + the ranked blockers before inviting anyone. Read before any launch claim.
+5. `backtest-lab/FINDINGS.md` — the committed quant evidence ledger (what has been
+   tested offline, what it licenses, what it forbids). Authoritative for strategy claims.
+Superseded docs live in **`_attic/`** (see its README) — never cite them as current.
 
-`main` is a stale 8-commit snapshot. **`v2` is the real project: 111 commits**, 121
-frontend source files vs main's 53, and it alone contains the terminal UI, onboarding,
-per-user positions API, RLS policy, and the modernized dependency set.
+**Queue status (2026-08-25):** R0 ✅ · R1 ✅ (all of R1.2–R1.7) · R2.1 ✅ rehydration ·
+S1/S2 strategy split scaffolded (S1 flag OFF, awaiting lab evidence). **Next: R2.2**
+slot metering v2 — a slot is spent on PROPOSAL DELIVERY, not session start.
 
-`main`'s only exclusive files are cruft (`requirements_temp.txt` — UTF-16 garbage,
-`ict_detector_backup_corrupted.py`, temp logs) plus one superseded Alembic migration.
-`.github/workflows/keepalive.yml` says as much: *"if the default branch isn't v2 yet,
-merge/point it accordingly."*
+## ⚠️ Branches: work on `fix/m1-foundation-bugs`
 
-**Open task:** make `v2` the GitHub default branch, or merge it into `main`. Until
-then the keepalive cron and any branch-default automation run against stale code.
+Reality (verified 2026-08-24):
+- **`fix/m1-foundation-bugs`** — the active branch (`v2` + 44 commits: wired session
+  pipeline, per-user synthesis, proposals, monitors, session billing, bandwidth fixes).
+  All new work lands here. Production Render **tracks this branch with autoDeploy** —
+  a push deploys the moment the service is resumed.
+- **`v2`** — 44 commits behind, but **still the GitHub default branch**, which means
+  scheduled workflows (the load-bearing keepalive) run ITS stale copies. Flipping the
+  default to the m1 line is task R1.2.
+- `feat/m0-foundation`, `main` — historical; do not build on them.
+
+**Production is LIVE and healthy** (restored 2026-08-24 after the Aug-10 bandwidth
+suspension; R0 + R1 + R2.1 deployed). What is live: demand-gated streams, the Rust
+engine publishing `market:pulse:*` every 5s with `SIGNAL_PLANE_ENABLED=true`, the
+calibration ledger writing `pulse_snapshots`, the daily LLM request budget, and
+engine rehydration. Ops via `scripts/render_ops.py` (status/set-env/resume/verify).
+
+**⚠️ The BACKEND auto-deploys from this branch; the FRONTEND does not.** Render
+redeploys `cryptai-backend` on every push to `fix/m1-foundation-bugs`. Vercel's
+`cryptai` project (cryptai-app.vercel.app) has NOT deployed since 2026-08-12 —
+its git integration is not following the active branch (GitHub's default is still
+the stale `v2`, task R1.2). So "pushed" means shipped for the API and NOT shipped
+for the UI. Check `npx vercel ls cryptai` before claiming a UI change is live;
+ship it with `cd frontend && npx vercel --prod` (run `npm run build` first —
+verify.sh deliberately skips it), and roll back with
+`npx vercel rollback <previous-url>`.
+
+Two things that look like incidents but are not:
+- **Every deploy reboot eats a Binance 418 on the shared Render IP** — and it can cost
+  up to ~1h of signal plane, not the ~15 min first observed. Measured 2026-08-25: the
+  plane published for 9 minutes (09:00–09:08), then a deploy restart hit a ban and it
+  recovered at **10:51** — 1h42m later, self-healed, exactly when the engine's computed
+  backoff said (600s → 3302s parsed from the venue's own ban timestamp). Do not
+  intervene; do not add retries. **We are not causing these bans**: bootstrap is 12
+  requests at weight ~24 against a 1200/min limit — other Render tenants on the shared
+  egress IP burn the quota. Consequence to respect: with `SIGNAL_PLANE_ENABLED=true`
+  the pulse gate fail-closes, so no user can start a scan during a ban (they see
+  "Market analysis is offline… your scan time is safe" — correct and honest). **Batch
+  deploys** rather than pushing each commit; each restart re-rolls this dice.
+  A Redis warm-start cache does NOT fix it — pulses carry the market data's `feed_ts`,
+  so cached candles produce pulses the staleness gate rightly rejects (see
+  `staleness_uses_feed_ts_not_computation_ts`). The only real fix is a fallback data
+  venue, which is an open founder decision, not a queued task.
+- **Free tier sleeps after ~15 min idle**; the GitHub keepalive cron is load-bearing.
 
 ## Layout
 ```
@@ -39,7 +88,7 @@ Zustand · lightweight-charts · Tailwind + shadcn/ui · Vitest + Playwright.
 cd frontend && npm install
 npm run dev              # next dev
 npm run build
-npm test                 # vitest run — 52 tests, <1s
+npm test                 # vitest run — 99 tests, ~1s
 npm run test:e2e         # playwright
 npx tsc --noEmit
 
@@ -70,8 +119,11 @@ the C library broke installs. The ta-lib build step still in `ci.yml` is stale
 relative to v2 and wastes CI minutes; deleting it is a safe cleanup.
 
 ## Verification
-`.claude/verify.sh` gates every turn in **~6s**. Four checks:
-frontend typecheck · 52 frontend unit tests · backend import smoke · 309 backend tests.
+`.claude/verify.sh` gates every turn in **~38s**. Four checks:
+frontend typecheck · 99 frontend unit tests · backend import smoke · 796 backend tests.
+Signal-engine changes additionally need `cargo test` (129 tests) — cargo is NOT on the
+default PATH; use the rustup shims at `/opt/homebrew/opt/rustup/bin` (pinned 1.97.1).
+`cargo clippy --all-targets -- -D warnings` is CLEAN as of 2026-08-25; keep it that way.
 
 Not covered, and why:
 - `npm run build` — ~60s. Run before pushing.
@@ -91,10 +143,10 @@ tests pass; nothing was weakened.
 Keep this pattern: never `sleep()` to wait out a cooldown, expiry, or retry window.
 Rewind the stored timestamp or inject the clock.
 
-**Remaining:** 189 tests are quarantined as "stale, drifted from the current
-API" (see `tests/conftest.py`) out of 500 collected. That's ~38% providing no protection —
-the largest correctness gap in the repo. Un-quarantine them incrementally. Never
-un-quarantine by loosening an assertion.
+**Remaining (re-counted 2026-08-25):** 191 tests are quarantined as "stale, drifted from
+the current API" (see `tests/conftest.py`) out of 987 collected — 796 pass. ~19% of the
+suite provides no protection — a standing correctness gap. Un-quarantine incrementally.
+Never un-quarantine by loosening an assertion.
 
 Run the quarantined tests to see their real failures without editing the list:
 ```bash
@@ -120,12 +172,9 @@ Delta India *does* have one, and `DeltaExchangeClient.TESTNET_URL`
 (`cdn-ind.testnet.deltaex.org`) is correct. **Consequence: Delta is the reference live
 adapter; CoinDCX order placement stays unproven until a manual small-size prod smoke.**
 
-**`/health` lies, and `render.yaml:31` probes it.** It reports
-`"message_bus": message_bus is not None`, which is True even when the Redis connection
-failed — the object is constructed either way. A production instance with dead Redis
-reports healthy and keeps taking traffic. `/health/ready` is the honest one (correctly
-503s). Fix `/health` to check the connection, and point `healthCheckPath` at
-`/health/live` (its docstring already says a dead Redis must not restart the pod).
+**`/health` lied, and `render.yaml` probed it — FIXED on this branch** (commit
+`c793c0e`: `/health` now pings Redis, `render.yaml:35` probes `/health/live`). Still
+live in production, which deploys `v2` — the fix ships when Render is repointed (M1).
 
 **`/api/setups` is unauthenticated by design** — "setups are the same for everyone;
 only EXECUTION is per-user". That is exactly the model `docs/MULTI_TENANCY.md`
@@ -177,11 +226,82 @@ bugs at the boundary — the fix is one wholesale migration across all money col
 - Docker is **not installed locally**. Only needed for the integration suite
   (`docker-compose.yml` provides redis + postgres + pgadmin).
 
+## The four laws (2026-08-24 — this repo's scar tissue, enforce in every session)
+1. **The wiring law:** "tested" ≠ "wired". Never claim a feature done without tracing a
+   constructor from an entrypoint (`src/api/server.py` or `src/multi_user_daemon.py`).
+   Tested-but-unwired libraries are this repo's signature failure, three audits running.
+2. **The cost law:** every stream, loop, and LLM call must name its live consumer
+   (a session, a viewer, an open position) or it doesn't ship. Never subscribe at process
+   startup. Bandwidth budget: 5 GB/mo ≈ 167 MB/day for the whole Render workspace —
+   state bytes/day×30 for any new network loop. The Aug-10 suspension was this law broken.
+3. **The money law:** never widen a risk gate, cap, or stop to get green; the two
+   execution gates stay fail-closed; every query filters `user_id`.
+4. **The honesty law:** no fabricated numbers in the UI; regime is never mapped to a
+   trade direction (empirically refuted); no forward "hottest hour" claims until logged
+   calibration data earns them.
+
+The wiring law has a corollary the ledger P0 earned (2026-08-25): **when a component
+is made optional, check what else was riding on it.** `DAEMON_DISABLE_AGENTS=memory`
+(needed — chromadb won't fit 512MB) silently removed the ONLY subscriber to
+`memory_agent_inbox`, so production persisted **zero trade rows** for weeks: no user
+journal, no outcome ledger, nothing for rehydration to restore. `src/core/trade_ledger.py`
+is now the non-optional row-persistence core; exactly one of it or `MemoryAgent`
+subscribes (both would double-insert). Before disabling anything, grep for its
+subscriptions and constructor side effects.
+
+## Consent: an account is only traded when its owner asked
+Three separate paths violated this before 2026-08-25, all the same class of bug — a
+mode or plan flag the product promises but some path never read:
+- `book_for_all` skipped only `off`/`manual`, so `paper` (the DEFAULT) was booked from
+  a deployment-GLOBAL "is anybody scanning" signal. One user's session put positions
+  in every other paper user's desk. **`paper` is now session-gated per user**; `auto`
+  still books continuously because that is what auto means.
+- `/api/execute-setup` never read `trading_mode` — "off" meant "won't auto-trade you".
+- `plan.allow_live` was defined, tested, and enforced nowhere.
+When adding any path that books a trade, ask whose account it lands in and what that
+person actually consented to. `tests/test_consent_gates.py` is the contract.
+
+## Persistence & restart (R2.1, live 2026-08-25)
+Restarts are routine on free tier (deploys, crashes, sleep/wake), so **rows are the
+source of truth and Redis is a display cache to be converged, never believed.**
+- `src/core/rehydration.py` rebuilds each paper desk from `trades` (open = `exit_time
+  IS NULL`; `status` now written too but historical rows predate it). Positions use
+  `POS_{trade_id}` — the close path strips that prefix to find the row, so any other
+  convention updates the WRONG trade. SL/TP legs are re-placed through the engine's
+  own order methods so the tick loop fills them identically to live ones.
+- **Trading is blocked per-user until their pass completes** (`UserSession.rehydrated`
+  tri-state; `None` = no regime, `False` = pending/failed → bookings refused, `True` =
+  done). Failures fail CLOSED and are isolated per tenant.
+- Boot order in `MultiUserTradingDaemon.start()` is load-bearing and tripwired by
+  `tests/test_rehydration.py::test_boot_ordering_is_wired`: rehydrate AFTER
+  `initialize_multi_user()`, BEFORE the `user_commands` subscribe, the tick loop, the
+  stream gate, and `MonitorSupervisor(` construction.
+- `scripts/verify_trade_ledger.py` proves the write path against real Postgres inside
+  an always-rolled-back transaction (the unit tests use sqlite).
+
+## The offline quant lab (`backtest-lab/`, never shipped)
+Excluded from the Docker image; own venv (nautilus 1.x installed, unused so far);
+`data/`+`results/` gitignored and regenerable via `download_klines.sh`. It imports
+strategy math **from `crypto-trading-agent/src/`** so evidence is about shipped code.
+`FINDINGS.md` is the committed ledger — read it before proposing strategy work, and
+**pre-register the next experiment there before running it** (no threshold sweeps
+after the fact). Current verdict: S1's absorption→flip confirmation is a real
+*filter* but no implementable entry captures it; `S1_ENABLED` stays false.
+
 ## Money safety — read before touching execution
-This system can place real futures orders. Two independent gates, both fail-closed:
-- `ENABLE_EXECUTION=false` → paper trading. **This is the default. Keep it.**
-- Mainnet additionally requires `LIVE_TRADING_CONFIRMED=true`
-  (`src/execution/live_execution_engine.py`).
+This system can place real futures orders.
+
+**Correction (2026-08-25): there is ONE gate on the multi-user path, not two.**
+`ENABLE_EXECUTION` is read only by `src/main.py` (the legacy single-bot entrypoint) —
+it is dead code for `src/api/server.py` and `src/multi_user_daemon.py`, and is not set
+in production at all. Do not rely on it. What actually holds:
+- `LIVE_TRADING_CONFIRMED=false` ⇒ `LiveExecutionEngine` forces `testnet=True`
+  (`src/execution/live_execution_engine.py:51`). Production: `false`.
+- `POST /api/exchange-keys` refuses non-testnet keys after a real auth probe
+  (`server.py:1180`, `src/execution/credential_check.py`).
+Those two agree today, which is why no real-money order can be placed. If you make
+`ENABLE_EXECUTION` load-bearing, read it in `LiveExecutionEngine.__init__` and add a
+test — otherwise fix the claim, not the reader.
 
 Never flip either to make a test pass or a feature "work". Never widen a risk gate,
 position-size cap, or stop-loss to get green. Default to `USE_TESTNET=true` locally.
@@ -195,9 +315,10 @@ app-layer scoping bug is NOT caught by RLS on the backend path — every new que
 filter by `user_id` explicitly. Treat a missing filter as a launch blocker.
 
 ## Gotchas
-- 34 loose one-off scripts sit at `crypto-trading-agent/` root — `nuclear_clear_positions.py`,
-  `force_close_positions.py`, `delete_all_trades.py`. These are **destructive and
-  operate on real trade state**. Never run one to "clean up" during development.
+- The 44 loose one-off scripts (incl. `nuclear_clear_positions.py`, `delete_all_trades.py`)
+  were retired to `_attic/cta-scripts/` on 2026-08-24 and no longer ship in the image.
+  **Never run anything from `_attic/`** — the sanctioned path for those operations is
+  `python3.12 scripts/admin.py <cmd> --confirm`.
 - `httpx` is pinned `<0.28` deliberately — unpinning broke the Analysis + Strategy agents.
 - OpenRouter free-tier models are **rotated**, not pinned; a dead model previously
   made the engine silently produce nothing.

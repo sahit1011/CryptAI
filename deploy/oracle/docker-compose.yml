@@ -1,0 +1,79 @@
+# CryptAI on the Oracle Always-Free ARM box (VM.Standard.A1.Flex, 4 OCPU / 24 GB).
+# The "own box" topology: everything colocated, docker-managed, restart-on-failure —
+# the same shape the plan's ARCHITECTURE doc describes, minus the landlord.
+#
+# Build context is the PUBLIC GitHub repo at a pinned ref: the repo-root Dockerfile
+# builds Rust (signal engine) + Python together, so this image carries the engine —
+# still env-gated OFF until R1.4 flips it.
+#
+# Deploy:  CRYPTAI_REF=<branch-or-sha> docker compose up -d --build
+# Secrets: /opt/cryptai/.env (chmod 600) — written over SSH by
+#          scripts/render_env_to_remote.sh, never committed, never printed.
+
+services:
+  backend:
+    build:
+      context: https://github.com/sahit1011/CryptAI.git#${CRYPTAI_REF:-fix/m1-foundation-bugs}
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      # In-cluster addresses + the safe defaults; .env may override, secrets live there.
+      REDIS_URL: redis://redis:6379/0
+      API_HOST: 0.0.0.0
+      ENVIRONMENT: production
+      RUN_DAEMON_IN_API: "true"
+      RUN_SIGNAL_ENGINE_IN_API: "false"   # R1.4 flips this — binary is already in the image
+      SIGNAL_PLANE_ENABLED: "false"       # never before the engine provably publishes
+      CYCLE_INTERVAL: "180"
+      SESSION_CYCLE_SECONDS: "180"
+      ANALYSIS_POLL_SECONDS: "30"
+      STREAM_LINGER_SECONDS: "120"
+      TRADING_SYMBOLS: BTCUSDT,ETHUSDT,SOLUSDT
+      PLATFORM_SYMBOLS: BTCUSDT,ETHUSDT,SOLUSDT
+      DAEMON_DISABLE_AGENTS: ""           # 24GB box — the memory agent may return later
+      USE_TESTNET: "true"
+      LIVE_TRADING_CONFIRMED: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live"]
+      interval: 60s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server --save "" --appendonly no
+      --maxmemory 1gb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # e.g. 129-154-x-y.sslip.io — instant hostname for the VM's public IP, so
+      # Let's Encrypt TLS works with zero DNS signup. Set in .env or the shell.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.core.session_manager import (
+    ADDITIVE_SESSION_COLUMNS,
+    CAPACITY_LOST,
     COST_CAP,
     ENDED,
     EXECUTING,
@@ -172,6 +174,141 @@ def test_a_new_session_is_granted_only_the_time_that_remains(mgr, clock):
 
     s2 = mgr.start(USER)
     assert s2["quota_seconds_granted"] == 300
+
+
+def test_explicit_quota_request_is_clamped_to_the_daily_cap(mgr, clock):
+    """The quota-bypass regression: an explicit quota_seconds must never exceed what is
+    left today. Before the fix, start(quota_seconds=86400) granted a 24h session against
+    the 1800s daily quota."""
+    s = mgr.start(USER, quota_seconds=86_400)
+    assert s["quota_seconds_granted"] == 1800
+
+    # And the tick meter then honours the clamp: the session ends at the daily cap.
+    clock.advance(1800)
+    assert mgr.tick(s["session_id"])["status"] == ENDED
+
+
+def test_explicit_quota_request_is_clamped_to_remaining_after_prior_use(mgr, clock):
+    s1 = mgr.start(USER)
+    clock.advance(1500)
+    mgr.end(s1["session_id"])  # 300s left today
+
+    s2 = mgr.start(USER, quota_seconds=86_400)
+    assert s2["quota_seconds_granted"] == 300
+
+
+def test_explicit_quota_request_may_ask_for_less(mgr, clock):
+    """Clamping is one-directional — a short 10-minute session is still honoured."""
+    s = mgr.start(USER, quota_seconds=600)
+    assert s["quota_seconds_granted"] == 600
+
+
+# --- channel -----------------------------------------------------------------
+
+def test_session_records_its_channel(mgr, clock):
+    s = mgr.start(USER, channel="scalp")
+    assert s["channel"] == "scalp"
+    assert mgr.get_active(USER)["channel"] == "scalp"
+
+
+def test_channel_defaults_to_none(mgr, clock):
+    s = mgr.start(USER)
+    assert s["channel"] is None
+
+
+def test_an_unknown_channel_is_rejected(mgr, clock):
+    with pytest.raises(SessionError):
+        mgr.start(USER, channel="hodl")
+    # And the rejected start left no session behind.
+    assert mgr.get_active(USER) is None
+
+
+def test_ensure_schema_adds_channel_to_a_preexisting_table(tmp_path, clock):
+    """The deploy-critical self-heal: a `sessions` table created before `channel`
+    existed (checkfirst never adds columns) must gain it on next SessionManager init,
+    regardless of whether the alembic migration has run."""
+    from sqlalchemy import create_engine, inspect, text
+
+    db = f"sqlite:///{tmp_path}/legacy.db"
+    # Simulate the legacy table: everything EXCEPT channel.
+    legacy = create_engine(db)
+    with legacy.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE sessions ("
+            "id INTEGER PRIMARY KEY, session_id VARCHAR(50), user_id VARCHAR(64), "
+            "status VARCHAR(24), quota_seconds_granted INTEGER, "
+            "metered_seconds_accrued INTEGER, clock_started_at DATETIME, "
+            "llm_tokens_used INTEGER, llm_cost_micros INTEGER, "
+            "llm_cost_cap_micros INTEGER, trading_day DATETIME, "
+            "cycles_completed INTEGER, started_at DATETIME, ended_at DATETIME, "
+            "end_reason VARCHAR(40))"
+        ))
+    assert "channel" not in {c["name"] for c in inspect(legacy).get_columns("sessions")}
+    legacy.dispose()
+
+    # Booting a SessionManager on that DB must add the column and then work.
+    mgr = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)
+    cols = {c["name"] for c in inspect(mgr.engine).get_columns("sessions")}
+    assert "channel" in cols
+    s = mgr.start(USER, channel="swing")
+    assert s["channel"] == "swing"
+
+
+def test_ensure_schema_is_idempotent_across_reconstruction(tmp_path, clock):
+    """Two SessionManagers over the same DB: the second sees channel already present and
+    skips the ALTER — no duplicate-column crash on the common re-boot case."""
+    db = f"sqlite:///{tmp_path}/shared.db"
+    first = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # adds channel
+    second = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # sees it, skips
+    assert second.start(USER, channel="scalp")["channel"] == "scalp"
+    _ = first
+
+
+def test_ensure_schema_swallows_a_concurrent_duplicate_add(tmp_path, clock, monkeypatch):
+    """The real TOCTOU (backend + daemon boot together on Render): _ensure_schema's
+    inspect reports channel ABSENT (stale), so it runs the ALTER — which the DB rejects
+    because a concurrent boot already added it. The except must re-inspect and swallow,
+    not propagate (propagating leaves session_manager=None and disables the session
+    plane). Forced deterministically: `_ensure_schema` does `from sqlalchemy import
+    inspect` at call time, so patching sqlalchemy.inspect controls what it sees."""
+    import sqlalchemy
+
+    db = f"sqlite:///{tmp_path}/race.db"
+    mgr = SessionManager(db, daily_quota_seconds=1800, now_fn=clock)  # channel really exists
+
+    class _FakeInspector:
+        """Reports every additive column as absent on the first read, present after.
+
+        Generic over ADDITIVE_SESSION_COLUMNS rather than naming one column, so a new
+        additive column is covered automatically instead of silently falling out of
+        this test's reach.
+        """
+
+        def __init__(self, truthful):
+            self._truthful = truthful
+
+        def get_table_names(self):
+            return ["sessions"]
+
+        def get_columns(self, _table):
+            cols = [{"name": "id"}, {"name": "session_id"}]
+            if self._truthful:
+                cols += [{"name": n} for n in ADDITIVE_SESSION_COLUMNS]
+            return cols
+
+    calls = {"n": 0}
+
+    def fake_inspect(_engine):
+        calls["n"] += 1
+        # 1st call: the `existing` check — lie that they are all absent, forcing an
+        # ALTER per column. Every later call is the post-failure re-check, which tells
+        # the truth (they exist), so each failure is swallowed rather than raised.
+        return _FakeInspector(truthful=calls["n"] >= 2)
+
+    monkeypatch.setattr(sqlalchemy, "inspect", fake_inspect)
+    mgr._ensure_schema()  # ALTER duplicate -> caught -> re-inspect -> swallow. No raise.
+    # One initial inspect, plus one re-check for each column that lost the race.
+    assert calls["n"] == 1 + len(ADDITIVE_SESSION_COLUMNS)
 
 
 def test_quota_resets_at_utc_midnight(mgr, clock):
@@ -364,3 +501,60 @@ def test_events_are_scoped_to_their_session(mgr, clock):
     mgr.log_agent_step(b["session_id"], "x", "only in b")
     messages = [e["message"] for e in mgr.events(a["session_id"])]
     assert "only in b" not in messages
+
+
+# --- capacity loss refunds the unproven time ---------------------------------
+
+def test_capacity_loss_refunds_time_since_the_last_cycle(mgr, clock):
+    """A scan whose analysis dies buys nothing after the agents' last report. That dead
+    stretch is handed back — charging for it is the capacity bug arriving one step late."""
+    s = mgr.start(USER)
+    clock.advance(60)
+    mgr.record_cycle(s["session_id"])   # proof of work at t+60
+    clock.advance(40)                   # engine dies; 40s of nothing
+
+    ended = mgr.end_for_capacity_loss(s["session_id"])
+
+    assert ended["status"] == ENDED
+    assert ended["end_reason"] == CAPACITY_LOST
+    assert ended["seconds_refunded"] == 40
+    # Charged only up to the last proven cycle.
+    assert ended["elapsed_seconds"] == 60
+    # And the refund returns to today's balance, not just the session's.
+    assert mgr.remaining_today(USER) == 1800 - 60
+
+
+def test_capacity_loss_with_no_cycle_refunds_the_whole_scan(mgr, clock):
+    """A scan that never reported a cycle produced nothing at all."""
+    s = mgr.start(USER)
+    clock.advance(25)
+
+    ended = mgr.end_for_capacity_loss(s["session_id"])
+
+    assert ended["seconds_refunded"] == 25
+    assert ended["elapsed_seconds"] == 0
+    assert mgr.remaining_today(USER) == 1800
+
+
+def test_a_refund_can_never_mint_time(mgr, clock):
+    """Clamped to what was actually accrued: a clock skew or a stale last_cycle_at must
+    not hand back more than the session ever spent."""
+    s = mgr.start(USER)
+    clock.advance(10)
+    mgr.propose(s["session_id"])   # clock pauses; accrual stops at 10s
+    clock.advance(600)             # ten minutes of unmetered deliberation
+
+    ended = mgr.end_for_capacity_loss(s["session_id"])
+
+    assert ended["seconds_refunded"] <= 10
+    assert ended["elapsed_seconds"] >= 0
+    assert mgr.remaining_today(USER) <= 1800
+
+
+def test_ending_for_capacity_loss_twice_is_harmless(mgr, clock):
+    s = mgr.start(USER)
+    clock.advance(30)
+    first = mgr.end_for_capacity_loss(s["session_id"])
+    again = mgr.end_for_capacity_loss(s["session_id"])
+    # Second call is a no-op read, not a second refund.
+    assert again["seconds_refunded"] == first["seconds_refunded"]

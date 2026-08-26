@@ -1,0 +1,302 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CryptAI System Design</title><link rel="stylesheet" href="deck.css">
+<style>
+/* diagram primitives */
+.dbox { border: 1px solid var(--ring); border-radius: 8px; background: var(--surface); padding: 9px 11px; }
+.dbox .dt { font: 600 9px/1.2 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--brand-300); display: block; margin-bottom: 4px; }
+.dbox p { font-size: 10px; line-height: 1.4; color: var(--ink-2); }
+.dbox.shared { border-color: rgba(57,135,229,0.45); }
+.dbox.shared .dt { color: #8fb8ee; }
+.dbox.peruser { border-color: rgba(232,101,95,0.45); }
+.dbox.exec { border-color: rgba(52,211,153,0.4); }
+.dbox.exec .dt { color: var(--emerald); }
+.dbox.store { border-style: dashed; background: rgba(255,255,255,0.02); }
+.dbox.store .dt { color: var(--muted); }
+.dlabel { font: 500 9px/1.4 var(--mono); color: var(--muted); }
+.darrow { font: 600 12px/1 var(--mono); color: var(--muted); text-align: center; align-self: center; }
+.state { border: 1px solid var(--ring); border-radius: 8px; background: var(--surface); padding: 8px 12px; text-align: center; }
+.state .sn { font: 600 11px/1.2 var(--mono); letter-spacing: 0.08em; color: var(--ink); display: block; }
+.state .sd { font-size: 9.5px; line-height: 1.35; color: var(--muted); display: block; margin-top: 3px; }
+.state.metered { border-color: rgba(232,101,95,0.5); }
+.state.metered .sn { color: var(--brand-300); }
+.state.paused { border-color: rgba(250,178,25,0.45); }
+.state.paused .sn { color: var(--warn); }
+.state.free { border-color: rgba(52,211,153,0.4); }
+.state.free .sn { color: var(--emerald); }
+</style>
+</head>
+<body>
+
+<!-- ============ SLIDE 1 · COVER ============ -->
+<section class="slide cover">
+  <div class="kicker">CRYPTAI RESCUE PLAN <span class="sep">/</span> <span class="team">03 · BACKEND &amp; SOFTWARE TEAM</span></div>
+  <h1>System <em>design</em></h1>
+  <p class="sub">The architecture that already runs — one process, three planes, demand-gated compute — plus the exact
+  deltas that turn it into the 2-slot free tier: a slot quota, a trade-focus lock, a hot-window surface, and zero
+  always-on waste.</p>
+  <div class="meta">
+    <div><b>Doc</b>03 of 06 — System design</div>
+    <div><b>Date</b>2026-08-24</div>
+    <div><b>Builds on</b>docs/ARCHITECTURE.md (verified 2026-08-11)</div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 1</span></div>
+</section>
+
+<!-- ============ SLIDE 2 · TOPOLOGY ============ -->
+<section class="slide">
+  <div class="kicker">BACKEND <span class="sep">/</span> <span class="team">PROCESS TOPOLOGY — WHAT ACTUALLY RUNS</span></div>
+  <h2>One process is the whole backend — by design, for the free tier</h2>
+  <div class="body">
+    <div style="display:grid; grid-template-columns: 2.1fr 1fr; gap:14px; flex:1">
+      <div class="dbox" style="padding:12px">
+        <span class="dt" style="color:var(--muted)">RENDER — ONE FREE WEB SERVICE (docker image builds Rust + Python together)</span>
+        <div class="dbox" style="background:var(--surface-2); margin-top:6px">
+          <span class="dt">UVICORN PROCESS — src.api.server:app</span>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:5px">
+            <div class="dbox"><span class="dt" style="color:var(--ink)">FastAPI</span><p>REST + WebSocket · Supabase JWT at the edge · per-tenant WS fan-out</p></div>
+            <div class="dbox"><span class="dt" style="color:var(--ink)">Session tick loop</span><p>server-authoritative metered clock — the only thing that ends sessions</p></div>
+            <div class="dbox" style="grid-column:1/3">
+              <span class="dt" style="color:var(--ink)">Embedded daemon — RUN_DAEMON_IN_API=true</span>
+              <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-top:5px">
+                <div class="dbox"><span class="dt">Analysis loop</span><p>180s cycle, <b>demand-gated</b>: ≥1 active scan</p></div>
+                <div class="dbox"><span class="dt">SessionWorkerPool</span><p>1 worker per active scan</p></div>
+                <div class="dbox"><span class="dt">MonitorSupervisor</span><p>1 monitor per open position</p></div>
+                <div class="dbox"><span class="dt">Proposal sweeper</span><p>30s — expires stale proposals</p></div>
+                <div class="dbox"><span class="dt">Paper tick</span><p>fills SL/TP on paper desks</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:9px">
+          <div class="dbox shared"><span class="dt">SIGNAL-ENGINE — RUST CHILD PROCESS</span><p>RUN_SIGNAL_ENGINE_IN_API=true · spawned + supervised with backoff by the API · if it dies, sessions refuse (fail-closed), the product stays up</p></div>
+          <div class="dbox store"><span class="dt">REDIS — RENDER KEY-VALUE</span><p>three roles: agent message bus · per-user hot state <code>state:{user}</code> · pulse plane <code>market:pulse:*</code> (never user-scoped — the tenancy boundary made visible)</p></div>
+        </div>
+      </div>
+      <div class="stack" style="gap:9px">
+        <div class="dbox store"><span class="dt">SUPABASE — AUTH + POSTGRES</span><p>Google OAuth + JWT · sessions, proposals, trades, preferences · <b>transaction pooler :6543</b> + statement_cache_size=0 (session pooler's 15-client cap crashed at ~7 engines — never revert one half alone)</p></div>
+        <div class="dbox store"><span class="dt">BINANCE — DATA ONLY</span><p>klines WS + book REST, demand/cadence-bounded (the Aug-10 suspension was two unbounded streams — see doc 05)</p></div>
+        <div class="dbox"><span class="dt">VERCEL — NEXT.JS FRONTEND</span><p>HTTPS + WSS with Supabase JWT · already live</p></div>
+        <div class="card flat">
+          <ul style="margin-top:2px">
+            <li style="font-size:11.5px">One crash domain — accepted tradeoff on the free tier; the supervisor + Render restarts cover it.</li>
+            <li style="font-size:11.5px"><b>Honest gap:</b> monitor/desk rehydration lands at <b>R2.4</b> — until then a deploy mid-trade orphans paper positions (rebuild must include SL/TP bracket legs + leverage from the trade rows, Postgres as source of truth). No unattended open trades before R2.4.</li>
+            <li style="font-size:11.5px">RAM: memory agent (chromadb + ONNX) disabled in prod (<code>DAEMON_DISABLE_AGENTS=memory</code>) — 512MB instance; runbook verifies steady-state RSS.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 2</span></div>
+</section>
+
+<!-- ============ SLIDE 3 · THREE PLANES ============ -->
+<section class="slide">
+  <div class="kicker">BACKEND <span class="sep">/</span> <span class="team">THE THREE PLANES — HOW A TICK BECOMES A TRADE</span></div>
+  <h2>Shared facts, per-user judgment, unmetered protection</h2>
+  <div class="body">
+    <div style="display:grid; grid-template-columns: 1fr 24px 1fr 24px 1fr; gap:0; flex:1">
+      <div class="stack" style="gap:8px">
+        <div class="dbox shared" style="flex:0"><span class="dt">PLANE 1 · SHARED — USER-BLIND, O(1) IN USERS</span>
+          <p style="margin-top:2px"><b>Rust engine:</b> ingest (klines WS · book REST) → feature store → 5 vetoes → 6 weighted factors → <b>regime + tradability 0–100</b> → <code>market:pulse:SYMBOL</code>, refreshed ≤5s, TTL 120s.</p>
+        </div>
+        <div class="dbox shared" style="flex:0"><span class="dt">SHARED LLM ANALYSIS</span>
+          <p>Data → Analysis → Strategy agents produce a <b>candidate-setup pool per symbol</b> (SharedSetupCache) — computed once per cycle for everyone, demand-gated.</p>
+        </div>
+        <div class="dbox shared" style="flex:0"><span class="dt">NEW · HOT-WINDOW SURFACE</span>
+          <p><code>market:pulse:global</code> — cross-symbol "hot / quiet" now-cast + slots-aware nudge. Every pulse also appends to <code>pulse_snapshots</code> so the score stays falsifiable.</p>
+        </div>
+        <p class="dlabel" style="margin-top:2px">The pulse carries facts and scores only — never a direction, entry, or stop. Regime→direction was refuted out-of-sample; a contract test enforces the ban.</p>
+      </div>
+      <div class="darrow">→</div>
+      <div class="stack" style="gap:8px">
+        <div class="dbox peruser" style="flex:0"><span class="dt">PLANE 2 · PER-USER — O(N) IN ACTIVE SCANS</span>
+          <p><b>SessionWorker</b> (metered, 1 per scan): reads prefs + fresh pulses — <b>fail-closed at 15s staleness</b> — then <code>analyze_fn</code>: pulse gate → style filter → <b>per-user synthesis</b> (LLM selects the candidate that fits <i>this</i> trader and writes the thesis in their terms — it never invents a price) → deterministic sizing vs the user's own risk rules.</p>
+        </div>
+        <div class="dbox peruser" style="flex:0"><span class="dt">PROPOSAL (POSTGRES)</span>
+          <p>entry / stop / targets / size / leverage / R:R / rationale / shelf life. Clock <b>pauses</b> while the user decides. Approval <b>re-validates at the live price</b> — drift &gt;0.5% refuses rather than fills worse than agreed.</p>
+        </div>
+        <p class="dlabel">Per-user LLM budget: <code>analyze_fn</code> returns real usage; the cap guards a moving number, fail-closed.</p>
+        <div class="dbox" style="flex:0; border-color:rgba(211,59,59,0.5)"><span class="dt" style="color:#ff9a9a">FIX BEFORE ENABLING THE PLANE</span>
+          <p>Confirmed bug: the pipeline calls <code>.get()</code> on <code>Pulse</code> dataclasses — enabling <code>SIGNAL_PLANE_ENABLED</code> today fails <b>every metered cycle</b> while the user's clock drains. Normalize at the boundary (as <code>monitor_worker</code> already does) + fold pulse liveness into the capacity check so dead-plane time is refunded.</p>
+        </div>
+      </div>
+      <div class="darrow">→</div>
+      <div class="stack" style="gap:8px">
+        <div class="dbox exec" style="flex:0"><span class="dt">PLANE 3 · EXECUTION + WATCH</span>
+          <p><b>Per-user engine</b> (paper or live) books the bracket. Two money gates fail closed: <code>ENABLE_EXECUTION</code> + <code>LIVE_TRADING_CONFIRMED</code>.</p>
+        </div>
+        <div class="dbox exec" style="flex:0"><span class="dt">POSITIONMONITOR — UNMETERED</span>
+          <p>1 per open position. Time stop · profit give-back · <b>conditions-turned</b> (pulse drift) → reduce-only exit when the thesis breaks. Outlives the session, restarts, deploys; supervisor reconciles on boot.</p>
+        </div>
+        <div class="dbox" style="flex:0"><span class="dt">BOOKKEEPING</span>
+          <p>Fill → trade entry row (memory loop feeds) → portfolio + history update → session slot state advances (free tier: focus lock until flat).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 3</span></div>
+</section>
+
+<!-- ============ SLIDE 4 · SESSION STATE MACHINE ============ -->
+<section class="slide">
+  <div class="kicker">BACKEND <span class="sep">/</span> <span class="team">SESSION LIFECYCLE — THE SLOT MODEL</span></div>
+  <h2>The session state machine, extended for slots and trade focus</h2>
+  <p class="sub">The metered state machine exists and is well-tested. Two mechanics change for the new product: quota becomes
+  <b>2 discrete slots/day</b> (not a minutes pool), and a <b>focus lock</b> holds new slots while a free-tier position is open.</p>
+  <div class="body">
+    <div style="display:grid; grid-template-columns: 1fr 48px 1fr 48px 1fr 48px 1fr 48px 1fr; gap:0; align-items:center; margin-bottom:16px">
+      <div class="state free"><span class="sn">IDLE</span><span class="sd">slots 2/2 · hot-window visible · no compute, no cost</span></div>
+      <div class="darrow">start<br>→</div>
+      <div class="state metered"><span class="sn">SCANNING ⏱</span><span class="sd">30:00 server clock · worker cycles · demand-gated analysis on</span></div>
+      <div class="darrow">setup<br>→</div>
+      <div class="state paused"><span class="sn">PROPOSED ⏸</span><span class="sd">clock paused · shelf-life countdown · deliberation is free</span></div>
+      <div class="darrow">approve<br>→</div>
+      <div class="state"><span class="sn">EXECUTING</span><span class="sd">re-validate at live price → bracket to venue · drift refuses</span></div>
+      <div class="darrow">fill<br>→</div>
+      <div class="state free"><span class="sn">TRADE FOCUS</span><span class="sd">session ends (slot spent well) · monitor owns the position · UI pivots</span></div>
+    </div>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>Slot accounting (v2 — red-team hardened)</h3>
+        <ul>
+          <li>Today: one pooled 1800s/day quota for every tier, unlimited session count. Replaced by per-plan policy — and <b>a slot is spent on proposal delivery, not scan start</b>: a bounded scan (~10 min) with no qualifying setup auto-ends and returns the slot (scan attempts cap 3/day).</li>
+          <li><b>Slot-native refunds:</b> a CAPACITY_LOST session re-opens its own slot with the <i>remaining</i> grant — never a fresh 30 min (flap test: capacity down/up ×5 must never mint extra scan time).</li>
+          <li><b>Race-safe consumption:</b> partial unique index (one active session per user) + slot count and focus-lock check in one transaction; usage is <b>derived</b> (COUNT per trading day) — no stored counter, no reset job. Boundary stored UTC, rendered local.</li>
+          <li>The sweeper ends any SCANNING session past its grant, <b>connection or not</b> — ticks must not depend on an open WebSocket.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>The focus lock (free tier)</h3>
+        <ul>
+          <li>Invariant: <code>open_positions ≥ 1 ⇒ session_start refused</code>, with the 409 distinguishing <b>monitored</b> from "position exists, monitor reattaching".</li>
+          <li><b>Source of truth: reconciled Redis + engine</b>, with zombie auto-drop in the lock check — which is why restart-safe rehydration (R2.4) ships <b>before</b> the lock (R2.2). <code>/api/positions/close</code> stays the escape hatch.</li>
+          <li>A slot held by the lock survives exactly <b>one</b> midnight reset (intraday holds span midnight routinely).</li>
+          <li>Paid tiers raise the concurrency cap; at the cap an async session <b>pauses unmetered</b> (new held-at-cap state, mirroring the proposal pause) — skipping synthesis alone would still burn the user's clock.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Reject / expire / end paths</h3>
+        <ul>
+          <li>Reject or shelf-life expiry → back to SCANNING, clock resumes — covered today.</li>
+          <li>Approve → the session <b>ends</b> as <code>trade_opened</code> (slot spent well). "Trade focus" is a <b>derived UI state</b> — open position + monitor status, no session row and no session clock.</li>
+          <li>Quota spent or user ends → ENDED; open positions keep their monitors — quota never stops a monitor.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 4</span></div>
+</section>
+
+<!-- ============ SLIDE 5 · COMPUTE MODEL ============ -->
+<section class="slide">
+  <div class="kicker">BACKEND <span class="sep">/</span> <span class="team">COMPUTE MODEL — NOTHING RUNS FOR NOBODY</span></div>
+  <h2>Demand-gated everything: idle costs zero, sessions cost minutes</h2>
+  <p class="sub">The founder's instinct becomes the architecture's law: no stream or loop runs without a consumer. The audit enumerated all 25
+  loops (doc 01); the "always-running 300s loop" (EventCoordinator) was dead code — already attic'd. One blocker remains in live code.</p>
+  <div class="body">
+    <table id="compute-table">
+      <tr><th style="width:24%">Workload</th><th style="width:11%">Cadence</th><th style="width:24%">Target behavior</th><th style="width:23%">Bandwidth (external)</th><th style="width:18%">Status</th></tr>
+      <tr><td><b>Daemon DataAgent streams</b></td><td class="num">demand</td><td><span class="pill ok">DONE · 2896402</span> — demand = <b>scans OR open exposure</b> (never scans-only: paper fills + monitors read stream-fed prices): scan → klines+markprice; positions → one kline_1m per held symbol; idle+flat → <b>zero streams</b>; 120s linger; depth/ticker replaced by REST snapshots</td><td class="num">~2.2 GB/day → ~0 idle</td><td><span class="pill ok">SHIPPED</span></td></tr>
+      <tr><td><b>Signal engine ingest</b> (child process)</td><td class="num">5s score</td><td>REST-poll closed bars per TF boundary + 5s batched book poll (the poll is the staleness heartbeat — never stretch it past ~10s to save bytes)</td><td class="num">~7.4 GB/mo as WS → <b>~25 MB/day as REST</b></td><td><span class="pill warn">R1 · KLINES→REST</span></td></tr>
+      <tr><td><b>Shared LLM analysis cycle</b></td><td class="num">180s</td><td>≥1 active scan or explicit keep-warm — zero scans = zero LLM calls (uncommitted diff completes this)</td><td class="num">LLM only</td><td><span class="pill ok">DEMAND-GATED</span></td></tr>
+      <tr><td><b>SessionWorkers · PositionMonitors</b></td><td class="num">180s / 15s</td><td>1 per active session · 1 per open position; none exist otherwise</td><td class="num">internal</td><td><span class="pill ok">DEMAND-GATED</span></td></tr>
+      <tr><td><b>Dashboard market feed</b></td><td class="num">stream</td><td>refcounted to live WS viewers + 30s linger (commit 9edada0) — but client-requested extra channels are add-only: refcount them too</td><td class="num">~9 MB per viewed hour</td><td><span class="pill ok">FIXED</span> <span class="pill warn">+R0 REFCOUNT</span></td></tr>
+      <tr><td><b>Idle Binance socket</b></td><td class="num">~90s</td><td>skip staleness check while zero streams subscribed — today it reconnect-churns ~960×/day</td><td class="num">~6 MB/day</td><td><span class="pill warn">R0 · SMALL FIX</span></td></tr>
+      <tr><td><b>Sweeper · session tick · paper tick · heartbeats</b></td><td class="num">30s/5s/3s</td><td>always-on but internal-only (Redis/Postgres); idle no-ops against empty sets</td><td class="num">0</td><td><span class="pill ok">KEEP</span></td></tr>
+      <tr><td><b>Keepalive cron</b> (GitHub Actions)</td><td class="num">10 min</td><td>the one deliberate always-on — keeps Render awake so monitors survive</td><td class="num">~0.2 MB/day</td><td><span class="pill ok">KEEP</span></td></tr>
+    </table>
+    <div class="card" style="margin-top:12px">
+      <h3>The cost law (write it into CLAUDE.md, enforce in review)</h3>
+      <p><b>Every stream, loop, and LLM call must name its consumer.</b> Subscribing at process startup is forbidden; tie it to a live session,
+      a live viewer, or an open position — with a linger, then release. Before adding any network loop: bytes/day × 30 must fit the 5GB/month
+      workspace budget with headroom (doc 05 has the ledger).</p>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 5</span></div>
+</section>
+
+<!-- ============ SLIDE 6 · DATA MODEL ============ -->
+<section class="slide">
+  <div class="kicker">BACKEND <span class="sep">/</span> <span class="team">DATA MODEL — DELTAS ONLY</span></div>
+  <h2>Schema deltas: small, additive, forward-only</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="stack">
+        <div class="card">
+          <h3>Changes for the slot model + tiers</h3>
+          <table>
+            <tr><th>Delta</th><th>Detail</th></tr>
+            <tr><td><b>tier config</b></td><td>plans move from env vars to a <code>plans</code> config (free / lite / pro / pro_max): slots_per_day, slot_minutes, max_concurrent_trades, channels, async flag — free tier hardcoded live, others dormant</td></tr>
+            <tr><td><b>sessions</b></td><td>slot usage <b>derived</b> — COUNT per trading day (index exists); partial unique index enforcing one active session per user; no stored counter, no reset job (derive-don't-store, the module's own law)</td></tr>
+            <tr><td><b>monitor_events</b></td><td><b>new append-only table</b> (user-indexed, trade-keyed): every monitor verdict + reason. The trade-focus verdict log and exit recap have no backing store today — the monitor publishes latest-only TTL'd Redis status. Prerequisite of the trade-focus UI; survives restarts</td></tr>
+            <tr><td><b>user_preferences</b></td><td>capital + risk fields exist — onboarding finally writes them; <b>monthly risk budget</b> (max drawdown %) replaces the return-expectation goal; add <code>onboarding_completed_step</code></td></tr>
+            <tr><td><b>pulse_snapshots</b></td><td>gains its writer (engine appends every publish) — the calibration log the quant desk requires</td></tr>
+            <tr><td><b>trades</b></td><td>entry rows written on every book (memory loop) — exit updates must never hit "not found"</td></tr>
+          </table>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Debts acknowledged, scheduled, not blocking free launch</h3>
+          <ul>
+            <li><b>Money as floats</b> everywhere except <code>llm_cost_micros</code> — one wholesale integer-minor-units + currency migration lands <b>before any real-money path opens</b> (roadmap gate, doc 06). Paper-only launch tolerates floats; real money never will.</li>
+            <li><b>RLS defense-in-depth</b> on the five new per-user tables — backend bypasses RLS, so app-layer <code>user_id</code> filters remain the only guard; RLS is the second lock.</li>
+            <li><b>Alembic vs checkfirst collision</b> — stamp the production DB once, then forward-only migrations in the deploy step.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Tenancy invariants (tested, keep enforcing)</h3>
+          <ul>
+            <li>Every per-user table carries an indexed <code>user_id</code>; <code>pulse_snapshots</code> must never gain one — schema-parity test enforces both.</li>
+            <li>Every new query filters <code>user_id</code> in app code; a missing filter is a launch blocker, not a bug.</li>
+            <li>Per-user Redis keys stay namespaced <code>state:{user_id}:*</code>; pulse keys stay global.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 6</span></div>
+</section>
+
+<!-- ============ SLIDE 7 · API DELTAS ============ -->
+<section class="slide">
+  <div class="kicker">BACKEND <span class="sep">/</span> <span class="team">API SURFACE — DELTAS</span></div>
+  <h2>API deltas: four new reads, one changed start, nothing else moves</h2>
+  <div class="body">
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>New / changed endpoints</h3>
+        <table>
+          <tr><th>Endpoint</th><th>Change</th></tr>
+          <tr><td><code>GET /api/pulse</code></td><td><b>new</b> — per-symbol regime + tradability + global hot/quiet, authenticated, cached 5s server-side; the dashboard's banner + strip read this</td></tr>
+          <tr><td><code>GET /api/session/slots</code></td><td><b>new</b> — slots used/remaining today, focus-lock state + reason, next reset time</td></tr>
+          <tr><td><code>POST /api/session/start</code></td><td><b>changed</b> — no client <code>quota_seconds</code>; consumes a slot server-side; 409 with monitor status when focus-locked; 503 (no row, no clock) when analysis capacity is down</td></tr>
+          <tr><td><code>GET /api/monitors/:symbol/events</code></td><td><b>new</b> — the monitor's verdict log, read from the append-only <code>monitor_events</code> table (the live status chip keeps using <code>GET /api/monitors</code>)</td></tr>
+          <tr><td><code>GET /api/session/recap/:id</code></td><td><b>new</b> — setups seen / action taken / outcome, powers the recap card</td></tr>
+        </table>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <h3>Hardening that rides along (from the audit, doc 01)</h3>
+          <ul>
+            <li><code>require_admin</code> fail-closed; anonymous fail-open mode impossible in prod config</li>
+            <li>WS auth moves from <code>?token=</code> query param to first-message auth (JWTs out of proxy logs)</li>
+            <li>The static <code>NEXT_PUBLIC_API_TOKEN</code> tier dies — Supabase JWT is the only client credential</li>
+            <li>Destructive one-off scripts leave the image (attic'd + .dockerignore)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Contract rules</h3>
+          <ul>
+            <li>Every tenant endpoint requires the JWT and scopes by <code>user_id</code> — <code>/api/setups</code>'s unauthenticated broadcast model is retired with the v2 daemon path.</li>
+            <li>Pulse responses carry <code>as_of</code> + schema version; consumers reject stale or unknown-major — same contract the workers obey.</li>
+            <li>Errors are honest: capacity down = 503 + "engine unavailable", never a silent empty list.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand"><b>CryptAI</b> · system design</span><span>03 · 7</span></div>
+</section>
+
+</body></html>

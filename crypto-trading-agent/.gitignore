@@ -25,6 +25,12 @@ ENV/
 *.csv
 *.json
 !config/*.json
+# Shipped source artifacts, NOT data dumps. The blanket *.json above would have
+# excluded these from a fresh clone while they sat happily in a local working tree —
+# so the Docker image would build without them and the feature would silently read
+# "unavailable" in production only. Any new committed .json under src/ needs a line
+# here (see src/signals/hour_profile.py for what the measurement means).
+!src/signals/hour_profile.json
 
 # Testing
 .pytest_cache/

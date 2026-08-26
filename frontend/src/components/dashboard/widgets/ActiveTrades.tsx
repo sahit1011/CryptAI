@@ -19,7 +19,14 @@ import { ConnectionStatus } from "@/components/ui/connection-status"
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/states"
 import { useStore, type Trade } from "@/store/useStore"
 import { useMarketStore } from "@/hooks/useMarketData"
-import { closePositions, API_URL, authHeaders } from "@/lib/api"
+import { closePositions, getMonitors, API_URL, authHeaders, type MonitorEntry } from "@/lib/api"
+import { cn } from "@/lib/utils"
+import {
+    isMonitorStale,
+    monitorBadge,
+    monitorReasonLabel,
+    monitorsBySymbol,
+} from "@/lib/monitors"
 
 /**
  * ActiveTrades — the live open-positions terminal.
@@ -31,11 +38,60 @@ import { closePositions, API_URL, authHeaders } from "@/lib/api"
  *      table is populated before the first WS frame arrives. Once the store has
  *      live positions, that store data wins.
  *
- * TODO(multi-tenancy): `GET /api/trades` and the `/ws` feed are currently a single
- * global account. When per-user accounts land, this must scope to the signed-in
- * user's positions (send the Supabase session, filter server-side) so one user
- * never sees another's open risk. Do NOT ship multi-user without that scoping.
+ * All reads carry the signed-in user's Supabase JWT (authHeaders), so the backend
+ * scopes /api/trades, /api/monitors, and the /ws feed to this user's own positions.
+ *
+ * The Watch column shows each position's unmetered monitor (GET /api/monitors): whether
+ * it is actively watched and, when it steps in, why it closed.
  */
+
+/** Polls the per-user monitor status for the open positions, indexed by symbol. */
+function useMonitors(pollMs = 10_000): Record<string, MonitorEntry> {
+    const [monitors, setMonitors] = useState<MonitorEntry[]>([])
+    useEffect(() => {
+        let cancelled = false
+        const pull = async () => {
+            try {
+                const { monitors } = await getMonitors()
+                if (!cancelled) setMonitors(monitors)
+            } catch {
+                if (!cancelled) setMonitors([])
+            }
+        }
+        pull()
+        const t = setInterval(pull, pollMs)
+        return () => {
+            cancelled = true
+            clearInterval(t)
+        }
+    }, [pollMs])
+    return useMemo(() => monitorsBySymbol(monitors), [monitors])
+}
+
+function MonitorCell({ entry }: { entry?: MonitorEntry }) {
+    const { label, tone } = monitorBadge(entry)
+    const status = entry?.status ?? null
+    const stale = tone !== "idle" && isMonitorStale(status)
+    const title =
+        status?.decision === "exit"
+            ? monitorReasonLabel(status.reason)
+            : status
+                ? `Watched · ${status.checks} checks · peak +${status.peak_favorable_pct}%`
+                : "No active monitor for this position"
+
+    const dotClass =
+        stale ? "bg-muted-foreground"
+            : tone === "watched" ? "bg-profit"
+                : tone === "exiting" ? "bg-accent"
+                    : "bg-muted-foreground/50"
+
+    return (
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={title}>
+            <span className={cn("size-2 rounded-full", dotClass, tone === "watched" && !stale && "animate-pulse")} />
+            {stale ? "Stale" : label}
+        </span>
+    )
+}
 
 function toOpenTrade(raw: unknown): Trade | null {
     const t = (raw ?? {}) as Record<string, unknown>
@@ -62,6 +118,7 @@ function toOpenTrade(raw: unknown): Trade | null {
 export function ActiveTrades() {
     const { activeTrades } = useStore()
     const status = useMarketStore((s) => s.status)
+    const monitors = useMonitors()
 
     const [seeded, setSeeded] = useState<Trade[]>([])
     const [loading, setLoading] = useState(true)
@@ -179,6 +236,7 @@ export function ActiveTrades() {
                         <TableRow className="border-border hover:bg-transparent">
                             <TableHead className="text-muted-foreground">Symbol</TableHead>
                             <TableHead className="text-muted-foreground">Side</TableHead>
+                            <TableHead className="text-muted-foreground">Watch</TableHead>
                             <TableHead className="text-right text-muted-foreground">Entry</TableHead>
                             <TableHead className="text-right text-muted-foreground">Mark</TableHead>
                             <TableHead className="text-right text-muted-foreground">PnL</TableHead>
@@ -198,6 +256,9 @@ export function ActiveTrades() {
                                     <Badge variant={trade.side === "LONG" ? "profit" : "loss"}>
                                         {trade.side}
                                     </Badge>
+                                </TableCell>
+                                <TableCell>
+                                    <MonitorCell entry={monitors[trade.symbol.toUpperCase()]} />
                                 </TableCell>
                                 <TableCell className="text-right">
                                     <Value value={trade.entry} money />

@@ -21,6 +21,7 @@ Run:  python -m src.multi_user_daemon
 """
 import asyncio
 import os
+import time
 import signal
 import sys
 from typing import Optional
@@ -66,9 +67,32 @@ class MultiUserTradingDaemon:
         self.registry: Optional[UserRegistry] = None
         self.coordinator: Optional[MultiUserCoordinator] = None
         self.engine_switch = None  # EngineSwitch, set once Redis is up
+        self.monitor_supervisor = None  # MonitorSupervisor, set in start()
+        self.trade_manager = None  # TradeHistoryManager, set in _rehydrate_engines (R2.1)
+        self.trade_ledger = None   # TradeLedgerConsumer when the memory agent is disabled
+        # Strong refs for in-flight rehydration passes: a GC'd task would leave its
+        # user booking-blocked forever, silently.
+        self._rehydrate_tasks: set = set()
         self._loop_task: Optional[asyncio.Task] = None
         self._tick_task: Optional[asyncio.Task] = None
+        self._monitor_task: Optional[asyncio.Task] = None
+        self._stream_task: Optional[asyncio.Task] = None  # demand-gates market streams
+        self._switch_task: Optional[asyncio.Task] = None  # heals evicted engine:on
+        self._switch_always_on = False   # did we last see the switch ON with no timer?
+        self._switch_seen_at = 0.0
+        self.pulse_log_writer = None     # calibration log (R1.5); set when plane is live
+        self.pulse_backfill_job = None   # fills forward returns once windows elapse
+        self._pulse_log_task: Optional[asyncio.Task] = None
+        self._pulse_backfill_task: Optional[asyncio.Task] = None
+        self.llm_budget = None           # daily request budget (R1.6); set once Redis is up
+        self._llm_budget_task: Optional[asyncio.Task] = None
+        self._budget_was_exhausted = False  # log the transition, not every idle cycle
         self._was_on = None  # tracks on/off transitions for one-time log lines
+        self._last_analysis_at = None  # paces the expensive cycle; see _analysis_with_signals
+        # Default must match SESSION_CYCLE_SECONDS (session_manager.py) and render.yaml —
+        # the UI's staleness check measures against the published cadence, so a divergent
+        # default here makes local/dev sessions look stale against a cadence nobody uses.
+        self.cycle_interval = int(os.getenv("CYCLE_INTERVAL", "180"))
 
     # ------------------------------------------------------------------ setup
     async def initialize_infrastructure(self):
@@ -79,6 +103,8 @@ class MultiUserTradingDaemon:
         await self.state_manager.connect()
         from src.core.engine_switch import EngineSwitch
         self.engine_switch = EngineSwitch(self.state_manager.redis)
+        from src.utils.llm_request_budget import LlmRequestBudget
+        self.llm_budget = LlmRequestBudget(self.state_manager.redis)
         plog.info("  └─ ✅ Infrastructure ready", agent="daemon")
 
     async def _add_agent(self, name: str, factory):
@@ -138,6 +164,21 @@ class MultiUserTradingDaemon:
         if "memory" in disabled:
             plog.info("Memory Agent disabled via DAEMON_DISABLE_AGENTS", agent="daemon")
             self.memory_agent = None
+            # THE TRADE LEDGER IS NOT OPTIONAL (R2.1, wiring law). MemoryAgent was the
+            # only subscriber to memory_agent_inbox, so disabling it silently dropped
+            # every log_trade/update_trade — production persisted NO trade rows: no
+            # user journal, nothing to rehydrate from. This lightweight consumer is
+            # the row-persistence core without chromadb; exactly one of the two
+            # subscribes (both would double-insert).
+            try:
+                from src.core.trade_ledger import TradeLedgerConsumer
+                self.trade_ledger = TradeLedgerConsumer(self.config.database.postgres_url)
+                await bus.subscribe("memory_agent_inbox", self.trade_ledger.handle)
+                plog.info("  └─ ✅ Trade ledger online (row persistence without the "
+                          "memory agent)", agent="daemon")
+            except Exception as e:
+                plog.error(f"Trade ledger failed to start: {e} — trade rows will NOT "
+                           "persist this run", agent="daemon")
         else:
             self.memory_agent = await self._add_agent(
                 "Memory Agent",
@@ -180,7 +221,9 @@ class MultiUserTradingDaemon:
             message_bus=self.message_bus,
             state_manager=self.state_manager,
             symbol=symbol,
-            cycle_interval=int(os.getenv("CYCLE_INTERVAL", "180")),
+            # One source of truth: two readings of CYCLE_INTERVAL with different
+            # defaults would disagree the moment the env var is unset.
+            cycle_interval=self.cycle_interval,
         )
 
         # Vault -> discovers connected-key tenants. Optional (paper-only demo without it).
@@ -230,6 +273,200 @@ class MultiUserTradingDaemon:
             f"vault={'on' if self.vault else 'off'} | settings={'on' if self.settings_store else 'off'}",
             agent="daemon",
         )
+        self.initialize_session_plane()
+
+    def _build_synthesizer(self):
+        """The per-user chooser, or None to fall back to the deterministic pick.
+
+        Returns None whenever no provider is configured — synthesis is an enhancement,
+        and a session must still produce a proposal on a deployment with no LLM key.
+
+        Uses the SYNC OpenAI client against OpenRouter deliberately: AsyncOpenAI
+        misbehaves there (see strategy_agent), and `build_openai_compatible_chat` runs it
+        off the event loop so one user's call cannot stall every other session's worker.
+        """
+        try:
+            from src.core.synthesis import build_openai_compatible_chat, build_synthesizer
+
+            api_key = getattr(self.config.llm, "openrouter_api_key", None)
+            if not api_key:
+                plog.warning(
+                    "no OpenRouter key — setups will be picked deterministically, "
+                    "identically for every user",
+                    agent="daemon",
+                )
+                return None
+
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                timeout=float(getattr(self.config.llm, "timeout", None) or 60),
+            )
+            # The SAME rotation the agents use. OpenRouter's free catalogue rotates and
+            # 429s, so a pinned model is a single point of failure that has already made
+            # this engine silently produce nothing once.
+            models = list(getattr(self.config.llm, "openrouter_free_models", None) or [])
+            if not models:
+                plog.warning(
+                    "no OpenRouter models configured; deterministic picks only",
+                    agent="daemon",
+                )
+                return None
+            plog.info(
+                f"  └─ ✅ Per-user synthesis on | {len(models)} model(s), first {models[0]}",
+                agent="daemon",
+            )
+            return build_synthesizer(
+                build_openai_compatible_chat(client, models), model=models[0]
+            )
+        except Exception as e:
+            plog.warning(
+                f"synthesis unavailable ({e}); falling back to the deterministic pick",
+                agent="daemon",
+            )
+            return None
+
+    def initialize_session_plane(self):
+        """M2 control plane: metered sessions do real work in THIS process.
+
+        Each store is optional (matching the daemon's fault-tolerant style): a failed
+        init disables the session pipeline but never takes down broadcast trading.
+        The pool itself starts in start() once the loop is running.
+        """
+        self.session_manager = None
+        self.preferences_store = None
+        self.proposal_service = None
+        self.setup_cache = None
+        self.worker_pool = None
+        # The shared signal plane is opt-in until the Rust engine has a host: wiring the
+        # client against an absent engine would fail-closed EVERY session (invariant 2)
+        # and starve the monitors of pulse reads. Flip SIGNAL_PLANE_ENABLED once
+        # market:pulse:* is live in this Redis. Both the session pipeline and the
+        # position monitors consume this one client.
+        self.pulse_client = None
+        if os.getenv("SIGNAL_PLANE_ENABLED", "").strip().lower() == "true":
+            try:
+                from src.signals.pulse_client import PulseClient
+                # MessageBus exposes its client as `redis_client` (it is None until
+                # connect()); `redis` is only the module alias, so reading that name
+                # silently yielded None and left pulse gating permanently off.
+                redis_client = getattr(self.message_bus, "redis_client", None)
+                if redis_client is not None:
+                    self.pulse_client = PulseClient(redis_client)
+                else:
+                    plog.warning(
+                        "SIGNAL_PLANE_ENABLED but message bus has no redis client; "
+                        "sessions and monitors will run ungated",
+                        agent="daemon",
+                    )
+            except Exception as e:
+                plog.warning(f"PulseClient unavailable ({e}); running ungated", agent="daemon")
+        try:
+            from src.core.preferences import PreferencesStore
+            from src.core.proposals import ProposalService
+            from src.core.session_manager import SessionManager
+            from src.core.session_pipeline import SharedSetupCache, build_analyze_fn
+            from src.core.session_worker import SessionWorkerPool
+
+            db_url = self.config.database.postgres_url
+            self.session_manager = SessionManager(db_url)
+            # The fan-out must be able to ask "does THIS user have a live session?"
+            # before booking into their paper desk. The coordinator is built earlier
+            # (it only needs the registry), so attach the session store now that it
+            # exists. Without this the executor sees None and — by design — never
+            # fans out to paper users at all, which is the safe direction but would
+            # silently disable the practice desk.
+            if self.coordinator is not None:
+                self.coordinator.executor.session_manager = self.session_manager
+            self.preferences_store = PreferencesStore(db_url)
+            self.proposal_service = ProposalService(db_url)
+            self.setup_cache = SharedSetupCache()
+
+            # Calibration log (R1.5, FR-SIGNAL-3): sample every published pulse into
+            # pulse_snapshots. Only meaningful when the signal plane is live — and it
+            # must ship WITH the engine enable: lost snapshots are unrecoverable, and
+            # every downstream quant claim (weight re-validation, learned hot hours,
+            # the real-money evidence memo) starves without them.
+            if self.pulse_client is not None:
+                from src.core.pulse_snapshots import PulseSnapshotWriter
+                self.pulse_log_writer = PulseSnapshotWriter.from_database_url(
+                    db_url,
+                    self.pulse_client,
+                    self.symbols,
+                    interval_s=float(os.getenv("PULSE_SNAPSHOT_SECONDS", "300")),
+                )
+
+                # The backfill half of the calibration loop: fills each snapshot's
+                # forward returns once its windows have elapsed. Reads self.data_agent
+                # AT CALL TIME — the agents initialize after this method runs.
+                from src.core.pulse_backfill import PulseBackfillJob
+
+                async def _fetch_15m_closes(symbol: str, since_ms: int, until_ms: int):
+                    import pandas as pd
+
+                    agent = self.data_agent
+                    if agent is None:
+                        return []
+                    bars_needed = int((until_ms - since_ms) / 900_000) + 3
+                    df = await agent.historical_fetcher.fetch_ohlcv(
+                        symbol=symbol, timeframe="15m", since=since_ms,
+                        limit=min(1000, max(bars_needed, 5)),
+                    )
+                    if df is None or getattr(df, "empty", True):
+                        return []
+                    out = []
+                    for _, row in df.iterrows():
+                        # ccxt stamps the OPEN; forward returns need the CLOSE.
+                        open_ms = int(pd.Timestamp(row["timestamp"]).value // 1_000_000)
+                        out.append({
+                            "ts_ms": open_ms + 900_000,
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "close": float(row["close"]),
+                        })
+                    return out
+
+                self.pulse_backfill_job = PulseBackfillJob(
+                    self.pulse_log_writer.session_factory,
+                    _fetch_15m_closes,
+                    interval_s=float(os.getenv("PULSE_BACKFILL_SECONDS", "3600")),
+                )
+
+            self.worker_pool = SessionWorkerPool(
+                self.session_manager,
+                self.preferences_store,
+                build_analyze_fn(
+                    session_manager=self.session_manager,
+                    proposal_service=self.proposal_service,
+                    setup_cache=self.setup_cache,
+                    synthesize=self._build_synthesizer(),
+                ),
+                pulse_client=self.pulse_client,
+                # Lets each worker read its user's open positions, so synthesis can see
+                # what they already hold instead of always being told "none".
+                state_manager=self.state_manager,
+                # Deliberately NOT kill_switch=self.engine_switch. A started scan is
+                # already authorized: the capacity gate on POST /api/session/start
+                # refuses one outright (503, no row, no clock) when analysis is off, so
+                # a session that exists was allowed to exist. Gating the pool as well
+                # meant flipping the switch mid-scan silently stopped the workers while
+                # the user's metered clock kept running — charging them for a scan that
+                # could not produce anything. Capacity lost mid-scan is handled where it
+                # belongs, by the tick loop, which ends the session and refunds the dead
+                # time rather than starving it in place.
+            )
+            plog.info(
+                f"  └─ ✅ Session plane ready | pulse_gating="
+                f"{'on' if self.pulse_client else 'off (engine undeployed)'}",
+                agent="daemon",
+            )
+        except Exception as e:
+            plog.warning(
+                f"Session plane unavailable ({e}); metered sessions will not run analysis",
+                agent="daemon",
+            )
 
     def _build_live_engine(self, user_id: str):
         """Build a LIVE per-user trading engine from the tenant's vault keys (Phase C).
@@ -257,6 +494,114 @@ class MultiUserTradingDaemon:
             plog.warning(f"[live] engine build failed for {user_id}: {e}", agent="daemon")
             return None
 
+    # ------------------------------------------------------------- rehydration
+    async def _rehydrate_engines(self) -> None:
+        """R2.1 boot pass: rebuild every active tenant's paper desk from Postgres.
+
+        Fault-isolated per user: one user's bad row leaves THAT user booking-blocked
+        (fail-closed for money) and the daemon boots on. Also installs the registry
+        hook so sessions materialized later (first touch mid-run, paper↔auto mode
+        rebuild) get the same treatment instead of a blank engine.
+        """
+        if self.registry is None:
+            return
+        try:
+            from src.memory.trade_history_manager import TradeHistoryManager
+            db_url = self.config.database.postgres_url
+            # Constructed in a thread: its init runs the idempotent schema self-heal
+            # (adds trades.leverage ahead of an operator alembic run, same pattern
+            # as SessionManager._ensure_schema).
+            self.trade_manager = await asyncio.to_thread(TradeHistoryManager, db_url)
+        except Exception as e:
+            plog.error(f"[rehydrate] trade store unavailable ({e}) — ALL paper booking "
+                       "stays blocked until restart (fail-closed)", agent="daemon")
+            self.trade_manager = None
+            # Sessions materialized later must still be blocked, not blank-approved.
+            self.registry.on_session_created = lambda s: None
+            for uid in self.registry.active_user_ids():
+                self.registry.session(uid)  # hook marks each rehydrated=False
+            return
+
+        # A visible marker while the pass runs: the API can say "reattaching" instead
+        # of serving a mirror that is about to be reconciled.
+        if self.state_manager is not None:
+            try:
+                await self.state_manager.set("rehydration:in_progress", "1", ttl=300)
+            except Exception:
+                pass
+
+        # Install the hook FIRST so eager materialization below flows through it and
+        # every path (boot or later) is the same code.
+        def _hook(session) -> None:
+            # A bare create_task() keeps no strong reference, so the event loop may
+            # garbage-collect the pass mid-flight — leaving that user permanently
+            # booking-blocked with no error. Hold the reference until it finishes.
+            task = asyncio.get_running_loop().create_task(self._rehydrate_one(session))
+            self._rehydrate_tasks.add(task)
+            task.add_done_callback(self._rehydrate_tasks.discard)
+        self.registry.on_session_created = _hook
+
+        users = self.registry.active_user_ids()
+        for uid in users:
+            self.registry.session(uid)          # materialize -> hook schedules the pass
+        # The boot pass must COMPLETE before start() proceeds (ordering contract in
+        # start()). The hook's tasks for these same sessions are redundant but
+        # harmless — _rehydrate_one single-flights and is idempotent — and awaiting
+        # them here (rather than leaving them pending) keeps shutdown clean.
+        for uid in users:
+            await self._rehydrate_one(self.registry._sessions.get(uid))
+        if self._rehydrate_tasks:
+            await asyncio.gather(*self._rehydrate_tasks, return_exceptions=True)
+
+        if self.state_manager is not None:
+            try:
+                await self.state_manager.delete("rehydration:in_progress")
+            except Exception:
+                pass
+        plog.info(f"  └─ ✅ Rehydration pass complete ({len(users)} tenant(s))",
+                  agent="daemon")
+
+    async def _rehydrate_one(self, session) -> None:
+        """Rehydrate a single session; never raises (per-user fault isolation)."""
+        if session is None or session.rehydrated is True:
+            return
+        if getattr(session, "is_live", False):
+            # A live account's source of truth is the VENUE, not our rows. Pull its
+            # open positions once at boot so the monitor sees them immediately instead
+            # of waiting for the first heartbeat — and so a restart mid-position is not
+            # a blind window. Booking is allowed either way (the venue holds the
+            # truth); a failed read is logged, not fatal.
+            engine = getattr(session, "engine", None)
+            if engine is not None and hasattr(engine, "refresh_positions"):
+                try:
+                    n = await engine.refresh_positions()
+                    plog.info(f"[rehydrate] {session.user_id}: {n} live venue "
+                              "position(s) reconciled", agent="daemon")
+                except Exception as e:
+                    plog.warning(f"[rehydrate] live venue read failed for "
+                                 f"{session.user_id}: {e}", agent="daemon")
+            session.rehydrated = True
+            return
+        if self.trade_manager is None:
+            session.rehydrated = False
+            return
+        # Single-flight: the boot pass awaits directly while the creation hook may
+        # have scheduled the same session — the pre-await check-and-set is atomic
+        # on the event loop, so exactly one pass places legs.
+        if getattr(session, "_rehydrating", False):
+            return
+        session._rehydrating = True
+        try:
+            report = await session.rehydrate(self.trade_manager)
+            if report.positions_restored or report.zombie_symbols:
+                # Converge Redis + the WS frame to the reconciled truth.
+                await session.engine.publish_initial_state()
+        except Exception as e:
+            plog.error(f"[rehydrate] {session.user_id} failed: {e} — this user's "
+                       "booking stays blocked (fail-closed)", agent="daemon")
+        finally:
+            session._rehydrating = False
+
     # ------------------------------------------------------------------ run
     async def start(self):
         if self.running:
@@ -273,13 +618,25 @@ class MultiUserTradingDaemon:
         # the exchange in the API process.) initialize_multi_user only needs
         # infrastructure, so this reorder is safe.
         self.initialize_multi_user()
+        # Rehydration (R2.1) sits EXACTLY here, and the ordering is load-bearing:
+        #   after initialize_multi_user  — needs the registry;
+        #   before the user_commands sub — a close arriving mid-boot must find the
+        #     engine's positions, not the zombie-drop branch;
+        #   before the tick/stream/monitor tasks below — a rehydrated SL must be
+        #     armed before the first price tick, exposure must be visible to the
+        #     first stream-gate pass, and MonitorSupervisor's first discovery must
+        #     see the restored positions (an empty first pass caches "no monitors").
+        await self._rehydrate_engines()
         await self.message_bus.subscribe("user_commands", self._handle_user_command)
         await self.initialize_agents()
 
-        interval = int(os.getenv("CYCLE_INTERVAL", "180"))
+        # Poll fast so a new scan is noticed within seconds; _analysis_with_signals
+        # enforces the real cadence and skips entirely when nobody is scanning, so a
+        # short tick costs nothing when idle (run_cycle returns on empty setups).
+        interval = int(os.getenv("ANALYSIS_POLL_SECONDS", "30"))
         active = self.registry.active_user_ids()
         plog.info(
-            f"✅ Daemon started | cycle={interval}s | active_tenants={len(active)} "
+            f"✅ Daemon started | poll={interval}s cadence={self.cycle_interval}s | active_tenants={len(active)} "
             f"| symbols={','.join(self.symbols)}",
             agent="daemon",
             phase="startup_complete",
@@ -294,6 +651,215 @@ class MultiUserTradingDaemon:
         # when the live price crosses them, positions mark to market, and the
         # UI's uPnL stays current — without a human touching anything.
         self._tick_task = asyncio.create_task(self._price_tick_loop())
+        # Stream gate: the DataAgent subscribes market data only while there is a
+        # live consumer — a scanning session (full feed) or an open position
+        # (price-only feed). Idle deployments stream nothing (R0.2).
+        self._stream_task = None
+        if self.data_agent is not None:
+            self._stream_task = asyncio.create_task(self._stream_gate_loop())
+        # Switch guard: heals an LRU-evicted always-on engine switch (R1.7).
+        self._switch_task = None
+        if self.engine_switch is not None:
+            self._switch_task = asyncio.create_task(self._switch_guard_loop())
+        # Calibration log: samples live pulses into pulse_snapshots (R1.5).
+        self._pulse_log_task = None
+        if self.pulse_log_writer is not None:
+            self._pulse_log_task = asyncio.create_task(
+                self.pulse_log_writer.run(running=lambda: self.running)
+            )
+        self._pulse_backfill_task = None
+        if self.pulse_backfill_job is not None:
+            self._pulse_backfill_task = asyncio.create_task(
+                self.pulse_backfill_job.run(running=lambda: self.running)
+            )
+        # Flush in-process LLM attempt counts into the Redis daily budget (R1.6).
+        self._llm_budget_task = None
+        if self.llm_budget is not None:
+            self._llm_budget_task = asyncio.create_task(self._llm_budget_flush_loop())
+        # Cadence sanity (R1.7): the UI's staleness check measures against the published
+        # SESSION_CYCLE_SECONDS; an analysis cadence slower than the session cycle makes
+        # every healthy session look stale. Loud, not fatal — prod must still boot.
+        session_cycle = int(os.getenv("SESSION_CYCLE_SECONDS", "180"))
+        if self.cycle_interval > session_cycle:
+            plog.error(
+                f"CONFIG DRIFT: CYCLE_INTERVAL={self.cycle_interval}s > "
+                f"SESSION_CYCLE_SECONDS={session_cycle}s — sessions will look stale "
+                "against a cadence nobody runs. Keep them equal (render.yaml pins both).",
+                agent="daemon",
+            )
+        # Session plane: one worker per ACTIVE session (metered, per-user), plus the
+        # sweeper that expires lapsed proposals and un-pauses their sessions.
+        self._pool_task = None
+        self._sweeper_task = None
+        if self.worker_pool is not None:
+            self._pool_task = asyncio.create_task(self.worker_pool.run())
+            self._sweeper_task = asyncio.create_task(self._proposal_sweep_loop())
+        # Position monitors — deliberately independent of the session plane above:
+        # monitoring open positions is unconditional money-safety, so it starts whenever
+        # the registry exists, even if the proposal/session stores failed to init.
+        self._monitor_task = None
+        if self.registry is not None:
+            from src.core.monitor_worker import MonitorSupervisor
+            self.monitor_supervisor = MonitorSupervisor(
+                self.registry,
+                pulse_client=self.pulse_client,
+                state_manager=self.state_manager,
+            )
+            self._monitor_task = asyncio.create_task(self.monitor_supervisor.run())
+            plog.info("  └─ ✅ Position monitors online (unmetered)", agent="daemon")
+
+    async def _approve_proposal(self, session, user_id: str, message: dict) -> dict:
+        """Approval-time re-validation, then execution through the user's own session.
+
+        The shelf-life/price-drift/invalidation gates (ProposalService.revalidate) run
+        HERE, against this process's live price — a proposal approved minutes after it
+        was made is not the same trade, and the thing that decides whether it still is
+        must see current prices. Refusals are honest: no live price means no fill.
+        """
+        # `retryable` is the API's contract for what to do with the session on refusal:
+        # True → the proposal is still PROPOSED (transient condition: price drift, no
+        # price feed) so the session must STAY paused and the user may retry; False →
+        # the proposal is decided/absent, resume scanning. Without the flag the API
+        # resumed scanning on every refusal, stranding a still-live proposal in a state
+        # nothing could reach (the price_moved dead zone).
+        if self.proposal_service is None or self.preferences_store is None:
+            return {"approved": False, "reason": "session_plane_unavailable",
+                    "retryable": True}
+
+        proposal_id = str((message or {}).get("proposal_id") or "")
+        proposal = (
+            await asyncio.to_thread(self.proposal_service.get, proposal_id, user_id)
+            if proposal_id
+            else await asyncio.to_thread(self.proposal_service.get_pending, user_id)
+        )
+        if proposal is None or proposal.get("status") != "proposed":
+            return {"approved": False, "reason": "no_pending_proposal",
+                    "retryable": False}
+
+        symbol = proposal["symbol"]
+        prices = getattr(getattr(session, "engine", None), "current_prices", None) or {}
+        price = prices.get(symbol)
+        if not price or float(price) <= 0:
+            return {"approved": False, "reason": "no_live_price", "retryable": True}
+
+        prefs = await asyncio.to_thread(self.preferences_store.get, user_id)
+        reval = await asyncio.to_thread(
+            lambda: self.proposal_service.revalidate(
+                proposal_id=proposal["proposal_id"],
+                user_id=user_id,
+                current_price=float(price),
+                prefs=prefs,
+            )
+        )
+        if not reval.ok:
+            # revalidate marks EXPIRED/INVALIDATED itself; those are terminal. Anything
+            # else (price drift, transient sizing refusal) left the row PROPOSED.
+            still_proposed = (
+                await asyncio.to_thread(
+                    self.proposal_service.get, proposal["proposal_id"], user_id
+                )
+                or {}
+            ).get("status") == "proposed"
+            return {"approved": False, "reason": reval.reason,
+                    "retryable": still_proposed}
+
+        setup = {
+            "symbol": symbol,
+            "direction": proposal["direction"],
+            "entry_price": proposal["entry_price"],
+            "stop_loss": proposal["stop_loss"],
+            "take_profit_levels": proposal["take_profit_levels"],
+            "recommended_position_size": reval.position_size,
+            "risk_amount": proposal["risk_amount"],
+            # A None score would auto-reject at the risk gate's confidence floor; the
+            # human's approval IS the confidence here (same rule as manual tickets).
+            "confidence_score": (
+                proposal["confidence_score"]
+                if proposal.get("confidence_score") is not None else 1.0
+            ),
+            "market_regime": proposal.get("market_regime"),
+            "strategy_type": proposal.get("strategy_type"),
+            "metadata": {
+                "proposal_id": proposal["proposal_id"],
+                "session_id": proposal["session_id"],
+            },
+        }
+        result = await session.evaluate_and_book(setup)
+
+        from src.core.proposals import EXECUTED, REJECTED
+        if result.get("approved"):
+            await asyncio.to_thread(
+                self.proposal_service.mark,
+                proposal["proposal_id"], EXECUTED, result.get("execution_id"),
+            )
+            if reval.resized:
+                result["resized"] = True
+                result["original_size"] = reval.original_size
+        else:
+            # The trade the user approved was not available (risk gate or execution
+            # refused). Mark it decided rather than leaving it to be re-approved.
+            await asyncio.to_thread(
+                self.proposal_service.mark, proposal["proposal_id"], REJECTED
+            )
+            result.setdefault(
+                "reason", "; ".join(result.get("reasons") or []) or "execution_rejected"
+            )
+            result["retryable"] = False
+        return result
+
+    async def _sweep_once(self) -> None:
+        """One sweep pass: expire lapsed proposals, then repair paused sessions.
+
+        Restores the invariant that a pending proposal and a paused session imply each
+        other. A paused session with no live proposal resumes scanning — UNLESS its own
+        proposal was EXECUTED (the approve reply was lost in flight): then the trade is
+        already open and the session must end as trade_opened, not resume and book a
+        second one.
+        """
+        from src.core.session_manager import SETUP_PROPOSED, TRADE_OPENED, SessionError
+
+        expired = await asyncio.to_thread(self.proposal_service.expire_stale)
+        if expired:
+            plog.info(f"[sessions] expired {expired} lapsed proposal(s)", agent="daemon")
+        for session in await asyncio.to_thread(self.session_manager.active_sessions):
+            if session.get("status") != SETUP_PROPOSED:
+                continue
+            pending = await asyncio.to_thread(
+                self.proposal_service.get_pending, session["user_id"]
+            )
+            # get_pending returns a lapsed row marked "expired", not None.
+            if pending is not None and pending.get("status") == "proposed":
+                continue
+            latest = await asyncio.to_thread(
+                self.proposal_service.latest_for_session,
+                session["user_id"], session["session_id"],
+            )
+            try:
+                if latest is not None and latest.get("status") == "executed":
+                    await asyncio.to_thread(
+                        self.session_manager.approve, session["session_id"],
+                        "recovered: proposal was executed",
+                    )
+                    await asyncio.to_thread(
+                        self.session_manager.end, session["session_id"], TRADE_OPENED,
+                        "trade executed — approve reply was lost; recovered by sweep",
+                    )
+                else:
+                    await asyncio.to_thread(
+                        self.session_manager.reject,
+                        session["session_id"],
+                        "proposal expired — resuming scan",
+                    )
+            except SessionError:
+                pass  # racing an approve/end; the machine stays consistent
+
+    async def _proposal_sweep_loop(self, interval_seconds: int = 30):
+        while self.running:
+            try:
+                await self._sweep_once()
+            except Exception as e:
+                plog.warning(f"[sessions] sweep pass failed: {e}", agent="daemon")
+            await asyncio.sleep(interval_seconds)
 
     async def _handle_user_command(self, message):
         """Tenant-scoped commands from the API (bus channel `user_commands`).
@@ -309,7 +875,10 @@ class MultiUserTradingDaemon:
         try:
             cmd = (message or {}).get("type")
             user_id = (message or {}).get("user_id")
-            if not user_id or cmd not in ("close_position", "close_all", "execute_setup", "cancel_order"):
+            if not user_id or cmd not in (
+                "close_position", "close_all", "execute_setup", "cancel_order",
+                "approve_proposal",
+            ):
                 return
             from src.execution.paper_trading_engine import OrderSide
 
@@ -328,6 +897,14 @@ class MultiUserTradingDaemon:
                     await self._reply_command(message, {"approved": False, "error": "malformed setup"})
                     return
                 result = await session.evaluate_and_book(setup)
+                await self._reply_command(message, result)
+                return
+
+            # --- approve_proposal: re-validate at the LIVE price, then execute.
+            # The API owns the session state machine; this process owns prices,
+            # proposals, and the user's engine — so the money decision happens here.
+            if cmd == "approve_proposal":
+                result = await self._approve_proposal(session, user_id, message)
                 await self._reply_command(message, result)
                 return
 
@@ -468,8 +1045,28 @@ class MultiUserTradingDaemon:
 
                 for user_id, session in sessions.items():
                     engine = getattr(session, "engine", None)
-                    # Paper engines only — live engines have no local order book.
-                    if engine is None or not hasattr(engine, "check_limit_orders"):
+                    if engine is None:
+                        continue
+                    # LIVE engines: the venue fills their orders, so there is no local
+                    # book to tick — but their positions were INVISIBLE to the monitor
+                    # (get_positions() was a stub returning []), so an auto+keys
+                    # position had no time stop and no profit protection. Refresh the
+                    # venue cache on a slow heartbeat (not every 3s tick — that would
+                    # be ~1200 venue calls/hour/user for data that changes on fills).
+                    if hasattr(engine, "refresh_positions"):
+                        if heartbeat:
+                            try:
+                                n = await engine.refresh_positions()
+                                if n:
+                                    await engine.publish_portfolio_update()
+                            except Exception as e:
+                                plog.warning(
+                                    f"[live-tick] position refresh failed for {user_id}: {e}",
+                                    agent="daemon",
+                                )
+                        continue
+                    # Paper engines only below — live engines have no local order book.
+                    if not hasattr(engine, "check_limit_orders"):
                         continue
                     try:
                         changed = await process_engine_tick(engine, prices)
@@ -490,28 +1087,256 @@ class MultiUserTradingDaemon:
             except Exception as e:
                 plog.warning(f"[paper-tick] loop error: {e}", agent="daemon")
 
+    async def _has_scan_demand(self) -> bool:
+        """Is anybody actually scanning right now?
+
+        Analysis exists to answer a user's scan. With nobody scanning there is nothing to
+        answer, so spending an LLM call is pure waste — this is what makes the free tier
+        economically real. Fails CLOSED (no demand) when the session store is unavailable:
+        the safe error is not spending money.
+        """
+        if self.session_manager is None:
+            return False
+        try:
+            return bool(await asyncio.to_thread(self.session_manager.active_sessions))
+        except Exception as e:
+            plog.warning(f"[analysis] demand check failed ({e}); treating as no demand",
+                         agent="daemon")
+            return False
+
+    # ------------------------------------------------------------------ stream gate
+    # How often demand is re-checked. Cheap: two dict scans + one session query.
+    STREAM_GATE_POLL_S = 10.0
+
+    def _exposure_symbols(self) -> list:
+        """Symbols with money at risk in any cached PAPER engine.
+
+        These are the positions the price tick fills SL/TP for and the monitors
+        watch — both read state_manager prices, which only flow while a kline
+        stream is up. Live/keyed engines are excluded: the exchange fills their
+        orders. Best-effort by design: an unreadable engine contributes nothing
+        rather than raising.
+        """
+        symbols: set = set()
+        sessions = dict(getattr(self.registry, "_sessions", {}) or {}) if self.registry else {}
+        for session in sessions.values():
+            engine = getattr(session, "engine", None)
+            if engine is None or not hasattr(engine, "check_limit_orders"):
+                continue
+            try:
+                for sym in (getattr(engine, "positions", {}) or {}):
+                    symbols.add(str(sym))
+                for order in engine.get_open_orders() or []:
+                    sym = order.get("symbol") if isinstance(order, dict) else getattr(order, "symbol", None)
+                    if sym:
+                        symbols.add(str(sym))
+            except Exception:
+                continue
+        return sorted(symbols)
+
+    async def _stream_demand(self):
+        """(profile, price_symbols) the market-data plane should serve right now.
+
+        scan   — somebody is scanning (or the owner keeps analysis warm): the
+                 analysis feed must be live.
+        prices — nobody scans, but positions/resting orders exist: paper fills
+                 and monitors still need prices, one light stream per symbol.
+        None   — idle. Nothing runs for nobody; this is what makes the free
+                 tier's bandwidth budget real (the Aug-10 suspension was this
+                 rule not existing).
+        """
+        keep_warm = os.getenv("ANALYSIS_KEEP_WARM", "").strip().lower() == "true"
+        if keep_warm or await self._has_scan_demand():
+            return "scan", None
+        exposed = self._exposure_symbols()
+        if exposed:
+            return "prices", exposed
+        return None, None
+
+    @staticmethod
+    def _gate_decision(current_rank: int, desired_rank: int, lower_since, now: float, linger: float):
+        """(apply_now, new_lower_since) — upgrades are immediate, downgrades linger.
+
+        The linger exists for the same reason as the API feed's: demand often
+        flaps (a session ends and the next starts a minute later; a position
+        closes and the approval that reopens one is in flight), and Binance
+        rate-limits control frames — churn could get the connection dropped.
+        """
+        if desired_rank >= current_rank:
+            return True, None
+        if lower_since is None:
+            return False, now
+        if (now - lower_since) >= linger:
+            return True, None
+        return False, lower_since
+
+    async def _stream_gate_loop(self):
+        """Drive the DataAgent's stream profile from live demand (R0.2)."""
+        linger = float(os.getenv("STREAM_LINGER_SECONDS", "120"))
+        rank = {None: 0, "prices": 1, "scan": 2}
+        applied = (None, None)   # (profile, tuple(symbols))
+        lower_since = None
+        while self.running:
+            try:
+                await asyncio.sleep(self.STREAM_GATE_POLL_S)
+                if self.data_agent is None:
+                    continue
+                profile, symbols = await self._stream_demand()
+                desired = (profile, tuple(symbols or ()))
+                if desired == applied:
+                    lower_since = None
+                    continue
+                now = time.time()
+                apply_now, lower_since = self._gate_decision(
+                    rank[applied[0]], rank[profile], lower_since, now, linger
+                )
+                # Same tier but a different symbol set (a new position's symbol
+                # needs its price stream NOW) — apply immediately.
+                if not apply_now and rank[profile] == rank[applied[0]]:
+                    apply_now, lower_since = True, None
+                if apply_now:
+                    await self.data_agent.set_stream_profile(profile, list(symbols or ()) or None)
+                    applied = desired
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[stream-gate] loop error: {e}", agent="daemon")
+
+    # ------------------------------------------------------------------ switch guard
+    SWITCH_GUARD_POLL_S = 30.0
+    #: How long the memory of an always-on switch stays actionable. Short by design:
+    #: a fresh process remembers nothing, so a restart still fails OFF (the switch
+    #: module's deliberate money-safety), and a stale memory never resurrects anything.
+    SWITCH_GUARD_MEMORY_S = 300.0
+
+    async def _switch_guard_once(self, now: Optional[float] = None) -> bool:
+        """Heal an EVICTED always-on engine switch (R1.7). Returns True if re-asserted.
+
+        engine:on lives in a 25MB allkeys-lru Redis with no persistence — under memory
+        pressure the key can be evicted mid-day, which reads exactly like owner-OFF:
+        every new session 503s and running scans are refunded, silently. Re-assert ONLY
+        when all three hold: (a) THIS process recently observed the switch ON with no
+        auto-off timer, (b) it is now absent, and (c) the owner did not just turn it
+        off (turn_off leaves a tombstone). A timed switch is never re-asserted — its
+        expiry is the feature, not a failure.
+        """
+        if self.engine_switch is None:
+            return False
+        now = time.time() if now is None else now
+        try:
+            st = await self.engine_switch.status()
+        except Exception:
+            return False
+        if st.get("enabled"):
+            self._switch_always_on = st.get("expires_in_seconds") is None
+            self._switch_seen_at = now
+            return False
+        remembered = (
+            self._switch_always_on
+            and self._switch_seen_at
+            and (now - self._switch_seen_at) < self.SWITCH_GUARD_MEMORY_S
+        )
+        if not remembered:
+            return False
+        if await self.engine_switch.owner_turned_off_recently():
+            self._switch_always_on = False  # deliberate OFF — forget the memory
+            return False
+        plog.warning(
+            "[switch-guard] engine:on vanished with no owner action (Redis eviction?) — "
+            "re-asserting always-on; check `evicted_keys` in Redis INFO",
+            agent="daemon",
+        )
+        await self.engine_switch.turn_on(duration_seconds=None, enabled_by="switch-guard(re-assert)")
+        self._switch_seen_at = now
+        return True
+
+    async def _llm_budget_flush_loop(self):
+        """Drain record_attempt()'s thread-safe counter into Redis every 30s (R1.6)."""
+        while self.running:
+            try:
+                await asyncio.sleep(30)
+                await self.llm_budget.flush()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[llm-budget] flush loop error: {e}", agent="daemon")
+
+    async def _switch_guard_loop(self):
+        while self.running:
+            try:
+                await asyncio.sleep(self.SWITCH_GUARD_POLL_S)
+                await self._switch_guard_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                plog.warning(f"[switch-guard] loop error: {e}", agent="daemon")
+
     async def _analysis_with_signals(self):
         """Run shared analysis for EACH traded symbol, publish setups, return them all.
 
         Analysis is per-symbol but user-independent, so it runs once per symbol per cycle
         (not per user); every resulting setup then fans out to all active tenants.
 
-        GATED by the owner's AI-engine switch: while OFF, we return immediately WITHOUT
-        calling the LLM — this is what protects the (free) API quota from unattended
-        burn. The cycle timer keeps ticking; each tick is a cheap Redis check until the
-        owner turns the engine on.
+        DEMAND-DRIVEN. A cycle runs when at least one user is actually scanning, or when
+        the owner has explicitly switched analysis on to keep setups warm. It used to run
+        on a blind timer gated only by that switch, which meant the switch left on with
+        nobody scanning called the LLM every cycle, forever, for nobody.
+
+        The switch is no longer a prerequisite for a user's scan to work — that coupling
+        is what let a paused switch silently burn a user's metered clock while producing
+        nothing. The switch is now ONLY admission control and an emergency stop, via the
+        capacity gate on POST /api/session/start: switch off means new scans are refused
+        outright (503, no session row, no clock), so demand stops at the door instead of
+        being starved after the meter has started. Keeping analysis warm with zero scans
+        is a separate, explicit opt-in — ANALYSIS_KEEP_WARM=true — never the switch.
         """
-        if self.engine_switch is not None:
-            on = await self.engine_switch.is_on()
-            if on != self._was_on:  # log only on transition, not every idle cycle
-                plog.info(
-                    f"🟢 AI engine ON — running analysis" if on
-                    else "⏸️  AI engine OFF — analysis paused (owner turns it on to run)",
-                    agent="daemon",
-                )
-                self._was_on = on
-            if not on:
+        # KEEP-WARM IS NOT THE CAPACITY SWITCH. Tying them together made this gate
+        # useless: `engine:on` must be ON for a session to be admitted at all (the 503
+        # capacity gate), so reading it as "override" meant the override was true in every
+        # configuration where anyone could scan — and analysis ran every cycle regardless
+        # of demand. Keep-warm is its own opt-in, off by default.
+        keep_warm = os.getenv("ANALYSIS_KEEP_WARM", "").strip().lower() == "true"
+        demand = await self._has_scan_demand()
+
+        # The daily request budget outranks demand (R1.6): once the free-tier cap is
+        # spent, another cycle buys 6 more requests toward an escalating provider
+        # block — the capacity gate is refusing NEW scans on the same signal, and the
+        # tick loop refunds running ones, so skipping here completes the fail-closed
+        # triangle without burning anyone's clock.
+        llm_budget = getattr(self, "llm_budget", None)  # None until infra init — fail open
+        if llm_budget is not None and (demand or keep_warm):
+            if await llm_budget.exhausted():
+                if not self._budget_was_exhausted:
+                    plog.warning("⛔ analysis paused — daily LLM request cap reached", agent="daemon")
+                    self._budget_was_exhausted = True
                 return []
+            self._budget_was_exhausted = False
+
+        if not demand and not keep_warm:
+            if self._was_on is not False:  # log the transition, not every idle cycle
+                plog.info(
+                    "⏸️  analysis idle — nobody is scanning", agent="daemon"
+                )
+                self._was_on = False
+            # Deliberately does NOT stamp _last_analysis_at: idle time should not count
+            # against the cadence, so the first scan after a quiet spell gets a cycle
+            # immediately instead of waiting out a window it spent asleep.
+            return []
+
+        # Pace the real work. The loop ticks fast so demand is noticed quickly; the
+        # expensive part still runs no more often than the configured cadence.
+        now = time.time()
+        if self._last_analysis_at is not None and (now - self._last_analysis_at) < self.cycle_interval:
+            return []
+        self._last_analysis_at = now
+
+        if self._was_on is not True:
+            plog.info(
+                "🟢 analysis running — " + ("keep-warm is on" if not demand
+                                            else "a user is scanning"),
+                agent="daemon",
+            )
+            self._was_on = True
 
         all_setups = []
         for sym in self.symbols:
@@ -527,6 +1352,10 @@ class MultiUserTradingDaemon:
             if valid:
                 await self._publish_setups(valid)
                 all_setups.extend(valid)
+                # Session workers propose from this cache — per-user judgment over
+                # shared facts. Stamped so stale setups age out (session_pipeline).
+                if self.setup_cache is not None:
+                    self.setup_cache.put(sym, valid)
         return all_setups
 
     async def _publish_setups(self, setups):
@@ -581,6 +1410,24 @@ class MultiUserTradingDaemon:
                 await self._tick_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if getattr(self, "worker_pool", None) is not None:
+            try:
+                await self.worker_pool.stop()
+            except Exception as e:
+                plog.warning(f"worker pool stop error: {e}", agent="daemon")
+        if getattr(self, "monitor_supervisor", None) is not None:
+            try:
+                await self.monitor_supervisor.stop()
+            except Exception as e:
+                plog.warning(f"monitor supervisor stop error: {e}", agent="daemon")
+        for task_name in ("_pool_task", "_sweeper_task", "_monitor_task", "_stream_task", "_switch_task", "_pulse_log_task", "_pulse_backfill_task", "_llm_budget_task"):
+            task = getattr(self, task_name, None)
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         for agent in (self.memory_agent, self.strategy_agent, self.analysis_agent, self.data_agent):
             if agent:
                 try:

@@ -114,6 +114,9 @@ class TradingSystem:
                 state_manager=self.state_manager
             )
             await self.data_agent.start()
+            # Legacy single-bot path: this process IS the consumer, permanently —
+            # pin the full analysis feed (the daemon path demand-gates instead).
+            await self.data_agent.set_stream_profile("scan")
             
             # Initialize Analysis Agent
             plog.info("  ├─ Initializing Analysis Agent", agent="system")

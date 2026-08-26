@@ -149,7 +149,10 @@ async def test_place_stop_loss_order(bingx_client):
     )
     
     assert order.order_id == '12347'
-    assert order.order_type == OrderType.STOP_MARKET
+    # The venue says STOP_MARKET; our canonical member is STOP_LOSS. It used to fall
+    # through to OrderType.MARKET, which silently turned a stop-loss into an ordinary
+    # market order — see _ORDER_TYPE_ALIASES in src/execution/exchange_client.py.
+    assert order.order_type == OrderType.STOP_LOSS
 
 
 @pytest.mark.asyncio
@@ -266,3 +269,25 @@ async def test_session_management(bingx_client):
     
     await bingx_client.close()
     assert bingx_client.session.closed
+
+
+def test_venue_order_type_aliases_resolve_not_silently_downgrade():
+    """A protective leg must never be parsed as a plain market order.
+
+    Venues disagree on names for the same order (STOP_MARKET vs STOP_LOSS). The old
+    parse downgraded every unknown spelling to MARKET, so a live stop-loss fill was
+    recorded as an ordinary market order and exit attribution read "manual close"
+    instead of "stopped out".
+    """
+    from src.execution.exchange_client import OrderType, parse_order_type
+
+    assert parse_order_type("STOP_MARKET") == OrderType.STOP_LOSS
+    assert parse_order_type("stop_market") == OrderType.STOP_LOSS
+    assert parse_order_type("TAKE_PROFIT_MARKET") == OrderType.TAKE_PROFIT
+    assert parse_order_type("STOP_LIMIT") == OrderType.STOP_LOSS_LIMIT
+    # canonical members still work
+    assert parse_order_type("LIMIT") == OrderType.LIMIT
+    assert parse_order_type("STOP_LOSS") == OrderType.STOP_LOSS
+    # genuinely unknown -> MARKET, but loudly (see the warning in parse_order_type)
+    assert parse_order_type("SOMETHING_NEW") == OrderType.MARKET
+    assert parse_order_type("") == OrderType.MARKET

@@ -31,16 +31,29 @@ adds a gate rather than replacing one.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
 
 from src.core.session_budget import SessionBudget
-from src.core.session_manager import ENDED, SCANNING, SessionError
+from src.core.session_manager import DEFAULT_CYCLE_SECONDS as _DEFAULT_CYCLE_SECONDS
+from src.core.session_manager import (
+    ENDED,
+    SCANNING,
+    SessionError,
+    configured_cycle_seconds,
+)
 
 #: Seconds between cycles within one session. A metered 30-minute session at this cadence
 #: is ~10 cycles, which is what makes the minute quota correspond to real LLM spend.
-DEFAULT_CYCLE_SECONDS = 180
+#:
+#: Defined in `session_manager` and re-exported here, NOT duplicated: the API publishes
+#: this same number as `expected_cycle_seconds` so the client can judge heartbeat
+#: staleness against the interval the server genuinely paces on. Two copies would drift
+#: the moment either was tuned, and the UI would start calling a healthy engine dead.
+DEFAULT_CYCLE_SECONDS = _DEFAULT_CYCLE_SECONDS
+
 
 #: How often the pool re-discovers sessions. Faster than the cycle so a session that
 #: starts mid-cycle does not wait a full cadence for its first pass.
@@ -83,8 +96,9 @@ class SessionWorker:
         session: Dict[str, Any],
         analyze_fn: AnalyzeFn,
         pulse_client=None,
-        cycle_seconds: int = DEFAULT_CYCLE_SECONDS,
+        cycle_seconds: Optional[int] = None,
         max_pulse_age_ms: int = DEFAULT_MAX_PULSE_AGE_MS,
+        state_manager=None,
     ):
         self.sessions = session_manager
         self.preferences = preferences_store
@@ -92,10 +106,25 @@ class SessionWorker:
         self.user_id = session["user_id"]
         self.analyze_fn = analyze_fn
         self.pulse_client = pulse_client
-        self.cycle_seconds = cycle_seconds
+        self.cycle_seconds = cycle_seconds or configured_cycle_seconds()
         self.max_pulse_age_ms = max_pulse_age_ms
         self.budget = SessionBudget(session_manager, self.session_id)
+        self.state_manager = state_manager
         self.cycles_run = 0
+
+    async def _open_positions(self) -> list:
+        """This user's live positions, for portfolio-aware selection. Best-effort.
+
+        Returns [] when unavailable — a book we cannot read must degrade to "we don't
+        know what you hold", never to a failed cycle on the user's metered time.
+        """
+        if self.state_manager is None:
+            return []
+        try:
+            return await self.state_manager.get_positions(user_id=self.user_id) or []
+        except Exception as e:
+            logger.debug(f"could not read positions for {self.user_id}: {e}")
+            return []
 
     # -- one cycle -----------------------------------------------------------
 
@@ -129,6 +158,13 @@ class SessionWorker:
             "preferences": prefs,
             "pulses": pulses,
             "symbols": symbols,
+            # The trading style chosen at session start; the pipeline overlays it on the
+            # persona (goal_horizon + a tighter R:R floor). None keeps the persona.
+            "channel": state.get("channel"),
+            # What they already hold. Without this the synthesis prompt renders
+            # "already holding: none" for everyone and can offer a setup that doubles or
+            # opposes a live position — portfolio-aware selection was the point.
+            "open_positions": await self._open_positions(),
         }
 
         usage = None
@@ -197,7 +233,33 @@ class SessionWorker:
             logger.warning(f"pulse read failed for session {self.session_id}: {e}")
             return None
 
-        return pulses if pulses else None
+        # Normalize at the boundary: PulseClient returns frozen Pulse dataclasses,
+        # while everything downstream (_pulse_allows, ProposalService.create,
+        # synthesis) consumes dicts via .get(). Tests faked get_many with plain
+        # dicts, so the mismatch only surfaced with a LIVE engine — where it failed
+        # EVERY metered cycle on AttributeError while the user's clock drained.
+        # One conversion here keeps the whole pipeline dict-shaped (R1.3).
+        normalized: Dict[str, Any] = {}
+        for sym, pulse in pulses.items():
+            as_dict = self._pulse_as_dict(pulse)
+            if as_dict:
+                normalized[sym] = as_dict
+            else:
+                logger.warning(
+                    f"pulse for {sym} has an unusable shape ({type(pulse).__name__}); skipping"
+                )
+        return normalized if normalized else None
+
+    @staticmethod
+    def _pulse_as_dict(pulse: Any) -> Optional[Dict[str, Any]]:
+        """A pulse as the plain dict the pipeline consumes, or None."""
+        if isinstance(pulse, dict):
+            return pulse
+        try:
+            return dataclasses.asdict(pulse)
+        except TypeError:
+            d = getattr(pulse, "__dict__", None)
+            return dict(d) if d else None
 
     # -- loop ----------------------------------------------------------------
 
@@ -252,17 +314,19 @@ class SessionWorkerPool:
         preferences_store,
         analyze_fn: AnalyzeFn,
         pulse_client=None,
-        cycle_seconds: int = DEFAULT_CYCLE_SECONDS,
+        cycle_seconds: Optional[int] = None,
         discovery_seconds: int = DEFAULT_DISCOVERY_SECONDS,
         kill_switch=None,
+        state_manager=None,
     ):
         self.sessions = session_manager
         self.preferences = preferences_store
         self.analyze_fn = analyze_fn
         self.pulse_client = pulse_client
-        self.cycle_seconds = cycle_seconds
+        self.cycle_seconds = cycle_seconds or configured_cycle_seconds()
         self.discovery_seconds = discovery_seconds
         self.kill_switch = kill_switch
+        self.state_manager = state_manager
         self.workers: Dict[str, asyncio.Task] = {}
         self._shutdown = asyncio.Event()
 
@@ -315,6 +379,7 @@ class SessionWorkerPool:
                 self.analyze_fn,
                 pulse_client=self.pulse_client,
                 cycle_seconds=self.cycle_seconds,
+                state_manager=self.state_manager,
             )
             self.workers[session_id] = asyncio.get_running_loop().create_task(
                 worker.run(self._shutdown)

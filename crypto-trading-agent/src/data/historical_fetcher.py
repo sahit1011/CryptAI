@@ -40,6 +40,28 @@ class HistoricalDataFetcher:
         logger.info(f"Exchange has futures: {self.exchange.has.get('fetchOHLCV')}")
         logger.info(f"Rate limiter integrated: {binance_rate_limiter is not None}")
 
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> Optional[dict]:
+        """One REST order-book snapshot: {'bids': [[price, qty], ...], 'asks': [...], 'timestamp': ms}.
+
+        The analysis plane reads the book once per cycle (every CYCLE_INTERVAL seconds),
+        so a snapshot at request time replaces the old depth20@100ms stream — ten
+        messages a second feeding a consumer that looked every three minutes was most
+        of the bandwidth bill that suspended the Render workspace.
+        """
+        await binance_rate_limiter.acquire('depth', weight=1)
+        try:
+            book = await self.exchange.fetch_order_book(symbol, limit=limit)
+        except Exception as e:
+            logger.warning(f"Order-book snapshot failed for {symbol}: {e}")
+            return None
+        if not book:
+            return None
+        return {
+            'bids': book.get('bids') or [],
+            'asks': book.get('asks') or [],
+            'timestamp': book.get('timestamp'),
+        }
+
     async def fetch_ohlcv(
         self,
         symbol: str,

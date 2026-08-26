@@ -33,6 +33,41 @@ class OrderType(Enum):
     TAKE_PROFIT_LIMIT = "TAKE_PROFIT_LIMIT"
 
 
+#: Venue spellings that mean one of OUR OrderType members. Venues disagree on names
+#: for the same order: Binance/BingX futures say STOP_MARKET where this enum says
+#: STOP_LOSS. The old parse did `OrderType[raw] if raw in __members__ else MARKET`,
+#: so every one of these silently became a plain MARKET order — meaning a live
+#: STOP-LOSS fill was recorded as an ordinary market order, and any exit-reason
+#: attribution built on it read "manual close" instead of "stopped out". Same class of
+#: corruption as the fabricated paper exit_reason fixed earlier; this is the live half.
+_ORDER_TYPE_ALIASES = {
+    "STOP_MARKET": "STOP_LOSS",
+    "STOP": "STOP_LOSS",
+    "STOP_LOSS_MARKET": "STOP_LOSS",
+    "TAKE_PROFIT_MARKET": "TAKE_PROFIT",
+    "STOP_LIMIT": "STOP_LOSS_LIMIT",
+}
+
+
+def parse_order_type(raw: str) -> "OrderType":
+    """Venue order-type string -> our OrderType, aliases resolved.
+
+    Falls back to MARKET *loudly*: an unrecognised type is a venue contract change we
+    need to hear about, not something to swallow. Silence here is what let STOP_MARKET
+    masquerade as MARKET.
+    """
+    key = str(raw or "").upper()
+    key = _ORDER_TYPE_ALIASES.get(key, key)
+    if key in OrderType.__members__:
+        return OrderType[key]
+    logger.warning(
+        f"unrecognised venue order type {raw!r}; recording it as MARKET. If this is a "
+        "protective leg, exit attribution for it will be wrong until an alias is added "
+        "to _ORDER_TYPE_ALIASES."
+    )
+    return OrderType.MARKET
+
+
 class OrderSide(Enum):
     """Order sides"""
     BUY = "BUY"
@@ -685,7 +720,7 @@ class BingXClient(ExchangeClient):
             client_order_id=client_order_id,
             symbol=data.get('symbol'),
             side=OrderSide.BUY if str(data.get('side')).upper() == 'BUY' else OrderSide.SELL,
-            order_type=OrderType[raw_type] if raw_type in OrderType.__members__ else OrderType.MARKET,
+            order_type=parse_order_type(raw_type),
             price=(_f('price') or None),
             quantity=_f('origQty', 'quantity'),
             status=OrderStatus[raw_status] if raw_status in OrderStatus.__members__ else OrderStatus.NEW,
@@ -842,6 +877,30 @@ class DeltaExchangeClient(ExchangeClient):
         res = await self._request("POST", "/v2/orders", body=body)
         return self._to_order(res, symbol, side, order_type)
 
+    @staticmethod
+    def _map_state(res: dict) -> OrderStatus:
+        """Map a Delta order 'state' + fill sizes onto our OrderStatus enum.
+
+        Delta uses state ∈ {open, pending, closed, cancelled}. 'closed' means the order
+        is no longer active — a full fill OR a fully cancelled/expired order — so
+        disambiguate with filled_size. There is no PENDING member (referencing it was a
+        hard crash on every non-filled order): a resting/unacknowledged order is NEW.
+        """
+        state = str(res.get("state") or "").lower()
+        filled = float(res.get("filled_size", 0) or 0)
+        size = float(res.get("size", 0) or 0)
+        if state in ("cancelled", "canceled"):
+            return OrderStatus.CANCELED
+        if state == "closed":
+            if size > 0 and filled >= size:
+                return OrderStatus.FILLED
+            if filled > 0:
+                return OrderStatus.PARTIALLY_FILLED
+            return OrderStatus.CANCELED
+        if filled > 0 and size > 0 and filled < size:
+            return OrderStatus.PARTIALLY_FILLED
+        return OrderStatus.NEW
+
     def _to_order(self, res: dict, symbol: str, side: OrderSide, order_type: str) -> Order:
         now = datetime.now()
         return Order(
@@ -852,7 +911,7 @@ class DeltaExchangeClient(ExchangeClient):
             order_type=OrderType.MARKET if "market" in order_type else OrderType.LIMIT,
             price=float(res["limit_price"]) if res.get("limit_price") else None,
             quantity=float(res.get("size", 0) or 0),
-            status=OrderStatus.FILLED if res.get("state") == "closed" else OrderStatus.PENDING,
+            status=self._map_state(res),
             filled_quantity=float(res.get("filled_size", 0) or 0),
             average_price=float(res.get("average_fill_price") or 0),
             created_at=now, updated_at=now,

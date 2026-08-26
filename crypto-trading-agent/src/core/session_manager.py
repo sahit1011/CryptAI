@@ -65,9 +65,64 @@ COST_CAP = "cost_cap"
 USER_ENDED = "user_ended"
 TRADE_OPENED = "trade_opened"
 ERROR = "error"
+#: Analysis capacity died while the user was scanning. Distinct from `error` because it
+#: is not the user's session that failed, and the UI owes them a refund line for it.
+CAPACITY_LOST = "capacity_lost"
+
+#: Seconds between cycles within one session, when SESSION_CYCLE_SECONDS is unset.
+DEFAULT_CYCLE_SECONDS = 180
+
+
+def configured_cycle_seconds() -> int:
+    """The pacing interval, from `SESSION_CYCLE_SECONDS`.
+
+    A single source both the worker and the API read, so the heartbeat the client judges
+    staleness against is the same number the server actually paces on. Two independent
+    constants would drift the moment either was tuned, and the UI would start calling a
+    healthy engine dead (or worse, stay quiet about a dead one).
+
+    A non-numeric or non-positive value falls back to the default rather than raising:
+    a typo'd env var should not take the daemon down, and a zero interval would spin the
+    worker loop at full speed against the LLM.
+    """
+    import os
+
+    raw = (os.getenv("SESSION_CYCLE_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_CYCLE_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            f"SESSION_CYCLE_SECONDS={raw!r} is not an integer; using {DEFAULT_CYCLE_SECONDS}s"
+        )
+        return DEFAULT_CYCLE_SECONDS
+    if value <= 0:
+        logger.warning(
+            f"SESSION_CYCLE_SECONDS={value} is not positive; using {DEFAULT_CYCLE_SECONDS}s"
+        )
+        return DEFAULT_CYCLE_SECONDS
+    return value
+
 
 DEFAULT_DAILY_QUOTA_SECONDS = 1800  # free tier: 30 minutes
 DEFAULT_COST_CAP_MICROS = 500_000  # $0.50 per session
+
+#: Columns the model has that an older `sessions` table may lack, with the DDL to add
+#: them. `_ensure_schema` self-heals against this; the alembic migrations remain the
+#: managed source of truth, and the two are idempotent against each other.
+#:
+#: Module-level rather than inline so the TOCTOU test drives the same set the code does.
+#: A test that hardcoded one column name would silently stop covering every column added
+#: after it — which is exactly how it broke when `last_cycle_at` arrived.
+ADDITIVE_SESSION_COLUMNS: Dict[str, str] = {
+    "channel": "VARCHAR(16)",
+    "last_cycle_at": "TIMESTAMP",
+    # DEFAULT 0 in the DDL as well as the model: rows that predate the column are read
+    # back by code that treats it as an int, and a NULL there would surface as a refund
+    # of "unknown" on an old session's receipt.
+    "seconds_refunded": "INTEGER NOT NULL DEFAULT 0",
+}
 
 
 class SessionError(RuntimeError):
@@ -124,10 +179,47 @@ class SessionManager:
         self.engine = create_engine(database_url, **pool_kwargs())
         SessionRow.__table__.create(self.engine, checkfirst=True)
         SessionEvent.__table__.create(self.engine, checkfirst=True)
+        self._ensure_schema()
         self.Session = sessionmaker(bind=self.engine)
         self.daily_quota_seconds = daily_quota_seconds
         self.cost_cap_micros = cost_cap_micros
         self._now = now_fn or _utc_now
+
+    def _ensure_schema(self) -> None:
+        """Add columns the model has but an existing `sessions` table lacks.
+
+        `checkfirst=True` creates the table only when absent — it never adds a column to
+        one that already exists. A production DB where SessionManager booted before this
+        column was introduced (or whose migrations haven't run) would be missing
+        `channel`, and every insert referencing it would fail. This idempotent
+        ADD-COLUMN-if-missing self-heal makes the code work regardless of alembic state;
+        the alembic migration (b2d3e4f5a6c7) remains the managed source of truth.
+        """
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(self.engine)
+        if "sessions" not in inspector.get_table_names():
+            return  # checkfirst will create it fresh with every column
+        existing = {c["name"] for c in inspector.get_columns("sessions")}
+        for name, ddl_type in ADDITIVE_SESSION_COLUMNS.items():
+            if name in existing:
+                continue
+            try:
+                with self.engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {name} {ddl_type}"))
+            except Exception:
+                # TOCTOU: on Render the backend and daemon deploy from the same push and
+                # construct SessionManager against the same Postgres at once — both can
+                # pass the inspect above and race this ALTER. The loser gets a
+                # duplicate-column error; that is success, not failure (the column now
+                # exists). Re-inspect and swallow only if it really landed; re-raise a
+                # genuine failure so a broken DB is not silently ignored.
+                landed = {c["name"] for c in inspect(self.engine).get_columns("sessions")}
+                if name not in landed:
+                    raise
+                logger.info(
+                    f"sessions.{name} was added by a concurrent boot; continuing"
+                )
 
     # -- clock ---------------------------------------------------------------
 
@@ -181,13 +273,28 @@ class SessionManager:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def start(self, user_id: str, quota_seconds: Optional[int] = None) -> dict:
+    def start(
+        self,
+        user_id: str,
+        quota_seconds: Optional[int] = None,
+        channel: Optional[str] = None,
+    ) -> dict:
         """Begin a metered session.
 
         Refuses if the user already has a live session (one at a time — two concurrent
         sessions would double-spend the same daily quota) or if no time is left.
+
+        `channel` (scalp | intraday | swing | position) sets the trading style for this
+        session, overriding the user's persistent goal_horizon persona. None keeps the
+        persona default. An unknown channel is rejected rather than silently ignored.
         """
+        from src.core.preferences import GOAL_HORIZONS
+
         now = self._now()
+        if channel is not None and channel not in GOAL_HORIZONS:
+            raise SessionError(
+                f"unknown channel '{channel}'; expected one of {', '.join(GOAL_HORIZONS)}"
+            )
         remaining = self.remaining_today(user_id)
         if remaining <= 0:
             raise QuotaExhausted(
@@ -201,7 +308,12 @@ class SessionManager:
             session_id=str(uuid.uuid4()),
             user_id=user_id,
             status=SCANNING,
-            quota_seconds_granted=quota_seconds or min(self.daily_quota_seconds, remaining),
+            channel=channel,
+            # Grant at most what is left today. An explicit request may ask for less
+            # (a short session) but never more — clamping here is what makes the daily
+            # quota real; without it a caller could pass quota_seconds above the cap and
+            # run a single session far past the daily allowance.
+            quota_seconds_granted=min(quota_seconds, remaining) if quota_seconds else remaining,
             metered_seconds_accrued=0,
             clock_started_at=now,  # scanning meters immediately
             llm_cost_cap_micros=self.cost_cap_micros,
@@ -332,6 +444,50 @@ class SessionManager:
     def end(self, session_id: str, reason: str = USER_ENDED, message: str = "") -> dict:
         return self._transition(session_id, ENDED, end_reason=reason, message=message)
 
+    def end_for_capacity_loss(self, session_id: str) -> dict:
+        """End a scan whose analysis went offline, refunding the unproven time.
+
+        A scanning session accrues seconds on wall-clock. When capacity dies, those
+        seconds buy nothing — charging them is the bug the capacity gate exists to
+        prevent, arriving one step later. Everything after the agents' last report is
+        therefore handed back: `last_cycle_at` is the newest moment we hold PROOF that
+        work happened, so it is the honest boundary. A session that never reported a
+        cycle refunds from `started_at` — it produced nothing at all.
+
+        The refund is clamped to what was actually accrued, so it can never mint time.
+        """
+        now = self._now()
+        db = self.Session()
+        try:
+            row = db.query(SessionRow).filter_by(session_id=session_id).first()
+            if row is None:
+                raise NoActiveSession(f"no session {session_id}")
+            if row.status == ENDED:
+                return self._to_dict(row, now)
+
+            # Settle first so metered_seconds_accrued holds every second spent; the
+            # refund is then a subtraction from a known total rather than a race with
+            # a still-running clock.
+            self._pause_clock(row, now)
+            mark = row.last_cycle_at or row.started_at
+            dead = int((now - mark).total_seconds()) if mark else 0
+            refund = max(0, min(dead, int(row.metered_seconds_accrued or 0)))
+            row.metered_seconds_accrued -= refund
+            row.seconds_refunded = int(row.seconds_refunded or 0) + refund
+            db.commit()
+        finally:
+            db.close()
+
+        logger.info(
+            f"session {session_id}: analysis capacity lost, refunded {refund}s of dead time"
+        )
+        return self._transition(
+            session_id,
+            ENDED,
+            end_reason=CAPACITY_LOST,
+            message=f"analysis went offline — {refund}s returned",
+        )
+
     # -- enforcement ---------------------------------------------------------
 
     def tick(self, session_id: str) -> dict:
@@ -383,11 +539,19 @@ class SessionManager:
         return self.tick(session_id)
 
     def record_cycle(self, session_id: str) -> None:
+        """Mark that a scan cycle just reported.
+
+        `last_cycle_at` is the heartbeat the UI judges staleness against, so it is
+        stamped here — at the moment a cycle actually COMPLETED — rather than when one
+        was dispatched. Stamping on dispatch would keep the heartbeat fresh while every
+        cycle failed, which is precisely the state the staleness check exists to expose.
+        """
         db = self.Session()
         try:
             row = db.query(SessionRow).filter_by(session_id=session_id).first()
             if row is not None:
                 row.cycles_completed += 1
+                row.last_cycle_at = self._now()
                 db.commit()
         finally:
             db.close()
@@ -469,6 +633,7 @@ class SessionManager:
             "session_id": row.session_id,
             "user_id": row.user_id,
             "status": row.status,
+            "channel": row.channel,
             "quota_seconds_granted": row.quota_seconds_granted,
             "elapsed_seconds": elapsed,
             "remaining_seconds": max(0, row.quota_seconds_granted - elapsed),
@@ -477,6 +642,16 @@ class SessionManager:
             "llm_cost_micros": row.llm_cost_micros,
             "llm_cost_cap_micros": row.llm_cost_cap_micros,
             "cycles_completed": row.cycles_completed,
+            # The heartbeat. null until a cycle has actually reported — the client uses
+            # that distinction to judge a fresh session leniently instead of accusing it
+            # of being dead before its first sweep has had time to land.
+            "last_cycle_at": row.last_cycle_at.isoformat() if row.last_cycle_at else None,
+            # Published so the client measures staleness against the interval the server
+            # genuinely paces on, rather than a hardcoded guess that drifts when tuned.
+            "expected_cycle_seconds": configured_cycle_seconds(),
+            # Mid-scan capacity refunds are not implemented yet; always 0 so the receipt
+            # renders an honest zero rather than an absent field the UI has to guess at.
+            "seconds_refunded": int(row.seconds_refunded or 0),
             "trading_day": row.trading_day.date().isoformat() if row.trading_day else None,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "ended_at": row.ended_at.isoformat() if row.ended_at else None,

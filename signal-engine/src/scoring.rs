@@ -58,6 +58,9 @@ pub struct MarketSnapshot {
     pub depth_usd: f64,
     /// BTC closes aligned with this symbol's primary timeframe, for correlation.
     pub btc_closes: Vec<f64>,
+    /// Venue the candles came from ("binance" | "bybit") — stamped onto the pulse so
+    /// the calibration ledger never mixes sources without saying so.
+    pub venue: String,
 }
 
 /// Relative importance of each factor. See the module note: these are a prior.
@@ -336,6 +339,7 @@ pub fn score(snapshot: &MarketSnapshot, cfg: &ScoringConfig) -> Scored {
         structure,
         context,
         reference_price,
+        &snapshot.venue,
     );
 
     Scored {
@@ -706,6 +710,7 @@ mod tests {
             spread_bps: 0.5,
             depth_usd: 2_000_000.0,
             btc_closes: closes,
+            venue: "binance".into(),
         }
     }
 
@@ -981,6 +986,7 @@ mod tests {
             spread_bps: 0.0,
             depth_usd: 0.0,
             btc_closes: vec![],
+            venue: "binance".into(),
         }
     }
 

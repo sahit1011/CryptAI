@@ -5,6 +5,17 @@ import { Value, PnL } from "@/components/ui/value"
 import { useStore } from "@/store/useStore"
 import { useTerminalStore } from "@/store/useTerminalStore"
 import { SYMBOLS } from "@/lib/chart/klines"
+import { useActivity } from "@/components/dashboard/ui/ActivityBadge"
+import { type ActivityTone } from "@/lib/pulse"
+import { cn } from "@/lib/utils"
+
+/** Footer tones: text-only (the desk card carries the dot variant). */
+const TONE_CLASS: Record<ActivityTone, string> = {
+    peak: "text-profit",
+    active: "text-info",
+    quiet: "text-subtle-foreground",
+    neutral: "text-subtle-foreground",
+}
 
 /*
  * FooterStrip — 28px account strip: equity · balance · unrealized · realized ·
@@ -40,6 +51,7 @@ export function FooterStrip() {
             </div>
 
             <div className="flex shrink-0 items-center gap-3">
+                <Activity />
                 <Provenance />
                 <Clock />
             </div>
@@ -66,6 +78,25 @@ function Provenance() {
     return (
         <span className="hidden text-[10px] text-subtle-foreground lg:block" title="Data provenance — what streams vs polls, per symbol">
             {parts.join(" · ")}
+        </span>
+    )
+}
+
+/*
+ * Activity — compact variant for the terminal footer. Fetch + interpretation are
+ * shared with the desk card via useActivity/lib/pulse, so the two can never drift
+ * into telling the user different things about the same hour.
+ */
+function Activity() {
+    const display = useActivity()
+    if (!display) return null
+    return (
+        <span className="hidden shrink-0 items-baseline gap-1.5 md:flex" title={display.title}>
+            <span className="label-md text-subtle-foreground">{display.label}</span>
+            <span className={cn("num text-[10px]", TONE_CLASS[display.tone])}>{display.rank}</span>
+            {display.live && (
+                <span className="num text-[10px] text-subtle-foreground">{display.live}</span>
+            )}
         </span>
     )
 }

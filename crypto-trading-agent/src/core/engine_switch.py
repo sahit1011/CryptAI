@@ -19,6 +19,9 @@ from typing import Optional
 from loguru import logger
 
 ENGINE_KEY = "engine:on"
+# Written by turn_off so the daemon's eviction guard can tell "owner turned it off"
+# from "Redis evicted the key" — the two are otherwise identical (both = key absent).
+OWNER_OFF_KEY = "engine:off:by_owner"
 
 
 class EngineSwitch:
@@ -44,14 +47,28 @@ class EngineSwitch:
             await self.redis.set(ENGINE_KEY, payload, ex=int(duration_seconds))
         else:
             await self.redis.set(ENGINE_KEY, payload)
+        await self.redis.delete(OWNER_OFF_KEY)
         logger.info(f"AI engine turned ON by {enabled_by} (duration={duration_seconds or 'always'})")
         return await self.status()
 
     async def turn_off(self, *, disabled_by: str = "owner") -> dict:
         """Disable the engine immediately."""
         await self.redis.delete(ENGINE_KEY)
+        # Ten minutes is enough for the eviction guard's memory window to lapse.
+        await self.redis.set(OWNER_OFF_KEY, disabled_by, ex=600)
         logger.info(f"AI engine turned OFF by {disabled_by}")
         return await self.status()
+
+    async def owner_turned_off_recently(self) -> bool:
+        """True when the last OFF was a deliberate owner action (see OWNER_OFF_KEY).
+
+        Fails True on a read error: when unsure, the guard must NOT resurrect the
+        engine — staying off is the safe direction for money and credits alike.
+        """
+        try:
+            return bool(await self.redis.exists(OWNER_OFF_KEY))
+        except Exception:
+            return True
 
     async def status(self) -> dict:
         """Current state: {enabled, expires_in_seconds (None if always/off), enabled_by}."""

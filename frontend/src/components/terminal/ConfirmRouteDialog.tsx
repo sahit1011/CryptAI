@@ -82,7 +82,7 @@ export function ConfirmRouteDialog({
                         title="No exchange keys connected"
                         description="Connect BingX testnet keys in Settings to route manual orders. Until then, brackets can only be simulated."
                     >
-                        <Link href="/dashboard?section=settings" className="text-xs text-accent-300 underline-offset-4 hover:underline">
+                        <Link href="/settings" className="text-xs text-accent-300 underline-offset-4 hover:underline">
                             Open Settings
                         </Link>
                     </EmptyState>
