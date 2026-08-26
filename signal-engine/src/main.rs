@@ -143,6 +143,7 @@ async fn main() {
         symbols.clone(),
         Duration::from_millis(book_interval_ms),
         shutdown_rx.clone(),
+        active_venue,
     ));
 
     let scorer = tokio::spawn(score_loop(

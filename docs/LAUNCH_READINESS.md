@@ -121,10 +121,16 @@ Needs a founder decision; nothing was silently changed. See
 `ENABLE_EXECUTION` is dead code on both live entrypoints and unset in production. Only
 `LIVE_TRADING_CONFIRMED` + the testnet-only key gate hold. Corrected in `CLAUDE.md`.
 
-**P1 — the order-book poller has no venue fallback.**
-Klines fall back to Bybit (`signal-engine/src/venue.rs`) but the book and funding
-pollers are Binance-only. During a shared-IP ban the plane reports *available* while
-every symbol is vetoed on spread — so sessions produce nothing. Observed live.
+**~~P1 — the order-book poller has no venue fallback.~~ CLOSED 2026-08-26.**
+Observed in production: klines bootstrapped from Bybit while the book poller took a
+Binance 418 and paused 3600s, so `/api/pulse` reported `available: true` with
+`symbols_vetoed: 3, tradability_max: 0` — the plane looked healthy and no session
+could produce a setup. The book now comes from the SAME venue bootstrap chose
+(`book_url_batch` / `book_url_single` + `parse_book` in `venue.rs`): Binance answers
+every symbol in one round trip, Bybit is per-symbol, and an unparseable body is a
+failed fetch rather than a zero spread — a fake zero would drive the very veto this
+feeds. **Funding/OI remain Binance-only**; they inform the `positioning` factor, not
+the veto, so a ban degrades that factor instead of zeroing everything.
 
 **P1 — capital is unaskable and un-editable** yet sizes every position (default
 $10,000). A user with ₹50k or $500k gets positions sized for a number nobody asked

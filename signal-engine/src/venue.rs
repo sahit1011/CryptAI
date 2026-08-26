@@ -19,6 +19,9 @@
 
 use crate::indicators::Candle;
 
+/// One venue's top-of-book row: `(symbol, bid, bid_qty, ask, ask_qty)`.
+pub type BookRow = (String, f64, f64, f64, f64);
+
 /// Public-data venues, in fallback order. Binance first: it is the deepest book and
 /// the venue our historical calibration was measured on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +91,81 @@ impl Venue {
                 // the boundary logic, every indicator window — assumes ascending time.
                 out.reverse();
                 Some(out)
+            }
+        }
+    }
+
+    /// Top-of-book endpoint for ONE symbol.
+    ///
+    /// Binance can batch every symbol into one round trip; Bybit's orderbook endpoint
+    /// is per-symbol. The poller therefore asks for a batch URL first and falls back to
+    /// per-symbol calls — a handful of extra requests on a 5s cadence is trivially
+    /// inside any budget, and it is the difference between a working spread veto and
+    /// every symbol reading tradability 0.
+    pub fn book_url_single(&self, symbol: &str) -> Option<String> {
+        match self {
+            Venue::Binance => Some(format!(
+                "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={symbol}"
+            )),
+            Venue::Bybit => Some(format!(
+                "https://api.bybit.com/v5/market/orderbook?category=linear&symbol={symbol}&limit=1"
+            )),
+        }
+    }
+
+    /// Batch top-of-book URL, when the venue supports one. `None` -> use
+    /// `book_url_single` per symbol.
+    pub fn book_url_batch(&self, symbols_param: &str) -> Option<String> {
+        match self {
+            Venue::Binance => Some(format!(
+                "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbols={symbols_param}"
+            )),
+            Venue::Bybit => None,
+        }
+    }
+
+    /// Parse a top-of-book body into `(symbol, bid, bid_qty, ask, ask_qty)` rows.
+    ///
+    /// Returns None for an unrecognisable payload so the caller treats it as a failed
+    /// fetch — never as "the book is empty", which would read as a zero spread.
+    pub fn parse_book(&self, body: &str) -> Option<Vec<BookRow>> {
+        let json: serde_json::Value = serde_json::from_str(body).ok()?;
+        match self {
+            Venue::Binance => {
+                // One symbol answers with an object, several with an array.
+                let rows: Vec<&serde_json::Value> = match json.as_array() {
+                    Some(a) => a.iter().collect(),
+                    None => vec![&json],
+                };
+                let mut out: Vec<BookRow> = Vec::new();
+                for r in rows {
+                    let symbol = r.get("symbol")?.as_str()?.to_uppercase();
+                    out.push((
+                        symbol,
+                        num(r.get("bidPrice"))?,
+                        num(r.get("bidQty")).unwrap_or(0.0),
+                        num(r.get("askPrice"))?,
+                        num(r.get("askQty")).unwrap_or(0.0),
+                    ));
+                }
+                Some(out)
+            }
+            Venue::Bybit => {
+                if json.get("retCode").and_then(|c| c.as_i64()).unwrap_or(-1) != 0 {
+                    return None;
+                }
+                let result = json.get("result")?;
+                let symbol = result.get("s")?.as_str()?.to_uppercase();
+                // b / a are [[price, size], ...], best first.
+                let bid = result.get("b")?.as_array()?.first()?.as_array()?;
+                let ask = result.get("a")?.as_array()?.first()?.as_array()?;
+                Some(vec![(
+                    symbol,
+                    num(bid.first())?,
+                    num(bid.get(1)).unwrap_or(0.0),
+                    num(ask.first())?,
+                    num(ask.get(1)).unwrap_or(0.0),
+                )])
             }
         }
     }
@@ -233,6 +311,50 @@ mod tests {
             assert!(venue.parse_klines("not json", H1_MS).is_none());
             assert!(venue.parse_klines("{}", H1_MS).is_none());
         }
+    }
+
+    #[test]
+    fn binance_book_batches_and_bybit_does_not() {
+        // Binance answers every symbol in one round trip; Bybit is per-symbol. The
+        // poller relies on this distinction to pick its request shape.
+        assert!(Venue::Binance.book_url_batch("[\"BTCUSDT\"]").is_some());
+        assert!(Venue::Bybit.book_url_batch("[\"BTCUSDT\"]").is_none());
+        assert!(Venue::Bybit.book_url_single("BTCUSDT").unwrap().contains("orderbook"));
+    }
+
+    #[test]
+    fn binance_book_parses_both_single_object_and_array() {
+        let one = r#"{"symbol":"BTCUSDT","bidPrice":"64000.1","bidQty":"1.5","askPrice":"64000.5","askQty":"2.0"}"#;
+        let rows = Venue::Binance.parse_book(one).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], ("BTCUSDT".to_string(), 64000.1, 1.5, 64000.5, 2.0));
+
+        let many = r#"[{"symbol":"BTCUSDT","bidPrice":"1","bidQty":"1","askPrice":"2","askQty":"1"},
+                       {"symbol":"ETHUSDT","bidPrice":"3","bidQty":"1","askPrice":"4","askQty":"1"}]"#;
+        assert_eq!(Venue::Binance.parse_book(many).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bybit_book_parses_best_bid_and_ask() {
+        let body = r#"{"retCode":0,"result":{"s":"BTCUSDT",
+            "b":[["64000.1","1.5"],["63999.0","2.0"]],
+            "a":[["64000.5","2.0"],["64001.0","3.0"]]}}"#;
+        let rows = Venue::Bybit.parse_book(body).unwrap();
+        assert_eq!(rows.len(), 1);
+        // BEST bid/ask only — taking a deeper level would overstate the spread.
+        assert_eq!(rows[0], ("BTCUSDT".to_string(), 64000.1, 1.5, 64000.5, 2.0));
+    }
+
+    #[test]
+    fn an_unparseable_book_is_a_failed_fetch_not_a_zero_spread() {
+        // A zero/absent book read as real would produce a nonsense spread, and spread
+        // drives the veto that decides whether anyone can trade at all.
+        for v in FALLBACK_ORDER {
+            assert!(v.parse_book("not json").is_none());
+        }
+        assert!(Venue::Bybit.parse_book(r#"{"retCode":10006,"result":{}}"#).is_none());
+        assert!(Venue::Bybit.parse_book(r#"{"retCode":0,"result":{"s":"X","b":[],"a":[]}}"#).is_none());
+        assert!(Venue::Binance.parse_book(r#"{"symbol":"X"}"#).is_none());
     }
 
     #[test]

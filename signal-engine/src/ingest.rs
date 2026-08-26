@@ -24,13 +24,9 @@ use crate::feature_store::{BookTop, FeatureStore, TIMEFRAMES};
 use crate::indicators::Candle;
 use crate::venue::{Venue, FALLBACK_ORDER};
 
-/// Public market data goes through Binance's DATA MIRROR, not api.binance.com: the
-/// per-IP request-weight budget on the main API is shared with every other tenant on
-/// the host's egress IP (a cloud box got this engine 418-banned within minutes of its
-/// first deploy, at ~48 weight/min of its own usage against a 6,000/min budget). The
-/// mirror exists precisely for public data consumers and serves identical /api/v3
-/// endpoints. Funding/OI stay on fapi (no mirror exists) at one poll a minute.
-const REST_BASE: &str = "https://data-api.binance.vision/api/v3";
+// Per-venue URLs now live in `crate::venue` — the single place that knows each
+// venue's dialect. Funding/OI stay on Binance fapi below (no mirror exists, and
+// Bybit's funding shape is a separate mapping not yet needed for the veto path).
 
 /// How long to stay away after the venue says go away (ms since epoch), or None for a
 /// non-rate-limit status. 418 means an active IP ban — CONTINUING TO SEND requests
@@ -327,6 +323,11 @@ pub async fn poll_book_tops(
     symbols: Vec<String>,
     interval: Duration,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    // MUST be the venue bootstrap chose. The book feeds the spread veto, and a Binance
+    // ban used to pause this poller for an hour while klines happily served from Bybit —
+    // so the plane reported "available" while every symbol read tradability 0 (observed
+    // in production 2026-08-26). Book and candles now come from the same venue.
+    venue: Venue,
 ) {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -349,8 +350,6 @@ pub async fn poll_book_tops(
             .collect::<Vec<_>>()
             .join(",")
     );
-    let url = format!("{REST_BASE}/ticker/bookTicker");
-
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut banned_until: i64 = 0;
@@ -368,7 +367,7 @@ pub async fn poll_book_tops(
             continue; // sit out the ban — polling through it is what escalates it
         }
 
-        let (tops, ban) = fetch_book_tops(&client, &url, &symbols_param).await;
+        let (tops, ban) = fetch_book_tops(&client, venue, &symbols, &symbols_param).await;
         if let Some(until) = ban {
             banned_until = until;
             warn!(
@@ -394,70 +393,75 @@ pub async fn poll_book_tops(
     }
 }
 
+/// Fetch top-of-book for every symbol from `venue`.
+///
+/// Uses the venue's BATCH endpoint when it has one (Binance answers every symbol in a
+/// single round trip) and falls back to per-symbol calls otherwise (Bybit). Returns
+/// `(rows, ban_until)`; rows may be partial — one bad symbol must not blind the rest.
 async fn fetch_book_tops(
     client: &reqwest::Client,
-    url: &str,
+    venue: Venue,
+    symbols: &[String],
     symbols_param: &str,
 ) -> (Vec<(String, BookTop)>, Option<i64>) {
-    let response = match client.get(url).query(&[("symbols", symbols_param)]).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("book poll failed: {e}");
-            return (Vec::new(), None);
-        }
-    };
-
-    // Check the status BEFORE parsing. An error body (`{"code":-1121,"msg":"Invalid
-    // symbol."}`) is valid JSON, so without this it parsed cleanly, failed `as_array`,
-    // and returned empty with only a debug-level clue. Since this poller is now the only
-    // thing advancing `last_event_ts` between 5-minute candle closes, one bad symbol or a
-    // rate-limit ban silently stalls the heartbeat for EVERY symbol — after 15s every
-    // pulse carries StaleFeed and every session fails closed. Loud is the right volume.
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        error!(
-            "book poll rejected ({status}): {} — the feed heartbeat depends on this call",
-            body.chars().take(200).collect::<String>()
-        );
-        return (Vec::new(), ban_until_ms(status.as_u16(), &body, now_ms()));
-    }
-
-    let body: serde_json::Value = match response.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("book poll: bad JSON: {e}");
-            return (Vec::new(), None);
-        }
+    let urls: Vec<String> = match venue.book_url_batch(symbols_param) {
+        Some(batch) => vec![batch],
+        None => symbols
+            .iter()
+            .filter_map(|s| venue.book_url_single(&s.to_uppercase()))
+            .collect(),
     };
 
     let now = now_ms();
-    let Some(rows) = body.as_array() else {
-        warn!("book poll: expected an array, got something else");
-        return (Vec::new(), None);
-    };
-
     let mut out = Vec::new();
-    for row in rows {
-        let Some(symbol) = row.get("symbol").and_then(|v| v.as_str()) else {
+    for url in urls {
+        let response = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("book poll failed [{}]: {e}", venue.name());
+                continue;
+            }
+        };
+
+        // Check the status BEFORE parsing. An error body (`{"code":-1121,"msg":"Invalid
+        // symbol."}`) is valid JSON, so without this it parsed cleanly, failed to yield
+        // rows, and returned empty with only a debug-level clue. This poller is the only
+        // thing advancing `last_event_ts` between candle closes, so a rate-limit ban
+        // silently stalls the heartbeat for EVERY symbol — after 15s every pulse carries
+        // StaleFeed and every session fails closed. Loud is the right volume.
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                "book poll rejected [{}] ({status}): {} — the feed heartbeat depends on this",
+                venue.name(),
+                body.chars().take(200).collect::<String>()
+            );
+            if venue.is_rate_limit(status.as_u16()) {
+                return (
+                    out,
+                    ban_until_ms(status.as_u16(), &body, now).or(Some(now + 600_000)),
+                );
+            }
+            continue;
+        }
+
+        let body = response.text().await.unwrap_or_default();
+        let Some(rows) = venue.parse_book(&body) else {
+            warn!("book poll [{}]: unparseable body", venue.name());
             continue;
         };
-        let num = |k: &str| row.get(k).and_then(|v| v.as_str()).and_then(f);
-        // A book without both sides priced is not a book — skip it rather than let a
-        // zero masquerade as a real quote and produce a nonsense spread.
-        let (Some(bid), Some(ask)) = (num("bidPrice"), num("askPrice")) else {
-            continue;
-        };
-        out.push((
-            symbol.to_uppercase(),
-            BookTop {
-                bid,
-                ask,
-                bid_qty: num("bidQty").unwrap_or(0.0),
-                ask_qty: num("askQty").unwrap_or(0.0),
-                ts: now,
-            },
-        ));
+        for (symbol, bid, bid_qty, ask, ask_qty) in rows {
+            // A book without both sides priced is not a book — skip it rather than let
+            // a zero masquerade as a real quote and produce a nonsense spread.
+            if bid <= 0.0 || ask <= 0.0 {
+                continue;
+            }
+            out.push((
+                symbol,
+                BookTop { bid, ask, bid_qty, ask_qty, ts: now },
+            ));
+        }
     }
     (out, None)
 }
